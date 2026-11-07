@@ -23,6 +23,8 @@ import type { DataProviderClass, DataProviderComponent, DataProviderProps } from
 import { HiPlotTutorial } from "./tutorial/tutorial";
 import { type Datapoint, HiPlotLoadStatus, type IDatasets, type LoadURIPromise } from "./types";
 
+const COUNT_FORMAT = new Intl.NumberFormat("en-US");
+
 interface HeaderBarProps extends IDatasets, HiPlotDataControlProps {
   weightColumn?: string;
   loadStatus: HiPlotLoadStatus; // Should not allow to load an xp when already loading another xp
@@ -181,33 +183,18 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
               <div style={{ clear: "both" }}></div>
             </div>
             <div className={style.controlGroup}>
-              <div style={{ fontFamily: "monospace", fontSize: "14px" }}>
-                Selected:{" "}
-                <strong style={{ minWidth: "4em", textAlign: "right", display: "inline-block" }}>
-                  {this.props.rows_selected.length}
-                </strong>
-                /
-                <strong style={{ minWidth: "4em", textAlign: "left", display: "inline-block" }}>
-                  {this.props.rows_filtered.length}
-                </strong>{" "}
-                (
-                {!this.props.weightColumn && (
-                  <React.Fragment>
-                    <span style={{ minWidth: "3em", textAlign: "right", display: "inline-block" }}>
-                      {this.state.selectedPct}
-                    </span>
-                    %
-                  </React.Fragment>
-                )}
-                {this.props.weightColumn && (
-                  <React.Fragment>
-                    <span style={{ minWidth: "3em", textAlign: "right", display: "inline-block" }}>
-                      {this.state.selectedPctWeighted}
-                    </span>
-                    % weighted
-                  </React.Fragment>
-                )}
-                )
+              <div
+                className={style.selectionCount}
+                data-testid="selection-count"
+                aria-live="polite"
+              >
+                <strong>{COUNT_FORMAT.format(this.props.rows_selected.length)}</strong>
+                <span> of {COUNT_FORMAT.format(this.props.rows_filtered.length)} selected</span>
+                <span className={style.selectionShare}>
+                  {this.props.weightColumn
+                    ? `${this.state.selectedPctWeighted}% weighted`
+                    : `${this.state.selectedPct}%`}
+                </span>
               </div>
             </div>
           </React.Fragment>

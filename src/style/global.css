@@ -5,18 +5,60 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-/* Font import - external, not scoped */
-@import url("https://fonts.googleapis.com/css?family=Lato:400,700,400italic&display=swap");
-
 /* Note: Bootstrap and DataTables CSS are imported via JS in component.tsx
    so they can be properly scoped by PostCSS */
+
+/*
+ * Theme tokens. Everything HiPlot draws itself (axes, canvases, WebGL lines,
+ * brushes, legend) reads these, so one place defines each theme.
+ */
+.hip_thm--light,
+.hip_thm--dark {
+  --hip-font:
+    "IBM Plex Sans Variable", "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.hip_thm--light {
+  --hip-bg: #f8f8f6;
+  --hip-fg: #1f2328;
+  --hip-muted: #59616b;
+  --hip-axis: #8b929a;
+  --hip-tick-text: #2a2f35;
+  --hip-tick-halo: rgba(248, 248, 246, 0.92);
+  /* Deselected rows: a faint neutral layer behind the selection */
+  --hip-context-line: #8d949c;
+  --hip-missing: #9aa0a6;
+  --hip-accent: #2459c9;
+  --hip-brush-fill: rgba(36, 89, 201, 0.1);
+  --hip-brush-stroke: #2459c9;
+  --hip-halo: rgba(248, 248, 246, 0.9);
+  --hip-rule: #dcdcd8;
+}
+
+.hip_thm--dark {
+  --hip-bg: #15181c;
+  --hip-fg: #e4e7eb;
+  --hip-muted: #9ba3ad;
+  --hip-axis: #5e666f;
+  --hip-tick-text: #d5dae0;
+  --hip-tick-halo: rgba(21, 24, 28, 0.92);
+  --hip-context-line: #6f7781;
+  --hip-missing: #7d848c;
+  --hip-accent: #6ea2ff;
+  --hip-brush-fill: rgba(110, 162, 255, 0.14);
+  --hip-brush-stroke: #6ea2ff;
+  --hip-halo: rgba(21, 24, 28, 0.9);
+  --hip-rule: #2c3238;
+  --bs-body-bg: var(--hip-bg);
+  --bs-body-color: var(--hip-fg);
+}
 
 /* Dark theme wrapper */
 .hip_thm--dark {
   font-size: 16px;
   position: relative;
-  background-color: var(--bs-body-bg);
-  color: var(--bs-body-color);
+  background-color: var(--hip-bg);
+  color: var(--hip-fg);
 }
 
 .hip_thm--dark :link,
@@ -28,6 +70,20 @@
 .hip_thm--light {
   font-size: 16px;
   position: relative;
+  background-color: var(--hip-bg);
+  color: var(--hip-fg);
+}
+
+.hip_thm--light ::selection,
+.hip_thm--dark ::selection {
+  background: var(--hip-brush-fill);
+  color: inherit;
+}
+
+.hip_thm--light :focus-visible,
+.hip_thm--dark :focus-visible {
+  outline: 2px solid var(--hip-accent);
+  outline-offset: 2px;
 }
 
 .hip_thm--light :link,

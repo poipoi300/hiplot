@@ -218,10 +218,10 @@ test("rapidly dragging axes back and forth does not crash", async ({ page }) => 
 
 test("brushing an axis updates selection count", async ({ page }) => {
   await loadDemo(page);
-  const countLine = page.locator('div[style*="monospace"]').first();
+  const countLine = page.getByTestId("selection-count");
   const extractCounts = async () => {
     const text = (await countLine.textContent()) ?? "";
-    const match = text.match(/Selected:\s*(\d+)\s*\/\s*(\d+)/);
+    const match = text.replace(/,/g, "").match(/(\d+)\s*of\s*(\d+)\s*selected/);
     if (!match) return { selected: NaN, total: NaN };
     return { selected: parseInt(match[1], 10), total: parseInt(match[2], 10) };
   };

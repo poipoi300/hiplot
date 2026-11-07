@@ -1,5 +1,6 @@
 .parallel-plot-chart svg {
-  font-family: Ubuntu, Tahoma, Helvetica, sans-serif;
+  font-family: var(--hip-font);
+  font-variant-numeric: tabular-nums;
 }
 .parallel-plot-chart canvas,
 .parallel-plot-chart svg {
@@ -9,21 +10,35 @@
 }
 .parallel-plot-chart {
   position: relative;
-  margin-top: 8px;
+  margin-top: 4px;
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
 }
-.brush rect.extent {
-  fill: rgba(100, 100, 100, 0.15);
-  stroke: #fff;
+
+/* Brushes: a filled band in the accent color, its value range labelled at both ends. */
+.brush :global(.selection) {
+  fill: var(--hip-brush-fill);
+  fill-opacity: 1;
+  stroke: var(--hip-brush-stroke);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
 }
-.brush:hover rect.extent {
-  stroke: #222;
-  stroke-dasharray: 5, 5;
+.brush :global(.overlay) {
+  cursor: ns-resize;
 }
-.brush rect.extent:hover {
-  stroke-dasharray: none;
+.brush :global(.handle) {
+  cursor: ns-resize;
+}
+.brushRange {
+  fill: var(--hip-brush-stroke);
+  font-size: 11px;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--hip-tick-halo);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
 }
 
 .pplotLabel :global(.label-name) {
@@ -31,54 +46,119 @@
 }
 
 .axis .tickSelected {
-  font-size: 16px;
-  font-weight: bold;
+  font-weight: 600;
 }
 
 .axis {
-  cursor: move;
-  font-size: 16px;
+  font-size: 12px;
 }
 .pplot-label {
+  cursor: grab;
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;
 }
+.pplot-label:active {
+  cursor: grabbing;
+}
 .axis text {
-  fill: #111;
-  text-anchor: right;
-  font-size: 13px;
-  text-shadow:
-    0 1px 0 #fff,
-    1px 0 0 #fff,
-    0 -1px 0 #fff,
-    -1px 0 0 #fff;
+  fill: var(--hip-tick-text);
+  font-size: 11px;
+  paint-order: stroke;
+  stroke: var(--hip-tick-halo);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+.axis text.pplotLabel {
+  fill: var(--hip-fg);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .axis line,
 .axis path {
   fill: none;
-  stroke: #777;
+  stroke: var(--hip-axis);
   stroke-width: 1;
-}
-.axis :global(.tick) {
-  width: 200px;
+  shape-rendering: crispEdges;
 }
 
-/* Dark mode */
-:global(.hip_thm--dark) .brush rect.extent {
-  fill: rgba(100, 100, 100, 0.15);
-  stroke: #ddd;
+/* Drag handle above each axis: the axis title and this grip both move the axis. */
+.grip {
+  cursor: grab;
 }
-:global(.hip_thm--dark) .axis text {
-  fill: #f2f2f2;
-  text-shadow:
-    0 1px 0 #000,
-    1px 0 0 #000,
-    0 -1px 0 #000,
-    -1px 0 0 #000;
+.grip rect {
+  fill: transparent;
 }
-:global(.hip_thm--dark) .axis line,
-:global(.hip_thm--dark) .axis path {
-  stroke: #777;
+.grip circle {
+  fill: var(--hip-axis);
+  transition: fill 150ms ease-out;
+}
+.grip:hover circle {
+  fill: var(--hip-accent);
+}
+.grip:active {
+  cursor: grabbing;
+}
+
+/* Toolbar above the plot: line shape and brush reset. */
+.toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 20px 0;
+  font-size: 13px;
+  color: var(--hip-muted);
+}
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--hip-rule);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.segmented button,
+.toolbarButton {
+  font: inherit;
+  font-size: 12px;
+  line-height: 22px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--hip-muted);
+  cursor: pointer;
+}
+.segmented button[aria-pressed="true"] {
+  background: var(--hip-brush-fill);
+  color: var(--hip-fg);
+  font-weight: 600;
+}
+.segmented button + button {
+  border-left: 1px solid var(--hip-rule);
+}
+.toolbarButton {
+  border: 1px solid var(--hip-rule);
+  border-radius: 6px;
+}
+.segmented button:hover,
+.toolbarButton:hover:not(:disabled) {
+  color: var(--hip-fg);
+}
+.toolbarButton:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Name and value of the line under the pointer. */
+.tooltip {
+  position: absolute;
+  pointer-events: none;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: var(--hip-fg);
+  color: var(--hip-bg);
+  font-size: 12px;
+  white-space: nowrap;
+  transform: translate(12px, -50%);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
 }

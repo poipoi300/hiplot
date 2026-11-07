@@ -253,7 +253,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       : null;
     const labels = d3
       .select(mounted(this.root_ref))
-      .selectAll<SVGTextElement, string>(`.${style.label}`)
+      .selectAll<SVGTextElement, string>(`.${pstyle.pplotLabel}`)
       .filter((p) => p === d);
 
     const willBeInverted = !this.state.invert.has(d);
@@ -690,7 +690,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         .attr("text-anchor", "left")
         .classed("pplot-label", true)
         .classed("label-name", true)
-        .classed(style.label, true)
+        .classed(pstyle.pplotLabel, true)
         .classed(style.axisLabelText, true)
         .classed(pstyle.pplotLabel, true)
         .each(function (this: SVGTextElement) {
@@ -785,7 +785,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
           texts
             .classed(pstyle.tickSelected, true)
             .style("display", function (this: SVGTextElement) {
-              if (d3.select(this).classed(style.label)) {
+              if (d3.select(this).classed(pstyle.pplotLabel)) {
                 return null;
               }
               const position = scale(d3.select<SVGTextElement, AxisValue>(this).datum());
@@ -794,12 +794,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         } else {
           texts.classed(pstyle.tickSelected, false).style("display", null);
         }
-        d3.select(this).selectAll(`.${style.label}`).style("display", null);
+        d3.select(this).selectAll(`.${pstyle.pplotLabel}`).style("display", null);
       });
 
       // bold dimensions with label
       div
-        .selectAll<SVGTextElement, string>(`.${style.label}`)
+        .selectAll<SVGTextElement, string>(`.${pstyle.pplotLabel}`)
         .style("font-weight", (dimension) => (_.include(actives, dimension) ? "bold" : null));
 
       // Get lines within extents

@@ -90,6 +90,8 @@ export default defineConfig(({ mode }) => {
       sourcemap: true,
       target: "es2017",
       chunkSizeWarningLimit: 2000,
+      // Fonts are inlined so the bundle, and pages embedding it, work offline.
+      assetsInlineLimit: (file: string) => (file.endsWith(".woff2") ? true : undefined),
       lib: {
         entry: path.resolve(__dirname, "src", "hiplot.tsx"),
         name: "hiplot",

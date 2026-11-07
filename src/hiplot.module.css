@@ -13,11 +13,8 @@
   overflow-x: hidden;
 }
 .hiplot {
-  font-family: Ubuntu, Tahoma, Helvetica, sans-serif;
-}
-:global(.hip_thm--light) {
-  background: #f7f7f7;
-  color: #404040;
+  font-family: var(--hip-font);
+  font-variant-numeric: tabular-nums;
 }
 .hiplot a {
   text-decoration: none;
@@ -110,12 +107,11 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: #ddd;
-  border-radius: 12px;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #b5b5b5;
+  background: var(--hip-rule);
   border-radius: 12px;
 }
 
@@ -183,11 +179,7 @@
 
 /* Axis label text - no hover effects to avoid Safari foreignObject bugs */
 .axisLabelText {
-  color: #5e5e5e;
-}
-
-:global(.hip_thm--dark) .axisLabelText {
-  color: #b7b7b7;
+  color: var(--hip-muted);
 }
 
 /* Histogram */
@@ -213,9 +205,9 @@
 }
 
 .header {
-  border-bottom: 1px solid rgba(100, 100, 100, 0.35);
-  background: #e2e2e2;
-  padding: 6px 24px 4px;
+  border-bottom: 1px solid var(--hip-rule);
+  background: var(--hip-bg);
+  padding: 8px 24px 6px;
   line-height: 24px;
 }
 .header h1 {
@@ -231,31 +223,9 @@
   margin-right: 5px;
 }
 
-:global(.hip_thm--dark) .axis text.label {
-  fill: #ddd;
-}
 /* dark theme */
-
-:global(.hip_thm--dark) .header {
-  background: #040404;
-  color: #f3f3f3;
-}
-
-:global(.hip_thm--dark) {
-  background: #131313;
-  color: #e3e3e3;
-}
 :global(.hip_thm--dark) a {
-  color: #5ae;
-}
-:global(.hip_thm--dark) .background {
-  fill: none;
-}
-:global(.hip_thm--dark) ::-webkit-scrollbar-track {
-  background: #222;
-}
-:global(.hip_thm--dark) ::-webkit-scrollbar-thumb {
-  background: #444;
+  color: var(--hip-accent);
 }
 :global(.hip_thm--dark) .header button:enabled {
   border-color: white !important;
@@ -266,4 +236,28 @@
 }
 :global(.hip_thm--dark) .histAll rect {
   fill: rgb(99, 80, 117);
+}
+
+.selectionCount {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35em;
+  font-size: 14px;
+  line-height: 31px;
+  color: var(--hip-muted);
+}
+
+.selectionCount strong {
+  color: var(--hip-fg);
+  font-weight: 600;
+}
+
+.selectionShare {
+  margin-left: 0.4em;
+  padding: 0 0.45em;
+  border-radius: 4px;
+  background: var(--hip-brush-fill);
+  color: var(--hip-fg);
+  font-size: 12px;
+  line-height: 20px;
 }

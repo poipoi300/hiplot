@@ -14,6 +14,7 @@ import "bootstrap/dist/css/bootstrap.min.css";
 import "datatables.net-bs5/css/dataTables.bootstrap5.min.css";
 import "./style/bs-dark.css";
 import "./style/bs-light.css";
+import "./style/fonts.css";
 import "./style/global.css";
 
 import LogoSVG from "../hiplot/static/logo.svg";

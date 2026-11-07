@@ -78,7 +78,7 @@ test("parallel lines fall back to Canvas 2D without WebGL2", async ({ page }) =>
   await expect.poll(() => paintedPixels(page)).toBeGreaterThan(1000);
 
   // Brushing still selects and redraws through the fallback.
-  const countLine = page.locator('div[style*="monospace"]').first();
+  const countLine = page.getByTestId("selection-count");
   const before = await countLine.textContent();
   const overlay = page.locator("svg g.dimension .pplot-brush rect.overlay").first();
   const box = await overlay.boundingBox();
