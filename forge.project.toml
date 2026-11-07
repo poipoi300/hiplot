@@ -23,13 +23,13 @@ done = true
 id = "rendering-performance"
 title = "Cached, batched and WebGL rendering; columnar brushing; compact payload"
 weight = 4
-done = false
+done = true
 
 [[v1.milestones]]
 id = "design"
 title = "Density rendering, palettes, legend, axes, theming, affordances"
 weight = 3
-done = false
+done = true
 
 [[checks]]
 id = "pytest"
