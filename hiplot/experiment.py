@@ -97,7 +97,7 @@ class ValueDef(_DictSerializable):
     :ivar colors: Categorical scales only: mapping from value to HTML color
         (either :code:`rgb(R, G, B)` or :code:`#RRGGBB`)
     :ivar colormap: Numerical scales only: `D3 scale <https://github.com/d3/d3-scale-chromatic>`_ to use
-        (default scale is `interpolateTurbo <https://d3js.org/d3-scale-chromatic/sequential#interpolateTurbo>`_).
+        (default scale is `interpolateViridis <https://d3js.org/d3-scale-chromatic/sequential#interpolateViridis>`_).
         For example :code:`"interpolateSinebow"`.
         To inverse the colormap, append `#inverse` to the name (eg :code:`"interpolateSinebow#inverse"`)
     :ivar label_css: Space-separated bootstrap CSS classes to apply on the label when supported
@@ -234,7 +234,7 @@ class Experiment(_DictSerializable):
         self.parameters_definition = (
             parameters_definition if parameters_definition is not None else defaultdict(ValueDef)
         )
-        self.colormap = colormap if colormap is not None else "interpolateTurbo"
+        self.colormap = colormap
         self.colorby: str | None = None
         self.weightcolumn: str | None = None
         self.enabledDisplays: list[str] = [

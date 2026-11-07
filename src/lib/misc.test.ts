@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { InternMap } from "d3";
 import { Experiment } from "../types";
-import { categoricalColorScheme } from "./categoricalcolors";
 import { uncompress } from "./compress";
 import { escapeHtml, escapeRegExp } from "./escape";
 
@@ -14,13 +13,6 @@ describe("escaping", () => {
     const special = "a.b*c+d?e^f$g{h}i(j)k|l[m]n\\o/p-q";
     expect(new RegExp(escapeRegExp(special)).test(special)).toBe(true);
     expect(new RegExp(escapeRegExp("a.b")).test("axb")).toBe(false);
-  });
-});
-
-describe("categorical hash colors", () => {
-  test("the same value always gets the same color", () => {
-    expect(categoricalColorScheme("dataset_42")).toBe(categoricalColorScheme("dataset_42"));
-    expect(categoricalColorScheme("dataset_42")).toMatch(/^rgb\(\d+, \d+, \d+\)$/);
   });
 });
 

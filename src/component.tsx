@@ -27,6 +27,7 @@ import { apply_filter, apply_filters, type Filter, FilterType, isFilter } from "
 import { ErrorDisplay, HeaderBar } from "./header";
 import style from "./hiplot.module.css";
 import { infertypes, type ParamDef, type ParamDefMap } from "./infertypes";
+import { ColorLegend } from "./legend";
 import { setupBrowserCompat } from "./lib/browsercompat";
 import { type ColorBinning, colorBinning } from "./lib/colors";
 import { experimentRows } from "./lib/compress";
@@ -488,6 +489,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
   private cachedColorBinning: {
     pd: ParamDef;
     colormap: string | null;
+    dark: boolean;
     binning: ColorBinning;
   } | null = null;
   /** Color bins of the color-by column, rebuilt only when it or the color map changes. */
@@ -498,11 +500,16 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     }
     const pd = this.state.params_def[colorby];
     const cached = this.cachedColorBinning;
-    if (cached !== null && cached.pd === pd && cached.colormap === this.state.colormap) {
+    if (
+      cached !== null &&
+      cached.pd === pd &&
+      cached.colormap === this.state.colormap &&
+      cached.dark === this.state.dark
+    ) {
       return cached.binning;
     }
-    const binning = colorBinning(pd, this.state.colormap);
-    this.cachedColorBinning = { pd, colormap: this.state.colormap, binning };
+    const binning = colorBinning(pd, this.state.colormap, this.state.dark ? "dark" : "light");
+    this.cachedColorBinning = { pd, colormap: this.state.colormap, dark: this.state.dark, binning };
     return binning;
   }
   getColorForRow(trial: Datapoint, alpha: number): string {
@@ -798,6 +805,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
         sendMessage: this.sendMessage.bind(this),
         get_color_for_row: this.getColorForRow.bind(this),
         color_binning: this.colorBinning(),
+        dark: this.state.dark,
         experiment,
         params_def: this.state.params_def,
         params_def_unfiltered: this.state.params_def_unfiltered,
@@ -836,6 +844,13 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
           )}
           {this.state.loadStatus !== HiPlotLoadStatus.Loaded && (
             <DocAndCredits dark={this.state.dark} />
+          )}
+          {this.state.loadStatus === HiPlotLoadStatus.Loaded && this.state.colorby !== null && (
+            <ColorLegend
+              binning={this.colorBinning()}
+              column={this.state.colorby}
+              labelHtml={this.state.params_def[this.state.colorby].label_html}
+            />
           )}
           <ContextMenu ref={this.contextMenuRef} />
           {this.state.loadStatus === HiPlotLoadStatus.Loaded && experiment !== null && (

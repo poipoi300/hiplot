@@ -33,6 +33,8 @@ export interface HiPlotPluginDataWithoutDatasets {
   get_color_for_row: (row: Datapoint, opacity: number) => string;
   /** Colors of the color-by column, for displays that group rows by color. */
   color_binning: ColorBinning;
+  /** Whether the dark theme is active, for displays that draw outside CSS. */
+  dark: boolean;
   render_row_text: (row: Datapoint) => string;
   dp_lookup: DatapointLookup;
 

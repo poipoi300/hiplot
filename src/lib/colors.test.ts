@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { infertypes, type ParamDef } from "../infertypes";
 import { type Datapoint, type DatapointValue, ParamType } from "../types";
-import { colorBinning, NUMERIC_COLOR_BINS, parseColorMap } from "./colors";
+import {
+  colorBinning,
+  hashedCategoryColor,
+  NUMERIC_COLOR_BINS,
+  OKABE_ITO,
+  parseColorMap,
+  TABLEAU_10,
+} from "./colors";
 import { PersistentStateInMemory } from "./savedstate";
 
 function column(values: DatapointValue[]): ParamDef {
@@ -16,12 +23,32 @@ function column(values: DatapointValue[]): ParamDef {
 const numbers = Array.from({ length: 30 }, (_, i) => i);
 
 describe("categorical color bins", () => {
-  test("each category gets its own bin, unknown values the grey missing bin", () => {
-    const binning = colorBinning(column(["a", "b", "a"]), null);
-    expect(binning.binOf("a")).toBe(0);
-    expect(binning.binOf("b")).toBe(1);
+  test("categories are binned in axis order, unknown values in the grey missing bin", () => {
+    const binning = colorBinning(column(["b", "a10", "a2", "b"]), null);
+    expect(binning.legend).toEqual({ kind: "categorical", categories: ["a2", "a10", "b"] });
+    expect(binning.binOf("a2")).toBe(0);
+    expect(binning.binOf("b")).toBe(2);
     expect(binning.binOf("zzz")).toBe(binning.missingBin);
-    expect(binning.palette[binning.missingBin]).toEqual({ r: 100, g: 100, b: 100 });
+    expect(binning.binOf(undefined)).toBe(binning.missingBin);
+  });
+
+  test("up to seven categories use Okabe-Ito, up to ten Tableau 10, more a stable hash", () => {
+    const hex = (binning: ReturnType<typeof colorBinning>, bin: number) => {
+      const { r, g, b } = binning.palette[bin];
+      return `#${[r, g, b].map((c) => c.toString(16).padStart(2, "0")).join("")}`.toUpperCase();
+    };
+    const names = (n: number) => Array.from({ length: n }, (_, i) => `c${i}`);
+    expect(hex(colorBinning(column(names(7)), null), 0)).toBe(OKABE_ITO[0]);
+    expect(hex(colorBinning(column(names(10)), null), 9)).toBe(TABLEAU_10[9]);
+    const many = colorBinning(column(names(30)), null, "dark");
+    expect(hex(many, 0)).toBe(hashedCategoryColor("c0", "dark").toUpperCase());
+    expect(hashedCategoryColor("c0", "dark")).toBe(hashedCategoryColor("c0", "dark"));
+  });
+
+  test("the missing color follows the theme", () => {
+    const light = colorBinning(column(["a"]), null, "light");
+    const dark = colorBinning(column(["a"]), null, "dark");
+    expect(light.palette[light.missingBin]).not.toEqual(dark.palette[dark.missingBin]);
   });
 
   test("user colors win over the palette and are not mutated", () => {
@@ -33,7 +60,7 @@ describe("categorical color bins", () => {
 
   test("css strings carry the requested opacity", () => {
     const binning = colorBinning(column(["a", "b"]), null);
-    expect(binning.css(0, 0.25)).toBe("rgba(31, 119, 180, 0.25)");
+    expect(binning.css(0, 0.25)).toBe("rgba(0, 114, 178, 0.25)");
   });
 });
 
@@ -45,6 +72,14 @@ describe("numeric color bins", () => {
     expect(binning.binOf(29)).toBe(NUMERIC_COLOR_BINS - 1);
     expect(binning.css(binning.binOf(0), 1)).toBe("rgba(255, 255, 255, 1)");
     expect(binning.css(binning.binOf(29), 1)).toBe("rgba(0, 0, 0, 1)");
+  });
+
+  test("viridis is the default and starts lighter on the dark theme", () => {
+    const light = colorBinning(column(numbers), null, "light");
+    const dark = colorBinning(column(numbers), null, "dark");
+    expect(light.css(0, 1)).toBe("rgba(68, 1, 84, 1)");
+    expect(dark.palette[0]).not.toEqual(light.palette[0]);
+    expect(light.legend).toEqual({ kind: "numeric", domain: [0, 29] });
   });
 
   test("missing and special values fall in the grey bin", () => {

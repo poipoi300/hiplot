@@ -92,11 +92,38 @@
   height: 24px;
   line-height: 24px;
 }
-.header button {
-  border-color: black !important;
+/* Header actions: quiet outlined buttons; Keep and Exclude carry their meaning in a dot. */
+.header button:global(.btn) {
+  --bs-btn-bg: transparent;
+  --bs-btn-color: var(--hip-fg);
+  --bs-btn-border-color: var(--hip-rule);
+  --bs-btn-hover-bg: var(--hip-brush-fill);
+  --bs-btn-hover-color: var(--hip-fg);
+  --bs-btn-hover-border-color: var(--hip-rule);
+  --bs-btn-active-bg: var(--hip-brush-fill);
+  --bs-btn-active-color: var(--hip-fg);
+  --bs-btn-active-border-color: var(--hip-accent);
+  --bs-btn-disabled-bg: transparent;
+  --bs-btn-disabled-color: var(--hip-muted);
+  --bs-btn-disabled-border-color: var(--hip-rule);
+  --bs-btn-padding-x: 0.65rem;
+  margin-right: 6px;
+  border-radius: 6px;
+  font-weight: 500;
 }
-.header button:disabled {
-  border: solid 1px transparent !important;
+.header button:global(.btn-success)::before,
+.header button:global(.btn-danger)::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: #2e9e5b;
+}
+.header button:global(.btn-danger)::before {
+  background: #d1453b;
 }
 
 /* Scrollbars */
@@ -227,9 +254,6 @@
 :global(.hip_thm--dark) a {
   color: var(--hip-accent);
 }
-:global(.hip_thm--dark) .header button:enabled {
-  border-color: white !important;
-}
 :global(.hip_thm--dark) .histSelected line {
   stroke: white;
   stroke-width: 2;
@@ -260,4 +284,57 @@
   color: var(--hip-fg);
   font-size: 12px;
   line-height: 20px;
+}
+
+/* Color legend for the color-by column, under the header. */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+  padding: 8px 24px 0;
+  font-size: 12px;
+  color: var(--hip-muted);
+}
+.legendTitle {
+  font-weight: 500;
+}
+.legendColumn {
+  margin-left: 4px;
+  color: var(--hip-fg);
+  font-weight: 600;
+}
+.legend .legendCategories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.legendCategories li,
+.legendMissing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.legendSwatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+.legendMore {
+  font-style: italic;
+}
+.legendScale {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.legendGradient {
+  display: inline-block;
+  width: 160px;
+  height: 10px;
+  border-radius: 3px;
 }
