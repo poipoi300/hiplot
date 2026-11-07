@@ -12,7 +12,7 @@ import * as d3 from "d3";
 import $ from "jquery";
 import React from "react";
 import _ from "underscore";
-import { apply_filters, type Filter, FilterType } from "../filters";
+import { type Filter, FilterType } from "../filters";
 import style from "../hiplot.module.css";
 import {
   create_d3_scale,
@@ -31,6 +31,7 @@ import type { HiPlotPluginData } from "../plugin";
 import { type Datapoint, ParamType } from "../types";
 import { LineGeometry } from "./geometry";
 import pstyle from "./parallel.module.css";
+import { type AxisSelection, BrushMasks } from "./selection";
 
 interface ParallelPlotState {
   height: number;
@@ -81,6 +82,28 @@ type BrushExtents = { [dimension: string]: [number, number] | null };
 interface LongPress {
   timer: number | null;
   fired: boolean;
+}
+
+/** What a brush selects on one axis, as a value range. */
+function axisSelection(dimension: string, range: ScaleDomainRange): AxisSelection {
+  if (range.type === ParamType.CATEGORICAL) {
+    if (range.values.length === 0) {
+      return "nothing";
+    }
+    return {
+      col: dimension,
+      type: range.type,
+      min: range.values[0],
+      max: range.values[range.values.length - 1],
+    };
+  }
+  return {
+    col: dimension,
+    type: range.type,
+    min: Math.min(...range.range),
+    max: Math.max(...range.range),
+    include_infnans: range.include_infnans,
+  };
 }
 
 interface AxisPixels {
@@ -151,6 +174,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   dimensions_dom: d3.Selection<SVGGElement, string, SVGGElement, unknown> | null = null;
   /** Cached per-row pixels, colors and draw order of the filtered rows. */
   private lineGeometry: LineGeometry | null = null;
+  /** Per-axis brush masks over the filtered rows. */
+  private masks: BrushMasks | null = null;
   /** The pending animation frame of a progressive draw, if one is in flight. */
   drawingFrame: number | null = null;
   /** Smoothed cost of one line, from measured frame intervals (see `paths`). */
@@ -729,38 +754,26 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         .style("font-weight", (dimension) => (_.include(actives, dimension) ? "bold" : null));
 
       // Get lines within extents
-      const filters: Array<Filter> = actives.map((dimension): Filter => {
+      const selections = new Map<string, AxisSelection>();
+      actives.forEach((dimension) => {
         const extent = extents[dimension];
         if (extent === null || extent === undefined) {
           throw new Error(`Dimension ${dimension} is not brushed`);
         }
-        const range = scale_pixels_range(me.yscale[dimension], extent);
-        if (range.type === ParamType.CATEGORICAL) {
-          if (range.values.length === 0) {
-            return { type: FilterType.None, data: {} };
-          }
-          return {
-            type: FilterType.Range,
-            data: {
-              col: dimension,
-              type: range.type,
-              min: range.values[0],
-              max: range.values[range.values.length - 1],
-            },
-          };
-        }
-        return {
-          type: FilterType.Range,
-          data: {
-            col: dimension,
-            type: range.type,
-            min: Math.min(...range.range),
-            max: Math.max(...range.range),
-            include_infnans: range.include_infnans,
-          },
-        };
+        selections.set(
+          dimension,
+          axisSelection(dimension, scale_pixels_range(me.yscale[dimension], extent)),
+        );
       });
-      const selected = apply_filters(me.props.rows_filtered, filters);
+      const filters = Array.from(
+        selections.values(),
+        (selection): Filter =>
+          selection === "nothing"
+            ? { type: FilterType.None, data: {} }
+            : { type: FilterType.Range, data: selection },
+      );
+      const masks = me.brushMasks();
+      const selected = masks.selectedRows(masks.select(selections));
 
       if (me.props.asserts) {
         me.assertPixelSelectionMatches(actives, extents, filters, selected);
@@ -809,8 +822,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   /**
-   * Debug check (enabled by the `asserts` prop): rows selected by the filters must
-   * match the rows whose pixels fall inside the brushes, within one pixel.
+   * Debug check, off unless the `asserts` prop is set: rows selected by value
+   * must match the rows whose cached pixels fall inside the brushes, within one
+   * pixel.
    */
   private assertPixelSelectionMatches(
     actives: string[],
@@ -818,17 +832,26 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     filters: Filter[],
     selected: Datapoint[],
   ): void {
-    const insideBrushes = (d: Datapoint, tolerance: number): boolean =>
-      actives.every((dimension) => {
-        const extent = extents[dimension];
+    const geometry = this.geometry();
+    const columns = actives.map((dimension) => ({
+      extent: extents[dimension],
+      pixels: geometry.pixels(
+        dimension,
+        this.yscale[dimension],
+        this.props.params_def[dimension].numeric,
+      ),
+    }));
+    const insideBrushes = (index: number, tolerance: number): boolean =>
+      columns.every(({ extent, pixels }) => {
         if (extent === null || extent === undefined) {
           return false;
         }
-        const position = this.yscale[dimension](d[dimension]);
+        const position = pixels[index];
         return extent[0] + tolerance <= position && position <= extent[1] - tolerance;
       });
-    const selected_pixels_minset = this.props.rows_filtered.filter((d) => insideBrushes(d, 1));
-    const selected_pixels_maxset = this.props.rows_filtered.filter((d) => insideBrushes(d, -1));
+    const rows = geometry.rows;
+    const selected_pixels_minset = rows.filter((_row, index) => insideBrushes(index, 1));
+    const selected_pixels_maxset = rows.filter((_row, index) => insideBrushes(index, -1));
     const missed = _.difference(selected_pixels_minset, selected);
     const overselected = _.difference(selected, selected_pixels_maxset);
     if (overselected.length || missed.length) {
@@ -936,6 +959,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.lineGeometry = new LineGeometry(this.props.rows_filtered);
     }
     return this.lineGeometry;
+  }
+
+  brushMasks(): BrushMasks {
+    if (this.masks === null || this.masks.rows !== this.props.rows_filtered) {
+      this.masks = new BrushMasks(this.props.rows_filtered);
+    }
+    return this.masks;
   }
 
   /** Indices of the selected rows, in draw order. */
