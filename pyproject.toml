@@ -12,19 +12,17 @@ authors = [
     { name = "Facebook AI Research" },
     { name = "mathematicalmichael @ Mind the Math, LLC" },
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Scientific/Engineering :: Visualization",
 ]
 
@@ -57,8 +55,12 @@ all = ["hiplot-mm[server,notebook,streamlit]"]
 
 [dependency-groups]
 dev = [
-    "pytest",
-    "ty",
+    "pytest>=9.0",
+    "coverage>=7.6",
+    "diff-cover>=9.2",
+    "mypy>=1.14",
+    "pre-commit>=4.0",
+    "ruff>=0.14",
     "ipykernel",
     "pandas",
     "streamlit>=0.63",
@@ -81,7 +83,7 @@ hiplot-mm = "hiplot.render:hiplot_render_main"
 
 [project.urls]
 Homepage = "https://github.com/mindthemath/hiplot"
-Documentation = "https://facebookresearch.github.io/hiplot/"
+Documentation = "https://mindthemath.github.io/hiplot/"
 Repository = "https://github.com/mindthemath/hiplot"
 
 [tool.hatch.build]
@@ -110,11 +112,52 @@ exclude = [
     "examples/",
 ]
 
-[tool.ty.src]
-exclude = [
-    "docs/",
-    "examples/",
-]
-
 [tool.uv]
 default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+testpaths = ["hiplot/tests", "tools"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["docs/_build", "npm-dist", "node_modules"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",
+    "I",       # imports
+    "UP",      # outdated constructs
+    "B",       # likely bugs
+    "SIM",     # needless complexity
+    "C4",      # unnecessary comprehensions
+    "RET",     # confused returns
+    "ARG",     # unused arguments
+    "PTH",     # pathlib consistency
+    "PERF",    # obvious performance mistakes
+    "RUF",
+    "PGH",     # blanket noqa / type: ignore without a code
+    "ISC",     # implicit string concatenation
+    "PIE",     # misc slop (duplicate class fields, pointless placeholders)
+    "ERA",     # commented-out code
+]
+ignore = [
+    "ISC001",  # conflicts with the formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Pytest fixtures and mocks take arguments they don't always use.
+"hiplot/tests/**" = ["ARG"]
+"tools/test_*.py" = ["ARG"]
+
+[tool.mypy]
+strict = true
+explicit_package_bases = true
+ignore_missing_imports = true
+exclude = ['^\.venv/', '^docs/_build/', '^node_modules/', '^npm-dist/']
+
+[tool.coverage.run]
+branch = true
+relative_files = true
+source = ["hiplot"]
+omit = ["hiplot/tests/*"]
