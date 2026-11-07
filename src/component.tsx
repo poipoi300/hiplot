@@ -16,6 +16,7 @@ import "./style/bs-dark.css";
 import "./style/bs-light.css";
 import "./style/fonts.css";
 import "./style/global.css";
+import "./style/table.css";
 
 import LogoSVG from "../hiplot/static/logo.svg";
 import LogoSVGW from "../hiplot/static/logo-w.svg";

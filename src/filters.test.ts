@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { apply_filter, apply_filters, type Filter, FilterType, isFilter } from "./filters";
+import {
+  apply_filter,
+  apply_filters,
+  columnConditionHolds,
+  type Filter,
+  FilterType,
+  isFilter,
+  parseColumnCondition,
+} from "./filters";
 import { type Datapoint, ParamType } from "./types";
 
 const table: Datapoint[] = [
@@ -73,5 +81,49 @@ describe("filter validation", () => {
     ]) {
       expect(isFilter(value)).toBe(false);
     }
+  });
+});
+
+describe("column filter conditions", () => {
+  test("comparisons and ranges read as numbers, anything else as text", () => {
+    expect(parseColumnCondition(" >= 1e-3 ")).toEqual({
+      kind: "compare",
+      operator: ">=",
+      value: 0.001,
+    });
+    expect(parseColumnCondition("0.5..-0.5")).toEqual({ kind: "range", min: -0.5, max: 0.5 });
+    expect(parseColumnCondition("AdamW")).toEqual({ kind: "text", text: "adamw" });
+    expect(parseColumnCondition(">fast")).toEqual({ kind: "text", text: ">fast" });
+    expect(parseColumnCondition("   ")).toBeNull();
+  });
+
+  test("only finite numbers meet numeric conditions", () => {
+    const below = { kind: "compare", operator: "<", value: 1 } as const;
+    expect(columnConditionHolds(below, 0.5)).toBe(true);
+    expect(columnConditionHolds(below, "0.5")).toBe(true);
+    expect(columnConditionHolds(below, "inf")).toBe(false);
+    expect(columnConditionHolds(below, undefined)).toBe(false);
+    for (const [operator, expected] of [
+      ["<=", true],
+      [">", false],
+      [">=", true],
+      ["=", true],
+    ] as const) {
+      expect(columnConditionHolds({ kind: "compare", operator, value: 1 }, 1)).toBe(expected);
+    }
+    expect(columnConditionHolds({ kind: "range", min: 0, max: 1 }, 1)).toBe(true);
+    expect(columnConditionHolds({ kind: "text", text: "dam" }, "AdamW")).toBe(true);
+  });
+
+  test("a column filter selects the rows its condition holds for, and persists", () => {
+    const rows: Datapoint[] = [
+      { uid: "a", from_uid: null, lr: 0.1 },
+      { uid: "b", from_uid: null, lr: 0.01 },
+    ];
+    const filter: Filter = { type: FilterType.Column, data: { col: "lr", query: "<0.05" } };
+    expect(apply_filter(rows, filter).map((row) => row.uid)).toEqual(["b"]);
+    expect(apply_filter(rows, { ...filter, data: { col: "lr", query: "" } })).toHaveLength(2);
+    expect(isFilter(JSON.parse(JSON.stringify(filter)))).toBe(true);
+    expect(isFilter({ type: FilterType.Column, data: { col: "lr" } })).toBe(false);
   });
 });

@@ -7,13 +7,14 @@
 
 import { convert_to_categorical_input } from "./lib/d3_scales";
 import { escapeRegExp } from "./lib/escape";
-import { type Datapoint, ParamType } from "./types";
+import { type Datapoint, type DatapointValue, ParamType } from "./types";
 
 export enum FilterType {
   All = "All",
   Range = "Range",
   Not = "Not",
   Search = "Search",
+  Column = "Column",
   None = "None",
 }
 
@@ -33,7 +34,69 @@ export type Filter =
   | { type: FilterType.Range; data: FilterRange }
   | { type: FilterType.Not; data: Filter }
   | { type: FilterType.Search; data: string }
+  | { type: FilterType.Column; data: { col: string; query: string } }
   | { type: FilterType.None; data: Record<string, never> };
+
+/**
+ * A condition typed into a table column's filter: a comparison or a range
+ * (`>0.5`, `<=1e-3`, `=3`, `0.1..0.5`), which only numbers meet, or else a
+ * case-insensitive substring of the value.
+ */
+export type ColumnCondition =
+  | { kind: "compare"; operator: "<" | "<=" | ">" | ">=" | "="; value: number }
+  | { kind: "range"; min: number; max: number }
+  | { kind: "text"; text: string };
+
+const COMPARISON = /^(<=|>=|<|>|=)\s*(\S+)$/;
+const RANGE = /^(\S+?)\s*\.\.\s*(\S+)$/;
+
+/** The condition a column filter's text describes; null when it is blank. */
+export function parseColumnCondition(query: string): ColumnCondition | null {
+  const text = query.trim();
+  if (text === "") {
+    return null;
+  }
+  const comparison = COMPARISON.exec(text);
+  if (comparison !== null && Number.isFinite(Number(comparison[2]))) {
+    const operator = comparison[1] as "<" | "<=" | ">" | ">=" | "=";
+    return { kind: "compare", operator, value: Number(comparison[2]) };
+  }
+  const range = RANGE.exec(text);
+  if (range !== null && Number.isFinite(Number(range[1])) && Number.isFinite(Number(range[2]))) {
+    const [a, b] = [Number(range[1]), Number(range[2])];
+    return { kind: "range", min: Math.min(a, b), max: Math.max(a, b) };
+  }
+  return { kind: "text", text: text.toLowerCase() };
+}
+
+/** Whether a cell value meets a column condition. */
+export function columnConditionHolds(condition: ColumnCondition, value: DatapointValue): boolean {
+  if (value === undefined || value === null) {
+    return false;
+  }
+  if (condition.kind === "text") {
+    return String(value).toLowerCase().includes(condition.text);
+  }
+  const number = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(number)) {
+    return false;
+  }
+  if (condition.kind === "range") {
+    return condition.min <= number && number <= condition.max;
+  }
+  switch (condition.operator) {
+    case "<":
+      return number < condition.value;
+    case "<=":
+      return number <= condition.value;
+    case ">":
+      return number > condition.value;
+    case ">=":
+      return number >= condition.value;
+    case "=":
+      return number === condition.value;
+  }
+}
 
 type Predicate = (dp: Datapoint) => boolean;
 
@@ -82,6 +145,11 @@ export function filter_predicate(filter: Filter): Predicate {
     }
     case FilterType.Search:
       return filter_search(filter.data);
+    case FilterType.Column: {
+      const { col, query } = filter.data;
+      const condition = parseColumnCondition(query);
+      return condition === null ? () => true : (dp) => columnConditionHolds(condition, dp[col]);
+    }
     case FilterType.None:
       return () => false;
   }
@@ -135,6 +203,12 @@ export function isFilter(value: unknown): value is Filter {
       return isFilter(value.data);
     case FilterType.Search:
       return typeof value.data === "string";
+    case FilterType.Column:
+      return (
+        isRecord(value.data) &&
+        typeof value.data.col === "string" &&
+        typeof value.data.query === "string"
+      );
     case FilterType.None:
       return isRecord(value.data);
     default:
