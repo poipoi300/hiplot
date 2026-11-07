@@ -54,9 +54,12 @@ If you have a Jupyter notebook, you can get started with something as simple as:
 
 ```python
 import hiplot as hip
-data = [{'dropout':0.1, 'lr': 0.001, 'loss': 10.0, 'optimizer': 'SGD'},
-        {'dropout':0.15, 'lr': 0.01, 'loss': 3.5, 'optimizer': 'Adam'},
-        {'dropout':0.3, 'lr': 0.1, 'loss': 4.5, 'optimizer': 'Adam'}]
+
+data = [
+    {"dropout": 0.1, "lr": 0.001, "loss": 10.0, "optimizer": "SGD"},
+    {"dropout": 0.15, "lr": 0.01, "loss": 3.5, "optimizer": "Adam"},
+    {"dropout": 0.3, "lr": 0.1, "loss": 4.5, "optimizer": "Adam"},
+]
 hip.Experiment.from_iterable(data).display()
 ```
 

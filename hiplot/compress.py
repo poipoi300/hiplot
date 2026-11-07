@@ -12,7 +12,7 @@ def _build_columns_list(datapoints: tp.List[Datapoint]) -> tp.List[str]:
     columns: tp.Set[str] = set()
     for dp in datapoints:
         columns = columns.union(dp.values.keys())
-    for reserved_col in ['uid', 'from_uid']:
+    for reserved_col in ["uid", "from_uid"]:
         try:
             columns.remove(reserved_col)
         except KeyError:
@@ -28,7 +28,4 @@ def compress(datapoints: tp.List[Datapoint]) -> tp.Dict[str, tp.Any]:
         for c in columns:
             d.append(dp.values.get(c))
         rows.append(d)
-    return {
-        "columns": columns,
-        "rows": rows
-    }
+    return {"columns": columns, "rows": rows}

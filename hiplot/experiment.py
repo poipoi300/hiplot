@@ -48,28 +48,32 @@ class ValueType(Enum):
     """
     Defines how we render a column (scaling, and color scheme)
     """
-    CATEGORICAL = 'categorical'                 #: Categorical value
-    NUMERIC = 'numeric'                         #: Numeric value on a linear scale. Supports integers, floats, NaNs and inf
-    NUMERIC_LOG = 'numericlog'                  #: Same as :attr:`hiplot.ValueType.NUMERIC`, displayed on a logarithmic scale.
-    NUMERIC_PERCENTILE = 'numericpercentile'    #: Same as :attr:`hiplot.ValueType.NUMERIC`, displayed on a percentile scale.
-    TIMESTAMP = 'timestamp'                     #: Timestamps in seconds (only integers)
+
+    CATEGORICAL = "categorical"  #: Categorical value
+    NUMERIC = "numeric"  #: Numeric value on a linear scale. Supports integers, floats, NaNs and inf
+    NUMERIC_LOG = "numericlog"  #: Same as :attr:`hiplot.ValueType.NUMERIC`, displayed on a logarithmic scale.
+    NUMERIC_PERCENTILE = (
+        "numericpercentile"  #: Same as :attr:`hiplot.ValueType.NUMERIC`, displayed on a percentile scale.
+    )
+    TIMESTAMP = "timestamp"  #: Timestamps in seconds (only integers)
 
 
 class Displays:
     """
     See :meth:`Experiment.display_data` and :ref:`frontendRenderingSettings`
     """
-    PARALLEL_PLOT = 'PARALLEL_PLOT'             #: Parallel plot data
-    XY = 'XY'                                   #: XY scatter/line plot data
-    TABLE = 'TABLE'                             #: Rows table data
-    DISTRIBUTION = 'DISTRIBUTION'               #: Distribution plot data
+
+    PARALLEL_PLOT = "PARALLEL_PLOT"  #: Parallel plot data
+    XY = "XY"  #: XY scatter/line plot data
+    TABLE = "TABLE"  #: Rows table data
+    DISTRIBUTION = "DISTRIBUTION"  #: Distribution plot data
 
 
 def validate_colormap(cm: tp.Optional[str]) -> None:
     VALID_MODIFIERS = ["inverse"]
     if cm is None:
         return
-    cm_modifiers = cm.split('#', 1)
+    cm_modifiers = cm.split("#", 1)
     cm = cm_modifiers[0]
     # We don't want `d3.interpolateTurbo` but just `interpolateTurbo`
     if cm is not None and not cm.startswith("interpolate") and not cm.startswith("scheme"):
@@ -81,7 +85,7 @@ Examples include `interpolateSpectral`, `interpolateViridis`, `interpolateSinebo
         for modifier in cm_modifiers[1].split(","):
             if modifier not in VALID_MODIFIERS:
                 raise ExperimentValidationError(f"""Invalid colormap modifier `{modifier}`.
-Valid colormaps modifiers: {','.join(VALID_MODIFIERS)}
+Valid colormaps modifiers: {",".join(VALID_MODIFIERS)}
 """)
 
 
@@ -102,11 +106,11 @@ class ValueDef(_DictSerializable):
     """
 
     def __init__(
-            self,
-            value_type: tp.Optional[ValueType] = None,
-            colors: tp.Optional[tp.Dict[tp.Any, str]] = None,
-            colormap: tp.Optional[str] = None,
-            label_css: tp.Optional[str] = None
+        self,
+        value_type: tp.Optional[ValueType] = None,
+        colors: tp.Optional[tp.Dict[tp.Any, str]] = None,
+        colormap: tp.Optional[str] = None,
+        label_css: tp.Optional[str] = None,
     ) -> None:
         self.type = value_type
         self.colors = colors
@@ -168,7 +172,9 @@ class Datapoint(_DictSerializable):
         hip.Experiment(datapoints=[dp1, dp2]).display()  # Render in an ipython notebook
     """
 
-    def __init__(self, values: tp.Dict[str, DisplayableType], *, uid: tp.Optional[str] = None, from_uid: tp.Optional[str] = None) -> None:
+    def __init__(
+        self, values: tp.Dict[str, DisplayableType], *, uid: tp.Optional[str] = None, from_uid: tp.Optional[str] = None
+    ) -> None:
         self.uid = uid if uid is not None else str(uuid.uuid4())
         self.values = values
         self.from_uid = from_uid
@@ -215,17 +221,25 @@ class Experiment(_DictSerializable):
 
     """
 
-    def __init__(self,
-                 datapoints: tp.Optional[tp.List[Datapoint]] = None,
-                 parameters_definition: tp.Optional[tp.Dict[str, ValueDef]] = None,
-                 colormap: tp.Optional[str] = None,
-                 ) -> None:
+    def __init__(
+        self,
+        datapoints: tp.Optional[tp.List[Datapoint]] = None,
+        parameters_definition: tp.Optional[tp.Dict[str, ValueDef]] = None,
+        colormap: tp.Optional[str] = None,
+    ) -> None:
         self.datapoints = datapoints if datapoints is not None else []
-        self.parameters_definition = parameters_definition if parameters_definition is not None else defaultdict(ValueDef)
+        self.parameters_definition = (
+            parameters_definition if parameters_definition is not None else defaultdict(ValueDef)
+        )
         self.colormap = colormap if colormap is not None else "interpolateTurbo"
         self.colorby: tp.Optional[str] = None
         self.weightcolumn: tp.Optional[str] = None
-        self.enabledDisplays: tp.List[str] = [Displays.PARALLEL_PLOT, Displays.XY, Displays.DISTRIBUTION, Displays.TABLE]
+        self.enabledDisplays: tp.List[str] = [
+            Displays.PARALLEL_PLOT,
+            Displays.XY,
+            Displays.DISTRIBUTION,
+            Displays.TABLE,
+        ]
         self._display_data: tp.Dict[str, tp.Dict[str, tp.Any]] = {}
         self._compress: bool = False
 
@@ -242,19 +256,25 @@ class Experiment(_DictSerializable):
                 dp = p
                 while dp.from_uid is not None and dp.from_uid not in seen:
                     if dp.from_uid in seen_now:
-                        raise ExperimentValidationCircularRef(f"Circular reference in {p} parents ({len(seen_now)}-th parent)")
+                        raise ExperimentValidationCircularRef(
+                            f"Circular reference in {p} parents ({len(seen_now)}-th parent)"
+                        )
                     seen_now.add(dp.from_uid)
                     if dp.from_uid not in dp_lookup:
-                        raise ExperimentValidationMissingParent(f"Datapoint ({dp.uid}) parent ({dp.from_uid}) not found")
+                        raise ExperimentValidationMissingParent(
+                            f"Datapoint ({dp.uid}) parent ({dp.from_uid}) not found"
+                        )
                     dp = dp_lookup[dp.from_uid]
                 seen |= seen_now
             p.validate()
         if not self.datapoints:
-            raise ExperimentValidationError('Not a single datapoint')
+            raise ExperimentValidationError("Not a single datapoint")
         validate_colormap(self.colormap)
         return self
 
-    def display(self, force_full_width: bool = False, store_state_key: tp.Optional[str] = None, **kwargs: tp.Any) -> "ExperimentDisplayed":
+    def display(
+        self, force_full_width: bool = False, store_state_key: tp.Optional[str] = None, **kwargs: tp.Any
+    ) -> "ExperimentDisplayed":
         """
         Displays an experiment in an ipython notebook.
 
@@ -267,6 +287,7 @@ class Experiment(_DictSerializable):
             See :ref:`tutonotebookdisplayedexperiment`
         """
         from .streamlit_helpers import _StreamlitHelpers  # pylint: disable=cyclic-import
+
         if not _is_running_ipython():
             if _StreamlitHelpers.is_running_within_streamlit():
                 raise RuntimeError(r"""`experiment.display` can only be called with ipython.
@@ -275,6 +296,7 @@ It appears that you are trying to create a HiPlot visualization in Streamlit: yo
 - To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_page = experiment.to_html()`
 - To render an experiment in Streamlit, use `experiment.display_st`""")
         from .ipython import display_exp  # pylint: disable=cyclic-import
+
         self.validate()
         return display_exp(self, force_full_width=force_full_width, store_state_url=store_state_key, **kwargs)
 
@@ -314,7 +336,9 @@ It appears that you are trying to create a HiPlot visualization in Streamlit: yo
 
     # pylint: enable=function-redefined
 
-    def to_streamlit(self, key: tp.Optional[str] = None, ret: tp.Union[str, tp.List[str], None] = None) -> "ExperimentStreamlitComponent":
+    def to_streamlit(
+        self, key: tp.Optional[str] = None, ret: tp.Union[str, tp.List[str], None] = None
+    ) -> "ExperimentStreamlitComponent":
         """
         Streamlit only:
         creates a copy of the Experiment that you can cache,
@@ -364,10 +388,7 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
         from .render import make_experiment_standalone_page, html_inlinize
 
         self.validate()
-        html = make_experiment_standalone_page(options={
-            **kwargs,
-            'experiment': self._asdict()
-        })
+        html = make_experiment_standalone_page(options={**kwargs, "experiment": self._asdict()})
         html = html_inlinize(html)
         if file is not None:
             if isinstance(file, (Path, str)):
@@ -397,11 +418,13 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
         writer = csv.DictWriter(fh, fieldnames=["uid", "from_uid"] + sorted(list(fieldnames)))
         writer.writeheader()
         for dp in self.datapoints:
-            writer.writerow({
-                **dp.values,
-                "uid": dp.uid,
-                "from_uid": dp.from_uid,
-            })
+            writer.writerow(
+                {
+                    **dp.values,
+                    "uid": dp.uid,
+                    "from_uid": dp.from_uid,
+                }
+            )
 
     def _asdict(self) -> tp.Dict[str, tp.Any]:
         data: tp.Dict[str, tp.Any] = {
@@ -414,6 +437,7 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
         }
         if self._compress:
             from .compress import compress
+
             data["datapoints_compressed"] = compress(self.datapoints)
         else:
             data["datapoints"] = [d._asdict() for d in self.datapoints]
@@ -466,8 +490,10 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
             datapoints=[
                 Datapoint(
                     uid=str(row.get("uid", k)),
-                    from_uid=row.get("from_uid") if row.get("from_uid") != '' else None,
-                    values={mk: mv for mk, mv in row.items() if mk not in ["uid", "from_uid"]}) for k, row in enumerate(it)
+                    from_uid=row.get("from_uid") if row.get("from_uid") != "" else None,
+                    values={mk: mv for mk, mv in row.items() if mk not in ["uid", "from_uid"]},
+                )
+                for k, row in enumerate(it)
             ]
         )
 
@@ -485,36 +511,39 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
             return Experiment.from_iterable(csv.DictReader(file))
 
     @staticmethod
-    def from_dataframe(dataframe: "pd.DataFrame") -> "Experiment":  # No type hint to avoid having pandas as an additional dependency
+    def from_dataframe(
+        dataframe: "pd.DataFrame",
+    ) -> "Experiment":  # No type hint to avoid having pandas as an additional dependency
         """
         Creates a HiPlot experiment from a pandas DataFrame.
 
         :param dataframe: Pandas DataFrame
         """
         # Check if from_uid and uid is both in columns
-        if {'from_uid', 'uid'}.issubset(dataframe.columns):
+        if {"from_uid", "uid"}.issubset(dataframe.columns):
             # Check if there are any NaN values to handle
-            if dataframe['from_uid'].isnull().values.any():
-
+            if dataframe["from_uid"].isnull().values.any():
                 # NaN values forces integer columns to become float, if uid is integer and from_uid is float, it crashes.
                 # The line below changes uid to match from_uid type (either float or string), since NaN cannot be integer.
-                dataframe['uid'] = dataframe['uid'].astype(dataframe['from_uid'].dtypes)
-                dataframe = dataframe.fillna({'from_uid': '', 'uid': ''})
+                dataframe["uid"] = dataframe["uid"].astype(dataframe["from_uid"].dtypes)
+                dataframe = dataframe.fillna({"from_uid": "", "uid": ""})
 
                 # Replaces their dtypes accordingly to str, which is handled better with lesser errors with no change to functionality
-                dataframe['uid'] = dataframe['uid'].astype(str)
-                dataframe['from_uid'] = dataframe['from_uid'].astype(str)
+                dataframe["uid"] = dataframe["uid"].astype(str)
+                dataframe["from_uid"] = dataframe["from_uid"].astype(str)
 
-        experiment = Experiment.from_iterable(dataframe.to_dict(orient='records'))
+        experiment = Experiment.from_iterable(dataframe.to_dict(orient="records"))
 
         # Restore columns order
-        experiment.display_data(Displays.PARALLEL_PLOT)['order'] = list(dataframe.columns)
-        experiment.display_data(Displays.TABLE)['order'] = list(dataframe.columns)
+        experiment.display_data(Displays.PARALLEL_PLOT)["order"] = list(dataframe.columns)
+        experiment.display_data(Displays.TABLE)["order"] = list(dataframe.columns)
 
         return experiment
 
     @staticmethod
-    def from_optuna(study: "optuna.study.Study") -> "Experiment":  # No type hint to avoid having optuna as an additional dependency
+    def from_optuna(
+        study: "optuna.study.Study",
+    ) -> "Experiment":  # No type hint to avoid having optuna as an additional dependency
         """
         Creates a HiPlot experiment from a Optuna Study.
 
@@ -527,7 +556,7 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
         import optuna
 
         hyper_opt_data = []
-        for each_trial in study.get_trials(states=(optuna.trial.TrialState.COMPLETE, )):
+        for each_trial in study.get_trials(states=(optuna.trial.TrialState.COMPLETE,)):
             trial_params = {}
             # This checks if the trial was fully completed
             # the value will be None if the trial was interrupted halfway (e.g. via KeyboardInterrupt)
@@ -560,7 +589,9 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
             assert subxp is not None, k
             xp.datapoints += [
                 Datapoint(
-                    uid=f"{k}_{d.uid}", from_uid=f"{k}_{d.from_uid}" if d.from_uid is not None else None, values={**d.values, "exp": k}
+                    uid=f"{k}_{d.uid}",
+                    from_uid=f"{k}_{d.from_uid}" if d.from_uid is not None else None,
+                    values={**d.values, "exp": k},
                 )
                 for d in subxp.datapoints
             ]
@@ -583,6 +614,7 @@ class ExperimentDisplayed(metaclass=ABCMeta):
     Class that allows to communicate with a displayed HiPlot visualization in a Jupyter notebook.
     Read more in :ref:`tutoNotebookDisplayedExperiment`
     """
+
     @abstractmethod
     def get_selected(self) -> tp.List[Datapoint]:
         """

@@ -40,11 +40,12 @@ def test_from_dataframe() -> None:
     xp.validate()
     xp._asdict()
 
+
 def test_from_optuna() -> None:
 
     def objective(trial: "optuna.trial.Trial") -> float:
         x = trial.suggest_float("x", -1, 1)
-        return x ** 2
+        return x**2
 
     study = optuna.create_study()
     study.optimize(objective, n_trials=3)
@@ -64,7 +65,7 @@ def test_from_optuna_multi_objective() -> None:
     def objective(trial: "optuna.trial.Trial") -> tp.Tuple[float, float]:
         x = trial.suggest_float("x", -1, 1)
         y = trial.suggest_float("y", -1, 1)
-        return x ** 2, y
+        return x**2, y
 
     study = optuna.create_study(directions=["minimize", "minimize"])
     study.optimize(objective, n_trials=3)
@@ -84,7 +85,9 @@ def test_from_dataframe_nan_values() -> None:
     # Pandas will also automatically convert columns with NaN from integer to floats, since NaN is considered a float
     # https://pandas.pydata.org/pandas-docs/stable/user_guide/integer_na.html
 
-    df = pd.DataFrame(data={'uid': [1, 2, 3, 4], 'from_uid': [None, 1, 2, 3], 'a': [1, 2, 3, None], 'b': [4, 5, None, 6]})
+    df = pd.DataFrame(
+        data={"uid": [1, 2, 3, 4], "from_uid": [None, 1, 2, 3], "a": [1, 2, 3, None], "b": [4, 5, None, 6]}
+    )
     xp = hip.Experiment.from_dataframe(df)
     assert len(xp.datapoints) == 4
     xp.validate()
@@ -93,8 +96,14 @@ def test_from_dataframe_nan_values() -> None:
 
 def test_from_dataframe_none_values() -> None:
     # Pandas will keep None values in string columns
-    df = pd.DataFrame(data={'uid': ["1", "2", "3", "4"], 'from_uid': [None, "1", "2", "3"],
-                            'a': [23, 43, 5, None], 'b': [33, 45, None, 23]})
+    df = pd.DataFrame(
+        data={
+            "uid": ["1", "2", "3", "4"],
+            "from_uid": [None, "1", "2", "3"],
+            "a": [23, 43, 5, None],
+            "b": [33, 45, None, 23],
+        }
+    )
     xp = hip.Experiment.from_dataframe(df)
     assert len(xp.datapoints) == 4
     xp.validate()
@@ -173,7 +182,9 @@ def test_doc() -> None:
 @contextmanager
 def patch_streamlit() -> tp.Iterator[None]:
     with patch("hiplot.streamlit_helpers._StreamlitHelpers.is_running_within_streamlit", lambda: True):
-        with patch("hiplot.streamlit_helpers._StreamlitHelpers.create_component", lambda: (lambda experiment, ret, key: None)):
+        with patch(
+            "hiplot.streamlit_helpers._StreamlitHelpers.create_component", lambda: lambda experiment, ret, key: None
+        ):
             with patch("hiplot.streamlit_helpers._StreamlitHelpers.component"):
                 yield
 

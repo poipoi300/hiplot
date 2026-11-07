@@ -20,6 +20,7 @@ def escapejs(val: Any) -> str:
 
 def render_jinja_html(template_loc: str, file_name: str) -> str:
     import jinja2
+
     return jinja2.Environment(loader=jinja2.FileSystemLoader(template_loc + "/")).get_template(file_name).render()
 
 
@@ -29,9 +30,10 @@ def html_inlinize(html: str, replace_local: bool = True) -> str:
     (only for files with a relative path)
     """
     from bs4 import BeautifulSoup
+
     SUFFIX_TO_TYPE = {
-        '.png': 'image/png',
-        '.svg': 'image/svg+xml',
+        ".png": "image/png",
+        ".svg": "image/svg+xml",
     }
     static_root = str(Path(__file__).parent)
     soup = BeautifulSoup(html, "html.parser")
@@ -51,7 +53,9 @@ def html_inlinize(html: str, replace_local: bool = True) -> str:
             i.replace_with(new_tag)
         elif i["rel"][0] == "icon":  # Favicon
             file = Path(static_root, href)
-            i["href"] = f"data:{SUFFIX_TO_TYPE[file.suffix]};base64,{base64.b64encode(file.open('rb').read()).decode('ascii')}"
+            i["href"] = (
+                f"data:{SUFFIX_TO_TYPE[file.suffix]};base64,{base64.b64encode(file.open('rb').read()).decode('ascii')}"
+            )
     for i in soup.find_all("script"):
         try:
             src = str(i["src"])
@@ -77,9 +81,7 @@ def get_index_html_template() -> str:
 
 
 def make_experiment_standalone_page(options: Dict[str, Any]) -> str:
-    hiplot_options = {
-        'dataProviderName': 'none'
-    }
+    hiplot_options = {"dataProviderName": "none"}
     hiplot_options.update(options)
 
     index_html = get_index_html_template()
@@ -88,23 +90,26 @@ def make_experiment_standalone_page(options: Dict[str, Any]) -> str:
         "/*ON_LOAD_SCRIPT_INJECT*/",
         f"""/*ON_LOAD_SCRIPT_INJECT*/
         Object.assign(options, eval('(' + {escapejs(json.dumps(hiplot_options))} + ')'));
-        """)
+        """,
+    )
     return index_html
 
 
 def hiplot_render_main() -> int:
-    parser = argparse.ArgumentParser(prog="HiPlot", description="Render an HiPlot experiment to HTML or CSV in the standard output")
+    parser = argparse.ArgumentParser(
+        prog="HiPlot", description="Render an HiPlot experiment to HTML or CSV in the standard output"
+    )
     parser.add_argument("experiment_uri", type=str)
-    parser.add_argument("--format", default='html', choices=['csv', 'html'], help="File format")
+    parser.add_argument("--format", default="html", choices=["csv", "html"], help="File format")
     parser.add_argument("fetchers", nargs="*", type=str, help="Additional fetchers to use")
     args = parser.parse_args()
 
     exp = fetchers.load_xp_with_fetchers(fetchers.get_fetchers(args.fetchers), args.experiment_uri)
     exp.validate()
     stdout_writer = codecs.getwriter("utf-8")(sys.stdout.buffer)
-    if args.format == 'csv':
+    if args.format == "csv":
         exp.to_csv(stdout_writer)
-    elif args.format == 'html':
+    elif args.format == "html":
         exp.to_html(stdout_writer)
     else:
         assert False, args.format

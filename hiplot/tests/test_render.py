@@ -10,20 +10,20 @@ from ..fetchers_demo import README_DEMOS
 from ..render import get_index_html_template
 
 
-@unittest.mock.patch('hiplot.experiment._is_running_ipython', new=lambda: True)
+@unittest.mock.patch("hiplot.experiment._is_running_ipython", new=lambda: True)
 def test_demos_ipython() -> None:
     for k, v in README_DEMOS.items():
         print(k)
         v().display()
 
 
-@unittest.mock.patch('streamlit.runtime.exists', return_value=True)
+@unittest.mock.patch("streamlit.runtime.exists", return_value=True)
 def test_demos_streamlit(_mock: unittest.mock.MagicMock) -> None:
     for k, v in README_DEMOS.items():
         print(k)
-        v().display_st(key=f'hiplot{k}a')
-        v().display_st(ret='selected_uids', key=f'hiplot{k}b')
-        v().display_st(ret=['selected_uids'], key=f'hiplot{k}c')
+        v().display_st(key=f"hiplot{k}a")
+        v().display_st(ret="selected_uids", key=f"hiplot{k}b")
+        v().display_st(ret=["selected_uids"], key=f"hiplot{k}c")
 
 
 def test_index_html_valid() -> None:
@@ -42,11 +42,11 @@ def test_index_html_valid() -> None:
 
         def handle_starttag(self, tag: str, attrs: tp.List[tp.Tuple[str, tp.Optional[str]]]) -> None:
             attrs.sort(key=lambda x: x[0])
-            attrs_rendered = " ".join([a[0] + '=' + a[1] if a[1] is not None else a[0] for a in attrs])
-            self.content.append(f'<{tag} {attrs_rendered}>')
+            attrs_rendered = " ".join([a[0] + "=" + a[1] if a[1] is not None else a[0] for a in attrs])
+            self.content.append(f"<{tag} {attrs_rendered}>")
 
         def handle_endtag(self, tag: str) -> None:
-            self.content.append(f'</{tag}>')
+            self.content.append(f"</{tag}>")
 
         def handle_data(self, data: str) -> None:
             self.content.append(data.strip())

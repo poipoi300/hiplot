@@ -50,7 +50,10 @@ def test_fetcher_json() -> None:
     try:
         json_path = dirpath + "/xp.json"
         with Path(json_path).open("w+", encoding="utf-8") as tmpf:
-            json.dump([{"id": 1, "metric": 1.0, "param": "abc"}, {"id": 2, "metric": 1.0, "param": "abc", "option": "def"}], tmpf)
+            json.dump(
+                [{"id": 1, "metric": 1.0, "param": "abc"}, {"id": 2, "metric": 1.0, "param": "abc", "option": "def"}],
+                tmpf,
+            )
         xp = load_json(json_path)
         xp.validate()
         assert xp.datapoints

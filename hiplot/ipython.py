@@ -21,11 +21,11 @@ def _get_ipython_display() -> t.Any:
     """Lazy import of IPython.display with helpful error message."""
     try:
         import IPython.display
+
         return IPython.display
     except ImportError as e:
         raise ImportError(
-            "IPython is required for notebook support. "
-            "Install it with: pip install hiplot-mm[notebook]"
+            "IPython is required for notebook support. Install it with: pip install hiplot-mm[notebook]"
         ) from e
 
 
@@ -33,11 +33,11 @@ def _get_comm_class() -> t.Any:
     """Lazy import of ipykernel.comm.Comm with helpful error message."""
     try:
         from ipykernel.comm import Comm
+
         return Comm
     except ImportError as e:
         raise ImportError(
-            "ipykernel is required for notebook support. "
-            "Install it with: pip install hiplot-mm[notebook]"
+            "ipykernel is required for notebook support. Install it with: pip install hiplot-mm[notebook]"
         ) from e
 
 
@@ -56,12 +56,14 @@ class NotebookJSBundleInjector:
     def ensure_injected(cls) -> None:
         IPython_display = _get_ipython_display()
         bundle = Path(__file__).parent / "static" / "built" / "hiplot.bundle.js"
-        IPython_display.display(IPython_display.Javascript(f"""
+        IPython_display.display(
+            IPython_display.Javascript(f"""
 {bundle.read_text("utf-8")}
 // Local variables can't be accessed in other cells, so let's
 // manually create a global variable
 Object.assign(window, {{'hiplot': hiplot}});
-"""))
+""")
+        )
 
 
 def jupyter_make_full_width(content: str) -> str:
@@ -150,6 +152,7 @@ class IPythonExperimentDisplayed(exp.ExperimentDisplayed):
 
 def _should_embed_js_with_html() -> bool:
     from IPython import get_ipython
+
     ip = get_ipython()
     if ip is None:
         return True
@@ -157,11 +160,11 @@ def _should_embed_js_with_html() -> bool:
 
 
 def display_exp(
-        xp: exp.Experiment,
-        force_full_width: bool = False,
-        store_state_url: t.Optional[str] = None,
-        embed_js_with_html: t.Optional[bool] = None,
-        **kwargs: t.Any
+    xp: exp.Experiment,
+    force_full_width: bool = False,
+    store_state_url: t.Optional[str] = None,
+    embed_js_with_html: t.Optional[bool] = None,
+    **kwargs: t.Any,
 ) -> IPythonExperimentDisplayed:
     IPython_display = _get_ipython_display()
 
@@ -170,17 +173,14 @@ def display_exp(
 
     comm_id = f"comm_{uuid.uuid4().hex[:6]}"
     displayed_xp = IPythonExperimentDisplayed(xp, comm_id)
-    options: t.Dict[str, t.Any] = {
-        **kwargs,
-        'experiment': xp._asdict()
-    }
+    options: t.Dict[str, t.Any] = {**kwargs, "experiment": xp._asdict()}
     if store_state_url is not None:
         options.update({"persistentStateUrlPrefix": store_state_url})
     else:
         options.update({"persistentState": None})
     index_html = make_experiment_standalone_page(options=options)
     # Remove line that references the script bundle - prevents an HTTP error in the notebook
-    index_html = index_html.replace('src="static/built/hiplot.bundle.js"', '')
+    index_html = index_html.replace('src="static/built/hiplot.bundle.js"', "")
     index_html = index_html.replace(
         "/*ON_LOAD_SCRIPT_INJECT*/",
         f"""/*ON_LOAD_SCRIPT_INJECT*/
@@ -206,7 +206,8 @@ catch(err) {{
     console.warn('Unable to create Javascript <-> Python communication channel' +
         ' (are you in a Jupyter notebook? Jupyter labs is *not* supported!)');
 }}
-        """)
+        """,
+    )
 
     if force_full_width:
         index_html = jupyter_make_full_width(index_html)

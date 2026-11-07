@@ -32,13 +32,13 @@ class _StreamlitHelpers:
             from streamlit import runtime
         except ImportError as e:
             raise ImportError(
-                "Streamlit is required for Streamlit support. "
-                "Install it with: pip install hiplot-mm[streamlit]"
+                "Streamlit is required for Streamlit support. Install it with: pip install hiplot-mm[streamlit]"
             ) from e
         try:
             import streamlit.components.v1 as components
         except ModuleNotFoundError as e:
             import streamlit as st
+
             raise RuntimeError(f"""Your streamlit version ({st.__version__}) is too old and does not support components.
 Please update streamlit with `pip install -U streamlit`""") from e
         assert runtime.exists()
@@ -69,8 +69,9 @@ Please use `experiment.to_streamlit(..., key=\"some_unique_key\")`""")
             return []
         elif isinstance(self._ret, str):
             return [self._ret]
-        assert isinstance(self._ret, (tuple, list)), \
+        assert isinstance(self._ret, (tuple, list)), (
             "HiPlot: Invalid return type specification. Should be `None`, a string, a list or a tuple."
+        )
         return list(self._ret)
 
     @classmethod
@@ -79,19 +80,19 @@ Please use `experiment.to_streamlit(..., key=\"some_unique_key\")`""")
             return None
         elif isinstance(ret, str):
             return cls.get_default_return_for(experiment, ret)
-        assert isinstance(ret, (tuple, list)), "HiPlot: Invalid return type specification. Should be `None`, a string, a list or a tuple."
-        return tuple(
-            cls.get_default_return(experiment, r) for r in ret
+        assert isinstance(ret, (tuple, list)), (
+            "HiPlot: Invalid return type specification. Should be `None`, a string, a list or a tuple."
         )
+        return tuple(cls.get_default_return(experiment, r) for r in ret)
 
     @staticmethod
     def get_default_return_for(experiment: Experiment, ret: str) -> tp.Any:
-        if ret == 'brush_extents':
+        if ret == "brush_extents":
             return ()
-        elif ret in ['selected_uids', 'filtered_uids']:
+        elif ret in ["selected_uids", "filtered_uids"]:
             return tuple(dp.uid for dp in experiment.datapoints)
         else:
-            raise RuntimeError(f"HiPlot: Unknown return type \"{ret}\"")
+            raise RuntimeError(f'HiPlot: Unknown return type "{ret}"')
 
     def display(self) -> tp.Any:
         if not _StreamlitHelpers.is_running_within_streamlit():
@@ -107,8 +108,9 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
 
         if js_ret is None:
             js_ret = self._js_default_ret
-        assert len(self._js_default_ret) == len(
-            js_ret), f"JS returned {len(js_ret)} fields, expected {len(self._js_default_ret)} (ret={self._ret})"
+        assert len(self._js_default_ret) == len(js_ret), (
+            f"JS returned {len(js_ret)} fields, expected {len(self._js_default_ret)} (ret={self._ret})"
+        )
 
         for idx in range(len(self.js_ret_spec)):
             if js_ret[idx] is not None:

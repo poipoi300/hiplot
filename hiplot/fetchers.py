@@ -62,10 +62,7 @@ def load_xps_with_fetchers(fetchers: tp.List[hip.ExperimentFetcher], uri: str) -
 
 def load_xp_with_fetchers(fetchers: tp.List[hip.ExperimentFetcher], uri: str) -> hip.Experiment:
     xps = load_xps_with_fetchers(fetchers, uri)
-    return hip.Experiment.merge({
-        f"{i}": xp
-        for i, xp in enumerate(xps)
-    }) if len(xps) > 1 else xps[0]
+    return hip.Experiment.merge({f"{i}": xp for i, xp in enumerate(xps)}) if len(xps) > 1 else xps[0]
 
 
 class MultipleFetcher:
@@ -77,7 +74,7 @@ class MultipleFetcher:
     def __call__(self, uri: str) -> hip.Experiment:
         if not uri.startswith(self.MULTI_PREFIX):
             raise hip.ExperimentFetcherDoesntApply()
-        defs = json.loads(uri[len(self.MULTI_PREFIX):])
+        defs = json.loads(uri[len(self.MULTI_PREFIX) :])
         if isinstance(defs, list):
             return hip.Experiment.merge({v: load_xp_with_fetchers(self.fetchers, v) for v in defs})
         return hip.Experiment.merge({k: load_xp_with_fetchers(self.fetchers, v) for k, v in defs.items()})
@@ -89,7 +86,7 @@ class MultipleFetcher:
         if not uri.startswith(self.MULTI_PREFIX):
             raise hip.ExperimentFetcherDoesntApply()
         decoder = json.JSONDecoder()
-        _, current_read_offset = decoder.raw_decode(uri[len(self.MULTI_PREFIX):])
+        _, current_read_offset = decoder.raw_decode(uri[len(self.MULTI_PREFIX) :])
         return len(self.MULTI_PREFIX) + current_read_offset
 
 
@@ -99,7 +96,7 @@ class InlineJsonFetcher:
     def __call__(self, uri: str) -> hip.Experiment:
         if not uri.startswith(self.URI_PREFIX):
             raise hip.ExperimentFetcherDoesntApply()
-        exp_rows = json.loads(uri[len(self.URI_PREFIX):])
+        exp_rows = json.loads(uri[len(self.URI_PREFIX) :])
         assert isinstance(exp_rows, list)
         return hip.Experiment.from_iterable(exp_rows)
 
@@ -110,7 +107,7 @@ class InlineJsonFetcher:
         if not uri.startswith(self.URI_PREFIX):
             raise hip.ExperimentFetcherDoesntApply()
         decoder = json.JSONDecoder()
-        _, current_read_offset = decoder.raw_decode(uri[len(self.URI_PREFIX):])
+        _, current_read_offset = decoder.raw_decode(uri[len(self.URI_PREFIX) :])
         return len(self.URI_PREFIX) + current_read_offset
 
 
@@ -157,21 +154,21 @@ def load_json(uri: str) -> hip.Experiment:
 
 
 def _load_fairseq_metrics_inline(l: str) -> tp.Dict[str, tp.Any]:
-    l = l.lstrip('| epoch ')
+    l = l.lstrip("| epoch ")
     epoch = int(l[:3])
     values: tp.Dict[str, tp.Any] = {"epoch": epoch}
     # | epoch 002 | loss 8.413 | ...
     # | epoch 002 | valid on 'valid' subset | loss 7.599 | nll_loss 7.599 | ...
-    parts = l.split('|')[1:]
-    prefix = ''
+    parts = l.split("|")[1:]
+    prefix = ""
     for p in parts:
         p = p.strip()
         match_ds = re.match(r"valid on '([a-zA-Z0-9]*)' subset", p)
         if match_ds is not None:
-            prefix = match_ds.group(1) + '_'
+            prefix = match_ds.group(1) + "_"
             continue
-        key = prefix + p[::-1].split(' ', 1)[1][::-1].strip()
-        value = p[::-1].split(' ', 1)[0][::-1].strip()
+        key = prefix + p[::-1].split(" ", 1)[1][::-1].strip()
+        value = p[::-1].split(" ", 1)[0][::-1].strip()
         try:
             values[key] = float(value)
         except ValueError:
@@ -183,15 +180,16 @@ def load_fairseq(uri: str) -> hip.Experiment:
     # pylint:disable=too-many-locals
     # pylint:disable=too-many-branches
     # pylint:disable=too-many-statements
-    PREFIX = 'fairseq://'
+    PREFIX = "fairseq://"
     if not uri.startswith(PREFIX):
         raise hip.ExperimentFetcherDoesntApply()
-    uri = uri[len(PREFIX):]
+    uri = uri[len(PREFIX) :]
     train_log = Path(uri)
     if train_log.is_dir():
         found = False
-        try_files = [train_log / f for f in ["train.log", "process.out", "process_0.out"]] + \
-            [Path(f) for f in glob.glob(str(train_log / "*.log")) + glob.glob(str(train_log / "slurm_logs" / "*.log"))]
+        try_files = [train_log / f for f in ["train.log", "process.out", "process_0.out"]] + [
+            Path(f) for f in glob.glob(str(train_log / "*.log")) + glob.glob(str(train_log / "slurm_logs" / "*.log"))
+        ]
         for try_log_file in try_files:
             if try_log_file.is_file():
                 found = True
@@ -199,7 +197,7 @@ def load_fairseq(uri: str) -> hip.Experiment:
                 break
         if not found:
             raise hip.ExperimentFetcherDoesntApply("No log file found")
-    lines = train_log.read_text(encoding="utf-8").split('\n')
+    lines = train_log.read_text(encoding="utf-8").split("\n")
 
     datapoints: tp.List[tp.Dict[str, tp.Any]] = []
     params: tp.Dict[str, tp.Any] = {}
@@ -209,9 +207,9 @@ def load_fairseq(uri: str) -> hip.Experiment:
         # eg "2020-03-08 16:48:16 | INFO | "
         m = re.match(logs_prefix_re, l)
         if m is not None:
-            l = l[m.span()[1]:]
+            l = l[m.span()[1] :]
         # Arguments: Namespace(...)
-        if l.startswith('Namespace('):
+        if l.startswith("Namespace("):
             # format: Namespace(activation_dropout=0.1, activation_fn='relu', ...)
             # Ideally we want to do: `eval("dict(activation_dropout=0.1, activation_fn='relu', ...)")`
             # But as it's user input, we want to have something safe.
@@ -225,20 +223,23 @@ def load_fairseq(uri: str) -> hip.Experiment:
         # Results in JSON format
         # valid | {"epoch": 33, "valid_loss": "0.723", "valid_ppl": "1.65", ...}
         if l.startswith("valid | {"):
-            json_string = l.split('|', 1)[-1].lstrip()
+            json_string = l.split("|", 1)[-1].lstrip()
             valid_metrics = json.loads(json_string)
             datapoints.append(valid_metrics)
         # For older version of fairseq
-        if l.startswith('| epoch '):
+        if l.startswith("| epoch "):
             values = _load_fairseq_metrics_inline(l)
-            if datapoints and datapoints[-1]['epoch'] == values['epoch']:
+            if datapoints and datapoints[-1]["epoch"] == values["epoch"]:
                 datapoints[-1].update(values)
             else:
                 datapoints.append(values)
-    datapoints = [{
-        **params,
-        **values,  # overrides 'learning rate' for instance
-    } for values in datapoints]
+    datapoints = [
+        {
+            **params,
+            **values,  # overrides 'learning rate' for instance
+        }
+        for values in datapoints
+    ]
     datapoints.sort(key=lambda d: float(d["epoch"]))
     xp = hip.Experiment.from_iterable(datapoints)
     for dp, next_dp in zip(xp.datapoints, xp.datapoints[1:]):
@@ -249,15 +250,15 @@ def load_fairseq(uri: str) -> hip.Experiment:
 class Wav2letterLoader:
     def _parse_metrics(self, file: Path) -> tp.List[tp.Dict[str, tp.Any]]:
         # 001_perf:
-        '''
-# date\tkey1\tkey2...
-2019-09-30\tval1\tval2...
-'''
-        PERF_PREFIX = 'perf_'
-        lines = file.read_text(encoding="utf-8").split('\n')
+        """
+        # date\tkey1\tkey2...
+        2019-09-30\tval1\tval2...
+        """
+        PERF_PREFIX = "perf_"
+        lines = file.read_text(encoding="utf-8").split("\n")
         metrics: tp.List[tp.Dict[str, tp.Any]] = []
         for _, l in enumerate(lines[1:]):
-            if l == '':
+            if l == "":
                 continue
             epoch_metrics: tp.Dict[str, tp.Any] = {}
             for name, val in zip(lines[0].split()[1:], l.split()):
@@ -269,11 +270,11 @@ class Wav2letterLoader:
         return metrics
 
     def __call__(self, uri: str) -> hip.Experiment:
-        PREFIX = 'w2l://'
+        PREFIX = "w2l://"
         if not uri.startswith(PREFIX):
             raise hip.ExperimentFetcherDoesntApply()
-        uri = uri[len(PREFIX):]
-        perfs = list(glob.glob(str(Path(uri) / '*_perf')))
+        uri = uri[len(PREFIX) :]
+        perfs = list(glob.glob(str(Path(uri) / "*_perf")))
         perfs.sort()
 
         prev_ckpt_name: tp.Optional[str] = None
@@ -282,10 +283,7 @@ class Wav2letterLoader:
             mtrics = self._parse_metrics(Path(p))
             for m in mtrics:
                 ckpt_name = uri[-5:] + "_" + str(len(xp.datapoints))
-                xp.datapoints.append(hip.Datapoint(
-                    uid=ckpt_name,
-                    from_uid=prev_ckpt_name,
-                    values=m))
+                xp.datapoints.append(hip.Datapoint(uid=ckpt_name, from_uid=prev_ckpt_name, values=m))
                 prev_ckpt_name = ckpt_name
         return xp
 
@@ -317,7 +315,14 @@ def get_fetcher(fetcher_spec: str) -> hip.ExperimentFetcher:
 
 
 def get_fetchers(add_fetchers: tp.List[str]) -> tp.List[hip.ExperimentFetcher]:
-    xp_fetchers: tp.List[hip.ExperimentFetcher] = [load_demo, load_csv, load_json, load_fairseq, load_wav2letter, InlineJsonFetcher()]
+    xp_fetchers: tp.List[hip.ExperimentFetcher] = [
+        load_demo,
+        load_csv,
+        load_json,
+        load_fairseq,
+        load_wav2letter,
+        InlineJsonFetcher(),
+    ]
     for fetcher_spec in add_fetchers:
         xp_fetchers.append(get_fetcher(fetcher_spec))
     xp_fetchers.append(MultipleFetcher(xp_fetchers))

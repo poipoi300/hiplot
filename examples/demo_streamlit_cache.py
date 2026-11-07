@@ -8,7 +8,7 @@ import streamlit as st
 import hiplot as hip
 import hiplot.fetchers_demo
 
-x1, x2, x3 = st.slider('x1'), st.slider('x2'), st.slider('x3')
+x1, x2, x3 = st.slider("x1"), st.slider("x2"), st.slider("x3")
 
 
 @st.cache
