@@ -148,7 +148,7 @@ class IPythonExperimentDisplayed(exp.ExperimentDisplayed):
 def _should_embed_js_with_html() -> bool:
     from IPython.core.getipython import get_ipython
 
-    ip = get_ipython()  # type: ignore[no-untyped-call]  # IPython leaves it unannotated
+    ip = get_ipython()
     if ip is None:
         return True
     return "BentoApp" in ip.config

@@ -523,14 +523,12 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
         """
         # Check if from_uid and uid is both in columns
         if {"from_uid", "uid"}.issubset(dataframe.columns) and dataframe["from_uid"].isnull().values.any():
-            # NaN forces integer columns to float: if uid is an integer and from_uid a float, it crashes.
-            # Match uid to the from_uid dtype (float or string), since NaN cannot be an integer.
-            dataframe["uid"] = dataframe["uid"].astype(dataframe["from_uid"].dtypes)
-            dataframe = dataframe.fillna({"from_uid": "", "uid": ""})
-
-            # Strings round-trip both columns without changing behavior.
-            dataframe["uid"] = dataframe["uid"].astype(str)
-            dataframe["from_uid"] = dataframe["from_uid"].astype(str)
+            # NaN forces from_uid to float, so an integer uid would never match its child's from_uid.
+            # Give uid the same dtype, then compare both as strings; missing values become "".
+            uid_missing = dataframe["uid"].isnull()
+            parent_missing = dataframe["from_uid"].isnull()
+            dataframe["uid"] = dataframe["uid"].astype(dataframe["from_uid"].dtypes).astype(str).mask(uid_missing, "")
+            dataframe["from_uid"] = dataframe["from_uid"].astype(str).mask(parent_missing, "")
 
         experiment = Experiment.from_iterable(dataframe.to_dict(orient="records"))
 
