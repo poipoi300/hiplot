@@ -29,6 +29,7 @@ import { ResizableH } from "../lib/resizable";
 import { isNumber, isStringArray, readState } from "../lib/savedstate";
 import type { HiPlotPluginData } from "../plugin";
 import { type Datapoint, ParamType } from "../types";
+import { LineGeometry } from "./geometry";
 import pstyle from "./parallel.module.css";
 
 interface ParallelPlotState {
@@ -82,6 +83,49 @@ interface LongPress {
   fired: boolean;
 }
 
+interface AxisPixels {
+  x: number;
+  pixels: Float32Array;
+}
+
+/**
+ * Adds one row's polyline to the current path, from cached pixels: Bezier
+ * segments between axes, a short horizontal stub at each end, and a break
+ * around missing values (NaN pixels).
+ */
+function traceRow(
+  ctx: CanvasRenderingContext2D,
+  axes: ReadonlyArray<AxisPixels>,
+  row: number,
+): void {
+  let has_started = false;
+  let x0 = 0;
+  let y0 = 0;
+  for (const axis of axes) {
+    const x = axis.x;
+    const y = axis.pixels[row];
+    if (Number.isNaN(y)) {
+      if (has_started) {
+        ctx.lineTo(x0 + 15, y0); // right edge
+      }
+      has_started = false;
+      continue;
+    }
+    if (!has_started) {
+      x0 = x - 15;
+      y0 = y;
+      ctx.moveTo(x0, y0);
+      has_started = true;
+    }
+    ctx.bezierCurveTo(x - 0.88 * (x - x0), y0, x - 0.12 * (x - x0), y, x, y);
+    x0 = x;
+    y0 = y;
+  }
+  if (has_started) {
+    ctx.lineTo(x0 + 15, y0); // right edge
+  }
+}
+
 /** Target frame interval while lines draw progressively (60 Hz). */
 const FRAME_BUDGET_MS = 16;
 const INITIAL_MS_PER_LINE = 0.05;
@@ -105,8 +149,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   pplot: PPlotInternal | null = null;
 
   dimensions_dom: d3.Selection<SVGGElement, string, SVGGElement, unknown> | null = null;
-  /** Filtered rows in a random order fixed per dataset (see `drawOrder`). */
-  private shuffled: { from: Datapoint[]; rows: Datapoint[] } | null = null;
+  /** Cached per-row pixels, colors and draw order of the filtered rows. */
+  private lineGeometry: LineGeometry | null = null;
   /** The pending animation frame of a progressive draw, if one is in flight. */
   drawingFrame: number | null = null;
   /** Smoothed cost of one line, from measured frame intervals (see `paths`). */
@@ -886,13 +930,24 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.setState((prevState) => ({ brush_count: prevState.brush_count + 1 }));
   }
 
-  /** The filtered rows, shuffled once per dataset rather than on every redraw. */
-  drawOrder(): Datapoint[] {
-    const rows = this.props.rows_filtered;
-    if (this.shuffled === null || this.shuffled.from !== rows) {
-      this.shuffled = { from: rows, rows: _.shuffle(rows) };
+  /** Geometry of the filtered rows, rebuilt only when they change. */
+  geometry(): LineGeometry {
+    if (this.lineGeometry === null || this.lineGeometry.rows !== this.props.rows_filtered) {
+      this.lineGeometry = new LineGeometry(this.props.rows_filtered);
     }
-    return this.shuffled.rows;
+    return this.lineGeometry;
+  }
+
+  /** Indices of the selected rows, in draw order. */
+  drawnRows(geometry: LineGeometry, selected: ReadonlyArray<Datapoint>): Uint32Array {
+    if (selected === geometry.rows) {
+      return geometry.order;
+    }
+    const isSelected = new Uint8Array(geometry.rows.length);
+    selected.forEach((row) => {
+      isSelected[geometry.indexOf(row)] = 1;
+    });
+    return geometry.order.filter((row) => isSelected[row] === 1);
   }
 
   cancelDrawing(): void {
@@ -911,15 +966,23 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
    *
    * Rows are drawn in an order shuffled once per dataset, so no color ends up
    * systematically on top, and each frame strokes one path per color bin.
+   * Pixels and color bins come from the cached LineGeometry.
    */
   paths(selected: Array<Datapoint>, ctx: CanvasRenderingContext2D, count: number): void {
     const opacity = Math.min(2 / selected.length ** 0.3, 1);
-    const order = this.drawOrder();
-    const selectedRows = selected === this.props.rows_filtered ? null : new Set(selected);
-    const rows = selectedRows === null ? order : order.filter((row) => selectedRows.has(row));
+    const geometry = this.geometry();
+    const rows = this.drawnRows(geometry, selected);
     const n = rows.length;
     const binning = this.props.color_binning;
-    const colorby = this.props.colorby;
+    const bins = geometry.colorBins(binning, this.props.colorby);
+    const axes = this.state.dimensions.map((dimension) => ({
+      x: this.xPosition(dimension),
+      pixels: geometry.pixels(
+        dimension,
+        this.yscale[dimension],
+        this.props.params_def[dimension].numeric,
+      ),
+    }));
     let i = 0;
     let previousFrame: number | null = null;
     let drawnLastFrame = 0;
@@ -943,10 +1006,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       );
       const end = Math.min(i + linesPerFrame, n);
       drawnLastFrame = end - i;
-      const rowsByBin = new Map<number, Datapoint[]>();
+      const rowsByBin = new Map<number, number[]>();
       for (; i < end; ++i) {
         const row = rows[i];
-        const bin = binning.binOf(row[colorby]);
+        const bin = bins[row];
         const binRows = rowsByBin.get(bin);
         if (binRows === undefined) {
           rowsByBin.set(bin, [row]);
@@ -958,7 +1021,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         ctx.strokeStyle = binning.css(bin, opacity);
         ctx.beginPath();
         binRows.forEach((row) => {
-          this.tracePath(row, ctx);
+          traceRow(ctx, axes, row);
         });
         ctx.stroke();
       });

@@ -750,15 +750,16 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
           });
         });
       }
+      const binning = me.props.color_binning;
       allHighlighted.forEach((dp) => {
-        const color = me.props.get_color_for_row(dp, 1.0).split(",");
+        const bin = binning.binOf(dp[me.props.colorby]);
         render_dp(
           dp,
           highlights,
           {
-            lines_color: [color[0], color[1], color[2], `${1.0})`].join(","),
+            lines_color: binning.css(bin, 1.0),
             lines_width: 4,
-            dots_color: [color[0], color[1], color[2], `${0.8})`].join(","),
+            dots_color: binning.css(bin, 0.8),
             dots_thickness: me.props.dots_highlighed_thickness,
           },
           axes,
