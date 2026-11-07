@@ -6,6 +6,13 @@ absolute, backslashed). The same TypeScript file is also covered twice, by the
 bun unit tests and by the Playwright suite, so line hits are summed per file
 into one record: a line counts as covered when any suite executed it.
 
+The suites disagree on which lines are executable. coverage.py and istanbul
+(Playwright) count a multi-line statement on its first line only, while bun
+counts every physical line it spans. Unioning the line sets would report the
+continuation lines of a statement the browser ran as missed whenever bun only
+imported the file. A file reported by several suites therefore keeps just the
+lines all of them call executable.
+
 Only line records (DA) are kept; diff-cover reads nothing else.
 
 Usage:
@@ -44,14 +51,16 @@ def read_report(report: Path, root: Path, repo: Path) -> dict[str, LineHits]:
 
 
 def merge(reports: Iterable[dict[str, LineHits]]) -> dict[str, LineHits]:
-    """Sum line hits across reports, per source path."""
-    merged: defaultdict[str, LineHits] = defaultdict(dict)
+    """Sum line hits per source path over the lines every covering report lists."""
+    per_path: defaultdict[str, list[LineHits]] = defaultdict(list)
     for report in reports:
         for path, hits in report.items():
-            target = merged[path]
-            for number, count in hits.items():
-                target[number] = target.get(number, 0) + count
-    return dict(merged)
+            per_path[path].append(hits)
+    merged: dict[str, LineHits] = {}
+    for path, reported in per_path.items():
+        executable = set.intersection(*(set(hits) for hits in reported))
+        merged[path] = {number: sum(hits[number] for hits in reported) for number in executable}
+    return merged
 
 
 def render(files: dict[str, LineHits]) -> str:

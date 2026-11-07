@@ -27,8 +27,15 @@ def test_absolute_backslashed_paths_become_repo_relative_posix(tmp_path: Path) -
 
 def test_a_line_is_covered_when_any_suite_hit_it() -> None:
     unit = {"src/a.ts": {1: 0, 2: 3}}
-    e2e = {"src/a.ts": {1: 5, 2: 0, 9: 0}, "src/b.ts": {1: 1}}
-    assert merge([unit, e2e]) == {"src/a.ts": {1: 5, 2: 3, 9: 0}, "src/b.ts": {1: 1}}
+    e2e = {"src/a.ts": {1: 5, 2: 0}, "src/b.ts": {1: 1}}
+    assert merge([unit, e2e]) == {"src/a.ts": {1: 5, 2: 3}, "src/b.ts": {1: 1}}
+
+
+def test_a_file_in_several_reports_keeps_only_lines_all_call_executable() -> None:
+    # bun lists the continuation lines 11-12 of a statement istanbul counts on line 10.
+    unit = {"src/a.ts": {10: 0, 11: 0, 12: 0}}
+    e2e = {"src/a.ts": {10: 4, 20: 0}}
+    assert merge([unit, e2e]) == {"src/a.ts": {10: 4}}
 
 
 def test_render_writes_sorted_records_with_line_totals() -> None:
