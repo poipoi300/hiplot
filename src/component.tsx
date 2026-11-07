@@ -25,8 +25,9 @@ import { HiPlotDistributionPlugin } from "./distribution/plugin";
 import { apply_filter, apply_filters, type Filter, FilterType, isFilter } from "./filters";
 import { ErrorDisplay, HeaderBar } from "./header";
 import style from "./hiplot.module.css";
-import { colorScheme, infertypes, type ParamDefMap } from "./infertypes";
+import { infertypes, type ParamDef, type ParamDefMap } from "./infertypes";
 import { setupBrowserCompat } from "./lib/browsercompat";
+import { type ColorBinning, colorBinning } from "./lib/colors";
 import { uncompress } from "./lib/compress";
 import { mounted } from "./lib/refs";
 import { type PersistentState, PersistentStateInMemory } from "./lib/savedstate";
@@ -486,12 +487,33 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       ...datasets,
     });
   }
+  private cachedColorBinning: {
+    pd: ParamDef;
+    colormap: string | null;
+    binning: ColorBinning;
+  } | null = null;
+  /** Color bins of the color-by column, rebuilt only when it or the color map changes. */
+  colorBinning(): ColorBinning {
+    const colorby = this.state.colorby;
+    if (colorby === null) {
+      throw new Error("Rows are only colored once an experiment is loaded");
+    }
+    const pd = this.state.params_def[colorby];
+    const cached = this.cachedColorBinning;
+    if (cached !== null && cached.pd === pd && cached.colormap === this.state.colormap) {
+      return cached.binning;
+    }
+    const binning = colorBinning(pd, this.state.colormap);
+    this.cachedColorBinning = { pd, colormap: this.state.colormap, binning };
+    return binning;
+  }
   getColorForRow(trial: Datapoint, alpha: number): string {
     const colorby = this.state.colorby;
     if (colorby === null) {
       throw new Error("Rows are only colored once an experiment is loaded");
     }
-    return colorScheme(this.state.params_def[colorby], trial[colorby], alpha, this.state.colormap);
+    const binning = this.colorBinning();
+    return binning.css(binning.binOf(trial[colorby]), alpha);
   }
   loadWithPromise(prom: LoadURIPromise) {
     this.setState({
@@ -777,6 +799,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
         window_state: this.plugins_window_state[name],
         sendMessage: this.sendMessage.bind(this),
         get_color_for_row: this.getColorForRow.bind(this),
+        color_binning: this.colorBinning(),
         experiment,
         params_def: this.state.params_def,
         params_def_unfiltered: this.state.params_def_unfiltered,

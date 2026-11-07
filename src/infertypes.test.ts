@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  colorScheme,
   create_d3_scale,
   infertypes,
   isParamType,
@@ -178,47 +177,5 @@ describe("scales from column definitions", () => {
     const scale = create_d3_scale(infer("c", ["a", "b", "c", "d"])).range([0, 30]);
     const selection = scale_pixels_range(scale, [5, 21]);
     expect(selection.type === ParamType.CATEGORICAL ? selection.values : []).toEqual(["b", "c"]);
-  });
-});
-
-describe("row colors", () => {
-  test("categories take colors from the palette, missing categories are grey", () => {
-    const pd = infer("c", ["a", "b"]);
-    expect(colorScheme(pd, "a", 0.5, null)).toMatch(/^rgba\(\d+, \d+, \d+,0\.5\)$/);
-    expect(colorScheme(pd, "zzz", 1, null)).toBe("rgb(100,100,100,1)");
-  });
-
-  test("user colors win over the palette and are not mutated", () => {
-    const colors = { a: "rgb(1, 2, 3)" };
-    const pd: ParamDef = { ...infer("c", ["a", "b"]), colors };
-    expect(colorScheme(pd, "a", 1, null)).toBe("rgba(1, 2, 3,1)");
-    expect(colors).toEqual({ a: "rgb(1, 2, 3)" });
-  });
-
-  test("numeric values follow the color map, special values are grey", () => {
-    const pd = infer(
-      "x",
-      range(30, (i) => i),
-    );
-    expect(colorScheme(pd, 0, 1, "interpolateGreys")).toBe("rgba(255, 255, 255, 1)");
-    expect(colorScheme(pd, 29, 1, "interpolateGreys")).toBe("rgba(0, 0, 0, 1)");
-    expect(colorScheme(pd, "inf", 1, null)).toBe("rgb(100,100,100,1)");
-  });
-
-  test("schemes and the inverse modifier are supported", () => {
-    const pd = infer(
-      "x",
-      range(30, (i) => i),
-    );
-    expect(colorScheme(pd, 0, 1, "interpolateGreys#inverse")).toBe("rgba(255, 255, 255, 1)");
-    expect(colorScheme(pd, 29, 1, "schemeCategory10")).toBe("rgba(23, 190, 207, 1)");
-  });
-
-  test("an unknown color map fails loudly", () => {
-    const pd = infer(
-      "x",
-      range(30, (i) => i),
-    );
-    expect(() => colorScheme(pd, 1, 1, "interpolateNope")).toThrow("Invalid color map");
   });
 });

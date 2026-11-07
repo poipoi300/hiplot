@@ -105,6 +105,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   pplot: PPlotInternal | null = null;
 
   dimensions_dom: d3.Selection<SVGGElement, string, SVGGElement, unknown> | null = null;
+  /** Filtered rows in a random order fixed per dataset (see `drawOrder`). */
+  private shuffled: { from: Datapoint[]; rows: Datapoint[] } | null = null;
   /** The pending animation frame of a progressive draw, if one is in flight. */
   drawingFrame: number | null = null;
   /** Smoothed cost of one line, from measured frame intervals (see `paths`). */
@@ -884,6 +886,15 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.setState((prevState) => ({ brush_count: prevState.brush_count + 1 }));
   }
 
+  /** The filtered rows, shuffled once per dataset rather than on every redraw. */
+  drawOrder(): Datapoint[] {
+    const rows = this.props.rows_filtered;
+    if (this.shuffled === null || this.shuffled.from !== rows) {
+      this.shuffled = { from: rows, rows: _.shuffle(rows) };
+    }
+    return this.shuffled.rows;
+  }
+
   cancelDrawing(): void {
     if (this.drawingFrame !== null) {
       cancelAnimationFrame(this.drawingFrame);
@@ -897,11 +908,18 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
    * intervals: the number of lines per frame grows while frames stay under
    * budget and shrinks when they overrun. Everything is drawn in one pass when
    * it fits. A newer draw (higher `count`) supersedes this one.
+   *
+   * Rows are drawn in an order shuffled once per dataset, so no color ends up
+   * systematically on top, and each frame strokes one path per color bin.
    */
   paths(selected: Array<Datapoint>, ctx: CanvasRenderingContext2D, count: number): void {
-    const n = selected.length;
-    const opacity = Math.min(2 / n ** 0.3, 1);
-    const shuffled_data: Array<Datapoint> = _.shuffle(selected);
+    const opacity = Math.min(2 / selected.length ** 0.3, 1);
+    const order = this.drawOrder();
+    const selectedRows = selected === this.props.rows_filtered ? null : new Set(selected);
+    const rows = selectedRows === null ? order : order.filter((row) => selectedRows.has(row));
+    const n = rows.length;
+    const binning = this.props.color_binning;
+    const colorby = this.props.colorby;
     let i = 0;
     let previousFrame: number | null = null;
     let drawnLastFrame = 0;
@@ -925,10 +943,25 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       );
       const end = Math.min(i + linesPerFrame, n);
       drawnLastFrame = end - i;
+      const rowsByBin = new Map<number, Datapoint[]>();
       for (; i < end; ++i) {
-        const d = shuffled_data[i];
-        this.path(d, ctx, this.props.get_color_for_row(d, opacity));
+        const row = rows[i];
+        const bin = binning.binOf(row[colorby]);
+        const binRows = rowsByBin.get(bin);
+        if (binRows === undefined) {
+          rowsByBin.set(bin, [row]);
+        } else {
+          binRows.push(row);
+        }
       }
+      rowsByBin.forEach((binRows, bin) => {
+        ctx.strokeStyle = binning.css(bin, opacity);
+        ctx.beginPath();
+        binRows.forEach((row) => {
+          this.tracePath(row, ctx);
+        });
+        ctx.stroke();
+      });
       if (i < n) {
         this.drawingFrame = requestAnimationFrame(drawFrame);
       }
@@ -1012,6 +1045,16 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
   path(d: Datapoint, ctx: CanvasRenderingContext2D, color?: string): void {
     if (color) ctx.strokeStyle = color;
+    ctx.beginPath();
+    this.tracePath(d, ctx);
+    ctx.stroke();
+  }
+
+  /**
+   * Adds a row's polyline to the current path: Bezier segments between axes, a
+   * short horizontal stub at each end, and a break around missing values.
+   */
+  tracePath(d: Datapoint, ctx: CanvasRenderingContext2D): void {
     let has_started = false;
     let x0 = 0;
     let y0 = 0;
@@ -1027,10 +1070,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         err = true;
       }
       if (err) {
-        // Skip this one
         if (has_started) {
           ctx.lineTo(x0 + 15, y0); // right edge
-          ctx.stroke();
         }
         has_started = false;
         return;
@@ -1039,7 +1080,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         x0 = x - 15;
         y0 = y;
         ctx.moveTo(x0, y0);
-        ctx.beginPath();
         has_started = true;
       }
       const cp1x = x - 0.88 * (x - x0);
@@ -1052,7 +1092,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     });
     if (has_started) {
       ctx.lineTo(x0 + 15, y0); // right edge
-      ctx.stroke();
     }
   }
 }

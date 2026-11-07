@@ -9,6 +9,7 @@ import type React from "react";
 import type { ContextMenu } from "./contextmenu";
 import type { Filter } from "./filters";
 import type { ParamDefMap } from "./infertypes";
+import type { ColorBinning } from "./lib/colors";
 import type { PersistentState } from "./lib/savedstate";
 import type {
   Datapoint,
@@ -30,6 +31,8 @@ export interface HiPlotPluginDataWithoutDatasets {
   params_def_unfiltered: ParamDefMap;
 
   get_color_for_row: (row: Datapoint, opacity: number) => string;
+  /** Colors of the color-by column, for displays that group rows by color. */
+  color_binning: ColorBinning;
   render_row_text: (row: Datapoint) => string;
   dp_lookup: DatapointLookup;
 

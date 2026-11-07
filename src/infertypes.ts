@@ -5,9 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import color from "color";
 import * as d3 from "d3";
-import { categoricalColorScheme } from "./lib/categoricalcolors";
 import {
   continuousFromD3,
   d3_scale_categorical,
@@ -32,9 +30,6 @@ export interface ParamDef extends HiPlotValueDef {
   ticks_format?: string;
   label_css: string;
   label_html: string;
-  __val2color?: { [value: string]: string };
-  __colorscale?: { scale: Scale; type: ParamType };
-  __colormap?: ColorMap;
 }
 
 export interface ParamDefMap {
@@ -43,9 +38,6 @@ export interface ParamDefMap {
 
 /** A scale built for one column, tagged with the column type it was built for. */
 export type ParamScale = Scale & { readonly paramType: ParamType };
-
-/** Maps a position in [0, 1] to a CSS color. */
-type ColorMap = (t: number) => string;
 
 export function isParamType(value: unknown): value is ParamType {
   return Object.values(ParamType).includes(value as ParamType);
@@ -165,148 +157,6 @@ export function scale_pixels_range(
     range: [scale.invert(extents[0]), scale.invert(extents[1])],
     include_infnans: extents[0] <= infinityPixel && infinityPixel <= extents[1],
   };
-}
-
-const CATEGORICAL_SCHEME = [
-  "#1f77b4",
-  "#ff7f0e",
-  "#d62728",
-  "#9467bd",
-  "#8c564b",
-  "#e377c2",
-  "#7f7f7f",
-  "#bcbd22",
-  "#17becf",
-  "#1f77b4",
-  "#aec7e8",
-  "#ffbb78",
-  "#ff9896",
-  "#c5b0d5",
-  "#c49c94",
-  "#f7b6d2",
-  "#c7c7c7",
-  "#dbdb8d",
-  "#9edae5",
-  "#2ca02c",
-];
-
-function compute_val2color(pd: ParamDef): { [value: string]: string } {
-  if (pd.__val2color !== undefined) {
-    return pd.__val2color;
-  }
-  const val2color: { [value: string]: string } = { ...pd.colors };
-  pd.distinct_values.forEach((value, i) => {
-    const key = String(value);
-    if (val2color[key]) {
-      return;
-    }
-    val2color[key] =
-      pd.distinct_values.length <= CATEGORICAL_SCHEME.length
-        ? color(CATEGORICAL_SCHEME[i]).rgb().string()
-        : categoricalColorScheme(key);
-  });
-  pd.__val2color = val2color;
-  return val2color;
-}
-
-function lookupD3ColorExport(name: string, description: string): unknown {
-  const exported = (d3 as unknown as { [name: string]: unknown })[name];
-  if (exported === undefined) {
-    throw new Error(`Invalid color map ${name} ${description}`);
-  }
-  return exported;
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-
-/** A d3 scheme is either a list of colors or a list of such lists indexed by size. */
-function schemeColors(scheme: unknown, name: string): string[] {
-  if (isStringArray(scheme)) {
-    return scheme;
-  }
-  if (Array.isArray(scheme)) {
-    const largest: unknown = scheme[scheme.length - 1];
-    if (isStringArray(largest)) {
-      return largest;
-    }
-  }
-  throw new Error(`Color scheme ${name} is not a list of colors`);
-}
-
-function parseColorMap(full_name: string, description: string): ColorMap {
-  if (!full_name) {
-    return d3.interpolateTurbo;
-  }
-  const [name, modifiers] = full_name.split("#");
-  const exported = lookupD3ColorExport(name, description);
-  let fn: ColorMap;
-  if (name.startsWith("interpolate")) {
-    if (typeof exported !== "function") {
-      throw new Error(`Invalid color map ${name} ${description}`);
-    }
-    const interpolate = exported as (t: number) => string;
-    fn = (t) => interpolate(t);
-  } else {
-    const colors = schemeColors(exported, name);
-    fn = (t) => colors[Math.max(0, Math.min(colors.length - 1, Math.floor(t * colors.length)))];
-  }
-  if (modifiers !== undefined) {
-    modifiers.split(",").forEach((modifier_name) => {
-      if (modifier_name === "inverse") {
-        const orig_fn = fn;
-        fn = (t) => orig_fn(-t);
-      }
-    });
-  }
-  return fn;
-}
-
-function getColorMap(pd: ParamDef, defaultColorMap: string | null): ColorMap {
-  if (pd.colormap) {
-    if (pd.__colormap === undefined) {
-      pd.__colormap = parseColorMap(pd.colormap, `for column ${pd.name}`);
-    }
-    return pd.__colormap;
-  }
-  return parseColorMap(defaultColorMap ?? "", `(global default color map)`);
-}
-
-const MISSING_COLOR = (alpha: number): string => `rgb(100,100,100,${alpha})`;
-
-export function colorScheme(
-  pd: ParamDef,
-  value: DatapointValue,
-  alpha: number,
-  defaultColorMap: string | null,
-): string {
-  if (pd.type === ParamType.CATEGORICAL) {
-    const c = compute_val2color(pd)[String(value)];
-    if (c === undefined) {
-      return MISSING_COLOR(alpha);
-    }
-    console.assert(c.startsWith("rgb(") || c.startsWith("hsl("), c);
-    return `${c.slice(0, 3)}a${c.slice(3, c.length - 1)},${alpha})`;
-  }
-  if (value === undefined || value === null || is_special_numeric(value)) {
-    return MISSING_COLOR(alpha);
-  }
-  if (pd.__colorscale === undefined || pd.__colorscale.type !== pd.type) {
-    const scale = create_d3_scale_without_outliers(pd);
-    scale.range([0, 1]);
-    pd.__colorscale = { scale, type: pd.type };
-  }
-  const colr = Math.max(0, Math.min(1, pd.__colorscale.scale(value)));
-  const interpColFn = getColorMap(pd, defaultColorMap);
-  try {
-    const rgb = color(interpColFn(colr)).rgb().object();
-    return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
-  } catch (err) {
-    throw new Error(
-      `Error below happened while computing color using color map "${pd.colormap}" for column ${pd.name}: is the colormap valid? (${String(err)})`,
-    );
-  }
 }
 
 /**
