@@ -165,30 +165,42 @@ function installProbe(): void {
   document.addEventListener("DOMContentLoaded", observeTable);
 }
 
-/** Waits until no line has been drawn for a quiet period; returns the last draw time. */
-async function waitForDrawsToSettle(page: Page, since: number): Promise<number> {
+/**
+ * Waits until no line has been drawn for a quiet period and returns the last draw
+ * time. With `requireDraw`, at least one draw must follow `since`; otherwise a
+ * quiet period right after `since` means the picture was already complete, and
+ * `since` itself is returned.
+ */
+async function waitForDrawsToSettle(
+  page: Page,
+  since: number,
+  requireDraw = true,
+): Promise<number> {
   const handle = await page.waitForFunction(
-    ({ since, quietMs, quietFrames }) => {
+    ({ since, quietMs, quietFrames, requireDraw }) => {
       const probe = window.__bench;
+      const drewSince = probe.lastDraw > since;
+      if (!drewSince) {
+        return !requireDraw && performance.now() - since >= quietMs ? since : false;
+      }
       const settled =
-        probe.lastDraw > since &&
         performance.now() - probe.lastDraw >= quietMs &&
         probe.frameCount - probe.framesAtLastDraw >= quietFrames;
       return settled ? probe.lastDraw : false;
     },
-    { since, quietMs: SETTLE_QUIET_MS, quietFrames: SETTLE_QUIET_FRAMES },
+    { since, quietMs: SETTLE_QUIET_MS, quietFrames: SETTLE_QUIET_FRAMES, requireDraw },
     { timeout: SETTLE_TIMEOUT_MS, polling: 100 },
   );
   return (await handle.jsonValue()) as number;
 }
 
+/** Like `waitForDrawsToSettle(page, since, false)`, for mutations of the table. */
 async function waitForTableToSettle(page: Page, since: number): Promise<number> {
   const handle = await page.waitForFunction(
     ({ since, quietMs }) => {
       const probe = window.__bench;
-      const settled =
-        probe.lastTableMutation > since && performance.now() - probe.lastTableMutation >= quietMs;
-      return settled ? probe.lastTableMutation : false;
+      const last = Math.max(probe.lastTableMutation, since);
+      return performance.now() - last >= quietMs ? last : false;
     },
     { since, quietMs: SETTLE_QUIET_MS },
     { timeout: SETTLE_TIMEOUT_MS, polling: 100 },
@@ -312,7 +324,7 @@ async function runOnce(page: Page, url: string): Promise<RepResult> {
   });
   const redrawMs = await measureRedraw(page);
   const { drag, mouseUpAt } = await measureBrush(page);
-  const linesSettledAt = await waitForDrawsToSettle(page, mouseUpAt);
+  const linesSettledAt = await waitForDrawsToSettle(page, mouseUpAt, false);
   const tableSettledAt = await waitForTableToSettle(page, mouseUpAt);
   const jsHeapMB = await page.evaluate(
     () =>
