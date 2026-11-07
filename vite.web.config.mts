@@ -5,6 +5,7 @@ import postcss from "postcss";
 import prefixSelector from "postcss-prefix-selector";
 import { defineConfig, type Plugin } from "vite";
 import cssInjectedByJsPlugin from "vite-plugin-css-injected-by-js";
+import istanbul from "vite-plugin-istanbul";
 
 // Vite plugin that scopes vendor CSS (Bootstrap, DataTables) under hiplot theme classes
 // so styles don't leak into parent applications
@@ -122,6 +123,7 @@ function copyWebBundlesPlugin(entryName: string) {
 
 export default defineConfig(({ mode }) => {
   const isDebug = mode === "development";
+  const collectCoverage = process.env.HIPLOT_COVERAGE === "1";
   const entryName = process.env.HIPLOT_WEB_NAME ?? "hiplot";
   const entryPath =
     process.env.HIPLOT_WEB_ENTRY ?? path.resolve(__dirname, "src", "hiplot_web.tsx");
@@ -131,6 +133,18 @@ export default defineConfig(({ mode }) => {
       react(),
       cssInjectedByJsPlugin(),
       copyWebBundlesPlugin(entryName),
+      // tools/e2e_coverage.sh builds an instrumented bundle for the Playwright suite.
+      ...(collectCoverage
+        ? [
+            istanbul({
+              include: ["src/**/*.ts", "src/**/*.tsx"],
+              exclude: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+              extension: [".ts", ".tsx"],
+              forceBuildInstrument: true,
+              requireEnv: false,
+            }),
+          ]
+        : []),
     ],
     resolve: {
       dedupe: ["jquery"],

@@ -5,94 +5,64 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Allow only one concurrent deployment
+# One deployment at a time; a newer push supersedes a pending one.
 concurrency:
   group: pages
   cancel-in-progress: true
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
-  pages: write
-  id-token: write
+
+env:
+  UV_VERSION: "0.13.7"
 
 jobs:
   build-js:
-    name: Build JavaScript
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Build production bundle
-        run: bun run build
-
-      - name: Upload JS bundle
-        uses: actions/upload-artifact@v6
-        with:
-          name: js-bundle
-          path: hiplot/static/built/
-          retention-days: 1
+    uses: ./.github/workflows/build-js.yml
+    with:
+      retention-days: 1
 
   build-docs:
     name: Build Documentation
     needs: build-js
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Download JS bundle
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download bundles
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: js-bundle
           path: hiplot/static/built/
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Set up Python
-        run: uv python install 3.12
-
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.12"
       - name: Install dependencies
         run: uv sync --no-default-groups --group docs
-
       - name: Generate HiPlot demos
         run: |
           mkdir -p docs/_static/demo/
-          PAGES=$(uv run python -c "import hiplot.fetchers; print('\n'.join(list(hiplot.fetchers.README_DEMOS.keys())))")
+          PAGES=$(uv run python -c "import hiplot.fetchers; print('\n'.join(hiplot.fetchers.README_DEMOS))")
           for p in $PAGES; do
             echo "Generating demo: $p"
-            uv run hiplot-render --format html $p > docs/_static/demo/$p.html
+            uv run hiplot-render --format html "$p" > "docs/_static/demo/$p.html"
           done
-
       - name: Generate data demos
         run: |
-          DATA_PATH="assets/data"
-          for p in $(ls $DATA_PATH); do
-            echo "Generating demo: $p"
-            uv run hiplot-render --format html $DATA_PATH/$p > docs/_static/demo/$p.html
+          for p in assets/data/*; do
+            name=$(basename "$p")
+            echo "Generating demo: $name"
+            uv run hiplot-render --format html "$p" > "docs/_static/demo/$name.html"
           done
-
       - name: Generate HiPlot upload page
         run: |
-          uv run python -c "from pathlib import Path; import hiplot; Path('docs/_static/hiplot_upload.html').write_text(hiplot.render.make_experiment_standalone_page({'dataProviderName': 'upload'}))"
+          uv run python -c "from pathlib import Path; import hiplot.render; Path('docs/_static/hiplot_upload.html').write_text(hiplot.render.make_experiment_standalone_page({'dataProviderName': 'upload'}))"
           cp -r hiplot/static docs/_static/static
           cp hiplot/static/built/hiplot.bundle.js docs/_static/hiplot.bundle.js
-
       - name: Build Sphinx docs
-        run: |
-          cd docs/
-          uv run make html
-
+        run: uv run make -C docs html
       - name: Upload docs artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: docs/_build/html
 
@@ -100,13 +70,15 @@ jobs:
     name: Deploy to GitHub Pages
     needs: build-docs
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Setup Pages
-        uses: actions/configure-pages@v5
-
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

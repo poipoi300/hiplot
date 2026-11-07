@@ -61,6 +61,7 @@ dev = [
     "mypy>=1.14",
     "pre-commit>=4.0",
     "ruff>=0.14",
+    "pyyaml>=6.0",
     "ipykernel",
     "pandas",
     "streamlit>=0.63",

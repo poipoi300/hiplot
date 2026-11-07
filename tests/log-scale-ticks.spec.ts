@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 async function loadDemo(page, uri = "demo_decay") {
   await page.goto("/");

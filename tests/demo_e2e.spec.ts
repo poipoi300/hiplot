@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 test("load demo experiment", async ({ page }) => {
   // 1. Visit the root page

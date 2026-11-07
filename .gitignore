@@ -123,3 +123,8 @@ npm-package
 .playwright-mcp
 test_data/
 test-results
+
+# Coverage reports and instrumented-bundle output
+coverage/
+.nyc_output/
+coverage.lcov

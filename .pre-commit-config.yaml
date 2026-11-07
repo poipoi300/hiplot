@@ -1,19 +1,141 @@
+# Anti-slop gates. Fast checks block the commit; slow ones block the push.
+# Everything runs locally via `language: system` — no hooks are fetched from
+# GitHub, so this works fully offline after `uv sync` and `bun install`.
+#
+# Install once:  uv run pre-commit install --install-hooks -t pre-commit -t pre-push
+# Run manually:  uv run pre-commit run --all-files
+#
+# Python tool versions are pinned in [dependency-groups] dev in pyproject.toml
+# (uv.lock) and frontend tool versions in package.json (bun.lock), so `uv run`
+# and `bun run` here use exactly what CI uses. Bypass in a genuine emergency
+# with `git commit --no-verify` — CI still enforces the same gates on push.
+
+default_install_hook_types: [pre-commit, pre-push]
+exclude: '^(\.venv|node_modules|npm-dist|hiplot/static/built)/'
+
 repos:
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v2.2.3
+  # Repo hygiene: trivial, dependency-free checks (see tools/repo_hygiene.py
+  # for what each one does).
+  - repo: local
     hooks:
       - id: trailing-whitespace
+        name: trailing whitespace
+        entry: uv run python tools/repo_hygiene.py trailing-whitespace
+        language: system
+        types: [text]
+        exclude: '\.(md|txt)$'  # keep hard line breaks in prose
+
       - id: end-of-file-fixer
+        name: end of file fixer
+        entry: uv run python tools/repo_hygiene.py end-of-file-fixer
+        language: system
+        types: [text]
+
+      - id: check-merge-conflict
+        name: check for merge conflict markers
+        entry: uv run python tools/repo_hygiene.py check-merge-conflict
+        language: system
+        types: [text]
+
+      - id: check-case-conflict
+        name: check for case-insensitive filename collisions
+        entry: uv run python tools/repo_hygiene.py check-case-conflict
+        language: system
+        pass_filenames: false
+        always_run: true
+
       - id: check-added-large-files
-  - repo: https://github.com/pre-commit/mirrors-autopep8
-    rev: v1.4.4 # Use the sha / tag you want to point at
+        name: check for added large files (>2MB)
+        entry: uv run python tools/repo_hygiene.py check-added-large-files --max-kb=2048
+        language: system
+        # The Colab notebooks predate the gate; their rendered outputs are the documentation.
+        exclude: '^examples/.*\.ipynb$'
+
+      - id: check-yaml
+        name: check yaml syntax
+        entry: uv run python tools/repo_hygiene.py check-yaml
+        language: system
+        types: [yaml]
+
+      - id: check-toml
+        name: check toml syntax
+        entry: uv run python tools/repo_hygiene.py check-toml
+        language: system
+        types: [toml]
+
+      - id: check-json
+        name: check json syntax
+        entry: uv run python tools/repo_hygiene.py check-json
+        language: system
+        types: [json]
+
+      - id: debug-statements
+        name: check for debug statements
+        entry: uv run python tools/repo_hygiene.py debug-statements
+        language: system
+        types: [python]
+
+      - id: detect-private-key
+        name: detect private keys
+        entry: uv run python tools/repo_hygiene.py detect-private-key
+        language: system
+        types: [text]
+
+  # Fast, every-commit gates: format then lint then types.
+  - repo: local
     hooks:
-      - id: autopep8
-        exclude: ^scripts/
-        args: ["-i", "--max-line-length=140"]
-  - repo: https://github.com/pre-commit/mirrors-pylint
-    rev: v2.3.1
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --force-exclude --fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      # Types run whole-project (namespace-package layout needs cross-file
+      # resolution), so filenames are not passed. Fast on a warm cache.
+      - id: mypy
+        name: mypy
+        entry: uv run mypy .
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        require_serial: true
+
+  # Frontend gates: Biome (format + lint) then the TypeScript compiler. Both
+  # run whole-project (Biome is milliseconds; tsc needs the full program
+  # anyway), so filenames are not passed.
+  - repo: local
     hooks:
-      - id: pylint
-        exclude: ^scripts/
-        args: ["--disable=bad-continuation"] # coz incompatible with black
+      - id: biome
+        name: biome check
+        entry: bun run biome check --write .
+        language: system
+        files: '\.(ts|tsx|mts|json|css)$'
+        pass_filenames: false
+        require_serial: true
+
+      - id: tsc
+        name: tsc --noEmit
+        entry: bun run typecheck
+        language: system
+        files: '\.(ts|tsx|mts|css)$|^tsconfig.*\.json$'
+        pass_filenames: false
+        require_serial: true
+
+  # Slow gates: only on push.
+  - repo: local
+    hooks:
+      - id: tests-and-diff-coverage
+        name: pytest + bun test + Playwright + diff-cover (>=90% on changed lines)
+        entry: bash tools/stack_coverage_gate.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        require_serial: true
