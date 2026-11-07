@@ -35,7 +35,8 @@ instrumentation the harness installs before any page script runs, so every
 version of HiPlot is measured the same way. "Last draw" means no further draw
 call for 500 ms and 20 frames. Each cell is the median of three page loads.
 
-Reproduce:
+Reproduce with `bash bench/run.sh` (builds the bundle, renders the pages into
+`$HIPLOT_BENCH_DIR`, measures them), or step by step:
 
 ```bash
 bun run build

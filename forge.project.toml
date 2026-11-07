@@ -1,0 +1,111 @@
+schema = 1
+
+[project]
+name = "HiPlot (hiplot-mm)"
+id = "hiplot-mm"
+summary = "Interactive parallel coordinates for high-dimensional data, from Python or the browser"
+kind = "library"
+languages = ["python", "typescript"]
+tags = ["visualization", "parallel-coordinates", "fork"]
+homepage = "https://github.com/mindthemath/hiplot"
+docs = "README.md"
+
+[v1]
+source = "milestones"
+
+[[v1.milestones]]
+id = "forge-conversion"
+title = "Forge gates, strict types, unit tests, CI hardening"
+weight = 3
+done = true
+
+[[v1.milestones]]
+id = "rendering-performance"
+title = "Cached, batched and WebGL rendering; columnar brushing; compact payload"
+weight = 4
+done = false
+
+[[v1.milestones]]
+id = "design"
+title = "Density rendering, palettes, legend, axes, theming, affordances"
+weight = 3
+done = false
+
+[[checks]]
+id = "pytest"
+label = "Python tests"
+argv = ["uv", "run", "pytest", "-q", "--junitxml", "{report_path}"]
+report = "junit"
+stage = "push"
+timeout_s = 600
+
+[[checks]]
+id = "bun-test"
+label = "Frontend unit tests"
+argv = ["bun", "test", "--reporter=junit", "--reporter-outfile={report_path}"]
+report = "junit"
+stage = "push"
+
+[[checks]]
+id = "playwright"
+label = "End-to-end tests"
+argv = ["bun", "run", "test:js"]
+stage = "push"
+timeout_s = 1200
+
+[[checks]]
+id = "ruff"
+label = "Ruff lint"
+argv = ["uv", "run", "ruff", "check", "."]
+stage = "commit"
+
+[[checks]]
+id = "mypy"
+label = "mypy --strict"
+argv = ["uv", "run", "mypy", "."]
+stage = "commit"
+
+[[checks]]
+id = "biome"
+label = "Biome check"
+argv = ["bun", "run", "biome", "check", "."]
+stage = "commit"
+
+[[checks]]
+id = "tsc"
+label = "TypeScript (strict)"
+argv = ["bun", "run", "typecheck"]
+stage = "commit"
+
+[[checks]]
+id = "diff-coverage"
+label = "Tests + diff coverage (90% of changed lines)"
+argv = ["bash", "tools/stack_coverage_gate.sh"]
+stage = "push"
+timeout_s = 1800
+
+[[services]]
+id = "server"
+label = "HiPlot server"
+description = "The hiplot web server on this checkout's bundle; load `demo` or a CSV path in the text box."
+argv = ["uv", "run", "--extra", "server", "hiplot", "--host", "{host}", "--port", "{port}"]
+port = { policy = "dynamic", preferred = 8765 }
+ready = { kind = "http", path = "/" }
+open = "/"
+
+[[actions]]
+id = "build"
+label = "Build the bundles"
+description = "bun run build: the JavaScript bundles the Python package ships"
+argv = ["bun", "run", "build"]
+timeout_s = 600
+
+[[actions]]
+id = "benchmark"
+label = "Run the rendering benchmark"
+description = "Generate the 5k/20k/50k experiments and measure them in Chromium (see docs/PERFORMANCE.md)"
+argv = ["bash", "bench/run.sh"]
+timeout_s = 3600
+
+[launch]
+primary_service = "server"

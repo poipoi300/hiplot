@@ -77,46 +77,37 @@ hip.Experiment.from_iterable(data).display()
 
 ## Development
 
-To build from source:
+HiPlot is Python 3.12+ (built with [uv](https://docs.astral.sh/uv/)) plus a
+TypeScript frontend (React, d3, built with [Bun](https://bun.sh) and Vite).
+Contributor rules, including for coding agents, are in [AGENTS.md](AGENTS.md).
 
 ```bash
-# Install frontend dependencies
-bun install
-
-# Install default contributor dependencies (dev/test)
-uv sync
-
-# Build JavaScript bundles
-bun run build
-
-# Build Python package
-uv build
-
-# Or use the all-in-one build script
-./build.sh
+bun install && uv sync          # dependencies
+bun run build                   # JavaScript bundles into hiplot/static/built/
+uv run pre-commit install -t pre-commit -t pre-push   # quality gates, once
+uv run --extra server hiplot --port 8765              # dev server (load `demo`)
 ```
 
-Common contributor tasks:
+| Task | Command |
+|---|---|
+| Python tests | `uv run pytest` |
+| Frontend unit tests | `bun test` |
+| End-to-end tests (Playwright) | `bun run test:js` |
+| Format and lint | `uv run ruff format . && uv run ruff check .` · `bun run biome check --write .` |
+| Type checks | `uv run mypy .` · `bun run typecheck` |
+| Every commit gate | `uv run pre-commit run --all-files` |
+| Tests + 90% diff coverage (push gate) | `bash tools/stack_coverage_gate.sh` |
+| Rendering benchmark | `bash bench/run.sh` (results in [docs/PERFORMANCE.md](docs/PERFORMANCE.md)) |
+| Docs | `uv run --no-default-groups --group docs sphinx-build -b html docs docs/_build/html` |
+| Package | `bun run build && uv build` (or `./build.sh`, which also emits the npm types) |
 
-```bash
-# Run Python tests
-uv run pytest
+Commits run the fast gates (hygiene, ruff, mypy --strict, Biome, tsc
+--strict); pushes run pytest, `bun test` and Playwright under coverage and
+require 90% coverage of changed lines. CI runs the same gates plus Python
+3.12 to 3.15, Windows, package installs and the docs build.
 
-# Build docs (docs deps resolved on-demand)
-uv run --no-default-groups --group docs sphinx-build -b html docs docs/_build/html
-```
-
-**Output directories:**
-
-- `npm-dist/` - NPM package artifacts
-- `dist/` - Python wheel and sdist
-- `hiplot/static/built/` - JS bundle included in Python package
-
-**Run the dev server:**
-
-```bash
-uv run --extra server hiplot --port 8765
-```
+**Output directories:** `hiplot/static/built/` (bundles shipped in the
+wheel), `dist/` (wheel and sdist), `npm-dist/` (npm package).
 
 ## Citing
 
