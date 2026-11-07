@@ -36,6 +36,7 @@ import {
   tickCountFor,
   valueFormatter,
 } from "./axisformat";
+import { ColumnPicker, type PickableColumn } from "./columnpicker";
 import { LineGeometry } from "./geometry";
 import pstyle from "./parallel.module.css";
 import { type AxisSelection, BrushMasks } from "./selection";
@@ -210,8 +211,65 @@ const TITLE_START_Y = -18;
 const TITLE_MAX_PIXELS = 150;
 /** The drag grip sits between the axis top and its title. */
 const GRIP_OFFSET_Y = -9;
-/** Brush range labels sit right of the brush band. */
-const BRUSH_LABEL_X = 18;
+/**
+ * Brush range tags: pills centered on the axis, outside the brush at its top
+ * and bottom edges, or just inside an edge that leaves no room outside.
+ */
+const BRUSH_TAG_HEIGHT = 18;
+const BRUSH_TAG_PADDING = 6;
+const BRUSH_TAG_GAP = 3;
+const BRUSH_TAG_MAX_PIXELS = 120;
+
+/**
+ * Horizontal layout. Tick labels sit `TICK_LABEL_OFFSET` left of their axis
+ * and are cut to `TICK_LABEL_MAX_PIXELS`; neighboring axes stay at least
+ * `AXIS_GAP` clear of the widest one, the plot scrolls sideways when they do
+ * not fit, and the last axis keeps room for its whole title.
+ */
+const TICK_LABEL_OFFSET = 9;
+/** Duration of the axis transitions after reordering, rescaling or inverting. */
+const AXIS_TRANSITION_MS = 720;
+const TICK_LABEL_MAX_PIXELS = 140;
+const AXIS_GAP = 24;
+const MIN_FIRST_AXIS_X = 40;
+const LAST_TITLE_ROOM =
+  TITLE_START_X + TITLE_MAX_PIXELS * Math.cos((TITLE_ANGLE_DEGREES * Math.PI) / 180) + 8;
+
+/**
+ * Cuts the first text node of `element` with an ellipsis until it is at most
+ * `maxLength` pixels long, and returns the length it ends up with.
+ */
+function fitText(element: SVGTextElement, fullText: string, maxLength: number): number {
+  const textNode = element.firstChild;
+  if (textNode === null || textNode.nodeType !== Node.TEXT_NODE) {
+    throw new Error("Text element lost its text node");
+  }
+  textNode.textContent = fullText;
+  const fullLength = element.getComputedTextLength();
+  if (fullLength <= maxLength) {
+    return fullLength;
+  }
+  let low = 0;
+  let high = fullText.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    textNode.textContent = `${fullText.slice(0, middle)}…`;
+    if (element.getComputedTextLength() <= maxLength) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  textNode.textContent = `${fullText.slice(0, low)}…`;
+  return element.getComputedTextLength();
+}
+
+/** A value tag at one end of a brush; `y` is the tag's vertical center. */
+interface BrushTag {
+  edge: "top" | "bottom";
+  y: number;
+  text: string;
+}
 
 /** Widths of a drawn line, of a highlighted line and of the halo around it, in CSS pixels. */
 const LINE_WIDTH = 1;
@@ -285,8 +343,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   xscale: d3.ScalePoint<string> = d3.scalePoint<string>();
 
+  /** Widest tick label drawn, which sets the minimum spacing between axes. */
+  tickLabelWidth = 40;
+
   // Rendering
+  /** The frame that scrolls sideways, and the plot inside it. */
   root_ref = React.createRef<HTMLDivElement>();
+  plot_ref = React.createRef<HTMLDivElement>();
   foreground_ref = React.createRef<HTMLCanvasElement>();
   foreground: CanvasRenderingContext2D | null = null;
   highlighted_ref = React.createRef<HTMLCanvasElement>();
@@ -395,6 +458,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.props.context_menu_ref?.current?.removeCallbacks(this);
     this.cancelBrushMove();
     this.sendBrushExtents.cancel();
+    this.fitTickLabelsAfterTransition.cancel();
   }
   componentDidUpdate(prevProps: ParallelPlotData, prevState: ParallelPlotState) {
     if (prevState.height !== this.state.height || prevState.width !== this.state.width) {
@@ -414,12 +478,17 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.props.persistentState.set("order", this.state.order);
     }
     if (prevState.dimensions !== this.state.dimensions && this.dimensions_dom !== null) {
-      const g = d3.select(this.svgg_ref.current).selectAll<SVGGElement, string>(".dimension");
-      this.xscale.domain(this.state.dimensions);
       this.dimensions_dom.filter((p) => this.state.dimensions.indexOf(p) === -1).remove();
       this.dimensions_dom = this.dimensions_dom.filter(
         (p) => this.state.dimensions.indexOf(p) !== -1,
       );
+      if (prevState.dimensions.length !== this.state.dimensions.length) {
+        // Spacing and plot width follow the number of axes.
+        this.compute_dimensions();
+        this.dimensions_dom.selectAll<SVGGElement, string>(`.${pstyle.brush}`).call(this.d3brush);
+      }
+      this.xscale.domain(this.state.dimensions);
+      const g = d3.select(this.svgg_ref.current).selectAll<SVGGElement, string>(".dimension");
       const translate = (p: string) => `translate(${this.position(p)})`;
       if (this.state.dragging) {
         g.attr("transform", translate);
@@ -574,6 +643,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
                 : `Straight for ${rows} rows (curved up to ${limit})`}
             </span>
           )}
+          <ColumnPicker
+            columns={this.pickableColumns()}
+            shown={new Set(this.state.dimensions)}
+            onShow={(names) => this.setColumnsShown(names, true)}
+            onHide={(names) => this.setColumnsShown(names, false)}
+          />
           <button
             type="button"
             className={pstyle.toolbarButton}
@@ -590,28 +665,28 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             className={`${pstyle["parallel-plot-chart"]} pplot-root`}
             style={{ height: this.state.height }}
           >
-            <canvas ref={this.foreground_ref}></canvas>
-            <canvas ref={this.highlighted_ref}></canvas>
-            <svg
-              ref={this.svg_ref}
-              width={this.state.width}
-              height={this.state.height}
-              role="img"
-              aria-label="Parallel coordinates axes"
-              onMouseMove={this.onPointerMove}
-              onMouseLeave={this.clearHover}
-            >
-              <g ref={this.svgg_ref} transform={`translate(${this.m[3]}, ${this.m[0]})`}></g>
-            </svg>
-            {this.state.hover !== null && (
-              <div
-                className={pstyle.tooltip}
-                style={{ left: this.state.hover.x, top: this.state.hover.y }}
-                data-testid="line-tooltip"
+            <div ref={this.plot_ref} className={pstyle.plot}>
+              <canvas ref={this.foreground_ref}></canvas>
+              <canvas ref={this.highlighted_ref}></canvas>
+              <svg
+                ref={this.svg_ref}
+                role="img"
+                aria-label="Parallel coordinates axes"
+                onMouseMove={this.onPointerMove}
+                onMouseLeave={this.clearHover}
               >
-                {this.state.hover.text}
-              </div>
-            )}
+                <g ref={this.svgg_ref} transform={`translate(${this.m[3]}, ${this.m[0]})`}></g>
+              </svg>
+              {this.state.hover !== null && (
+                <div
+                  className={pstyle.tooltip}
+                  style={{ left: this.state.hover.x, top: this.state.hover.y }}
+                  data-testid="line-tooltip"
+                >
+                  {this.state.hover.text}
+                </div>
+              )}
+            </div>
           </div>
         </ResizableH>
       </>
@@ -1040,6 +1115,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         .text("Drag up or down to brush along this axis");
 
       dimensions_dom.selectAll(".extent").append("title").text("Drag or resize this filter");
+      me.fitTickLabels();
     }
 
     function brush(publish: boolean): void {
@@ -1141,6 +1217,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         d3.select(this).call(me.get_axis(d));
       });
       me.updateAxisTitlesAnglesAndFontSize();
+      me.fitTickLabels();
 
       me.redrawLines();
       this.props.sendMessage("height_changed", () => null);
@@ -1227,7 +1304,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
    * right edge; the full name is in the tooltip.
    */
   updateAxisTitlesAnglesAndFontSize() {
-    const svgWidth = this.state.width;
+    const svgWidth = this.axisLayout().contentWidth;
     const leftMargin = this.m[3];
     const angle = (TITLE_ANGLE_DEGREES * Math.PI) / 180;
     const me = this;
@@ -1247,35 +1324,67 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         "transform",
         `translate(${TITLE_START_X}, ${TITLE_START_Y}) rotate(${-TITLE_ANGLE_DEGREES})`,
       );
-      const textNode = this.firstChild;
-      if (textNode === null || textNode.nodeType !== Node.TEXT_NODE) {
-        throw new Error("Axis title lost its text node");
-      }
-      textNode.textContent = fullText;
-      if (this.getComputedTextLength() <= maxLength) {
-        return;
-      }
-      let low = 0;
-      let high = fullText.length;
-      while (low < high) {
-        const mid = Math.ceil((low + high) / 2);
-        textNode.textContent = `${fullText.slice(0, mid)}…`;
-        if (this.getComputedTextLength() <= maxLength) {
-          low = mid;
-        } else {
-          high = mid - 1;
-        }
-      }
-      textNode.textContent = `${fullText.slice(0, low)}…`;
+      fitText(this, fullText, maxLength);
     });
   }
 
-  /** Value labels at both ends of each brush. */
+  /**
+   * Cuts tick labels longer than TICK_LABEL_MAX_PIXELS (their full text goes
+   * in a tooltip) and lays the axes out again when the widest label changed.
+   */
+  private fitTickLabels(): void {
+    let widest = 0;
+    this.dimensions_dom
+      ?.selectAll<SVGTextElement, AxisValue>(`.${pstyle.axis} .tick text`)
+      .each(function (this: SVGTextElement) {
+        const fullText = this.firstChild?.textContent ?? "";
+        const length = fitText(this, fullText, TICK_LABEL_MAX_PIXELS);
+        if (this.firstChild?.textContent !== fullText) {
+          d3.select(this).append("title").text(fullText);
+        }
+        widest = Math.max(widest, length);
+      });
+    if (Math.abs(widest - this.tickLabelWidth) > 0.5) {
+      this.tickLabelWidth = widest;
+      this.on_resize?.();
+    }
+  }
+
+  /**
+   * Where the axes go: the first axis leaves room for its tick labels, axes
+   * are spread over the available width but never closer than their labels
+   * allow, and the last one keeps room for its title. Wider than the
+   * container, the plot scrolls sideways.
+   */
+  axisLayout(): { first: number; spacing: number; contentWidth: number } {
+    const count = this.state.dimensions.length;
+    const labelRoom = this.tickLabelWidth + TICK_LABEL_OFFSET;
+    const first = Math.max(MIN_FIRST_AXIS_X, labelRoom + 4 - this.m[3]);
+    const fixed = this.m[3] + first + LAST_TITLE_ROOM + this.m[1];
+    const spacing =
+      count <= 1 ? 0 : Math.max(labelRoom + AXIS_GAP, (this.state.width - fixed) / (count - 1));
+    return {
+      first,
+      spacing,
+      contentWidth: Math.max(this.state.width, Math.ceil(fixed + spacing * (count - 1))),
+    };
+  }
+
+  /** Value tags at the top and bottom edges of each brush. */
   private updateBrushRangeLabels(extents: BrushExtents): void {
+    const tagCenter = (edge: "top" | "bottom", pixel: number): number => {
+      const offset = BRUSH_TAG_GAP + BRUSH_TAG_HEIGHT / 2;
+      if (edge === "top") {
+        return pixel - offset < BRUSH_TAG_HEIGHT / 2 ? pixel + offset : pixel - offset;
+      }
+      return pixel + offset > this.h + this.m[2] - BRUSH_TAG_HEIGHT / 2
+        ? pixel - offset
+        : pixel + offset;
+    };
     this.dimensions_dom?.each((dimension, index, nodes) => {
       const extent = extents[dimension];
       const scale = this.yscale[dimension];
-      const labels: { y: number; text: string; baseline: string }[] = [];
+      const labels: BrushTag[] = [];
       if (extent !== null && extent !== undefined && scale !== undefined) {
         const [top, bottom] = extent;
         const valueAt = (pixel: number): string => {
@@ -1292,40 +1401,64 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             : "";
         };
         const range = scale_pixels_range(scale, extent);
-        if (range.type === ParamType.CATEGORICAL) {
-          labels.push(
-            { y: top - 4, text: range.values[0] ?? "", baseline: "auto" },
-            {
-              y: bottom + 4,
-              text: range.values[range.values.length - 1] ?? "",
-              baseline: "hanging",
-            },
-          );
-        } else {
-          labels.push(
-            { y: top - 4, text: valueAt(top), baseline: "auto" },
-            { y: bottom + 4, text: valueAt(bottom), baseline: "hanging" },
-          );
-        }
+        const [topText, bottomText] =
+          range.type === ParamType.CATEGORICAL
+            ? [range.values[0] ?? "", range.values[range.values.length - 1] ?? ""]
+            : [valueAt(top), valueAt(bottom)];
+        labels.push(
+          { edge: "top", y: tagCenter("top", top), text: topText },
+          { edge: "bottom", y: tagCenter("bottom", bottom), text: bottomText },
+        );
       }
-      d3.select(nodes[index])
-        .selectAll<SVGTextElement, { y: number; text: string; baseline: string }>(
-          `.${pstyle.brushRange}`,
-        )
-        .data(labels)
-        .join("text")
-        .classed(pstyle.brushRange, true)
-        .classed("pplot-brush-range", true)
-        .attr("x", BRUSH_LABEL_X)
-        .attr("y", (label) => label.y)
-        .attr("dominant-baseline", (label) => label.baseline)
-        .text((label) => label.text);
+      const tags = d3
+        .select(nodes[index])
+        .selectAll<SVGGElement, BrushTag>(`.${pstyle.brushTag}`)
+        .data(labels, (label) => label.edge)
+        .join((enter) => {
+          const tag = enter.append("g").classed(pstyle.brushTag, true);
+          tag
+            .append("rect")
+            .attr("height", BRUSH_TAG_HEIGHT)
+            .attr("rx", BRUSH_TAG_HEIGHT / 2);
+          tag
+            .append("text")
+            .classed(pstyle.brushRange, true)
+            .classed("pplot-brush-range", true)
+            .attr("text-anchor", "middle")
+            .attr("dominant-baseline", "central");
+          return tag;
+        })
+        .attr("data-edge", (label) => label.edge)
+        .attr("transform", (label) => `translate(0, ${label.y})`);
+      tags.each(function (this: SVGGElement, label) {
+        const text = d3.select(this).select<SVGTextElement>("text").node();
+        if (text === null) {
+          throw new Error("Brush tag lost its text");
+        }
+        text.textContent = label.text;
+        const width = fitText(text, label.text, BRUSH_TAG_MAX_PIXELS) + 2 * BRUSH_TAG_PADDING;
+        d3.select(this)
+          .select("rect")
+          .attr("x", -width / 2)
+          .attr("y", -BRUSH_TAG_HEIGHT / 2)
+          .attr("width", width);
+      });
     });
   }
 
   compute_dimensions() {
-    this.w = this.state.width - this.m[1] - this.m[3];
-    this.h = this.state.height - this.m[0] - this.m[2];
+    const layout = this.axisLayout();
+    const root = mounted(this.root_ref);
+    const plot = mounted(this.plot_ref);
+    plot.style.width = `${layout.contentWidth}px`;
+    // A horizontal scrollbar takes its height from the plot, inside the resizable frame.
+    plot.style.height = `${this.state.height}px`;
+    const scrollbar = root.offsetHeight - root.clientHeight;
+    const height = this.state.height - scrollbar;
+    plot.style.height = `${height}px`;
+    d3.select(mounted(this.svg_ref)).attr("width", layout.contentWidth).attr("height", height);
+    this.w = layout.contentWidth - this.m[1] - this.m[3];
+    this.h = height - this.m[0] - this.m[2];
     this.d3brush
       .extent([
         [-23, 0],
@@ -1356,7 +1489,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
     this.xscale = d3
       .scalePoint<string>()
-      .range([40, this.w - 40])
+      .range([layout.first, layout.first + layout.spacing * (this.state.dimensions.length - 1)])
       .domain(this.state.dimensions);
     this.state.dimensions.forEach((d: string) => {
       this.setScaleRange(d);
@@ -1384,11 +1517,14 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       .each((dimension, i, nodes) => {
         const node = d3.select(nodes[i]);
         // transition axis numbers
-        node.transition().duration(720).call(this.get_axis(dimension));
+        node.transition().duration(AXIS_TRANSITION_MS).call(this.get_axis(dimension));
         node.selectAll(".tick text").style("font-weight", null).style("font-size", null);
       });
+    this.fitTickLabelsAfterTransition();
     this.redrawLines();
   }
+  /** Tick texts change when the axis transition starts; they are measured once it ended. */
+  fitTickLabelsAfterTransition = _.debounce(() => this.fitTickLabels(), AXIS_TRANSITION_MS + 40);
 
   /** Geometry of the filtered rows, rebuilt only when they change. */
   geometry(): LineGeometry {
@@ -1675,6 +1811,36 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         hide: newHide,
         dimensions: newDimensions,
       };
+    });
+  }
+  /** Every column that can be an axis, in the order of the experiment's columns. */
+  pickableColumns(): PickableColumn[] {
+    return Object.keys(this.props.params_def_unfiltered)
+      .filter((name) => !this.forceHideColumn(this.props.params_def_unfiltered[name]))
+      .map((name) => {
+        const pd = this.props.params_def_unfiltered[name];
+        return { name, label: labelTextFromHtml(pd.label_html, pd.name) };
+      });
+  }
+  /** Shows columns as axes (appended at the right) or hides them. */
+  setColumnsShown(names: ReadonlyArray<string>, shown: boolean): void {
+    this.setState((prevState) => {
+      const hide = new Set(prevState.hide);
+      if (!shown) {
+        for (const name of names) {
+          hide.add(name);
+        }
+        return { hide, dimensions: _.difference(prevState.dimensions, names) };
+      }
+      const added = names.filter(
+        (name) =>
+          !prevState.dimensions.includes(name) &&
+          !this.forceHideColumn(this.props.params_def_unfiltered[name]),
+      );
+      for (const name of added) {
+        hide.delete(name);
+      }
+      return { hide, dimensions: prevState.dimensions.concat(added) };
     });
   }
   getRestorableColumnsCount(): number {

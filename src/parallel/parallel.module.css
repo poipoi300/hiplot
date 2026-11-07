@@ -11,12 +11,18 @@
   top: 0;
   left: 0;
 }
+/* The frame scrolls sideways when the axes need more room than it has. */
 .parallel-plot-chart {
   position: relative;
   margin-top: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+}
+.plot {
+  position: relative;
 }
 
 /* Brushes: a filled band in the accent color, its value range labelled at both ends. */
@@ -33,15 +39,19 @@
 .brush :global(.handle) {
   cursor: ns-resize;
 }
-.brushRange {
-  fill: var(--hip-brush-stroke);
-  font-size: 11px;
-  font-weight: 600;
-  paint-order: stroke;
-  stroke: var(--hip-tick-halo);
-  stroke-width: 3px;
-  stroke-linejoin: round;
+/* Value tags at the top and bottom edges of a brush. */
+.brushTag {
   pointer-events: none;
+}
+.brushTag rect {
+  fill: var(--hip-brush-stroke);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.25));
+}
+.brushRange {
+  fill: var(--hip-bg);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
 .pplotLabel :global(.label-name) {
