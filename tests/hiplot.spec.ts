@@ -624,19 +624,13 @@ test("table keeps correct column-value mapping after column reorder and brush up
 
 test("plotxy timestamp axis labels are not scientific notation", async ({ page }) => {
   await loadDemo(page);
-  // The XY plot mounts once its container has been measured (debounced resize).
-  await page.waitForFunction(
-    () => (window as unknown as HiPlotWindow).hiplot_last_instance?.plugins_ref.XY?.current?.plot,
-  );
+  await page
+    .getByTestId("scatter-panel")
+    .first()
+    .getByLabel("X", { exact: true })
+    .selectOption("timestamp");
+  await expect(page.locator(".plotxy-label").filter({ hasText: "timestamp" })).toBeVisible();
   const result = await page.evaluate(async () => {
-    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-    const hiplot = (window as unknown as HiPlotWindow).hiplot_last_instance;
-    const plotxy = hiplot?.plugins_ref.XY?.current;
-    if (!plotxy?.plot) {
-      return { error: "missing-plotxy" };
-    }
-    plotxy.setState({ axis_x: "timestamp" });
-    await sleep(250);
     const axisGroups = Array.from(document.querySelectorAll("svg .axis_render"));
     const xAxis = axisGroups[0];
     if (!xAxis) {

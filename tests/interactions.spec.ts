@@ -68,7 +68,7 @@ test("the tutorial walks through every step and can be closed from the first", a
   await loadDemo(page);
   const help = page.getByRole("button", { name: "Help" });
   await help.click();
-  const close = page.getByRole("button", { name: "Close" });
+  const close = page.getByRole("button", { name: "Close", exact: true });
   await expect(close).toBeVisible();
   await close.click();
   await expect(close).toBeHidden();

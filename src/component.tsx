@@ -41,7 +41,7 @@ import { mounted } from "./lib/refs";
 import { type PersistentState, PersistentStateInMemory, readState } from "./lib/savedstate";
 import { storeThemeChoice, type ThemeChoice } from "./lib/theme";
 import { ParallelPlot } from "./parallel/parallel";
-import { PlotXY } from "./plotxy";
+import { ScatterPlots } from "./plots/scatterplots";
 import type { DataProviderClass, HiPlotPluginData, PluginWindowState } from "./plugin";
 import { RowsDisplayTable } from "./rowsdisplaytable";
 import {
@@ -256,7 +256,7 @@ export enum DefaultPlugins {
 
 export const defaultPlugins: PluginsMap = {
   [DefaultPlugins.PARALLEL_PLOT]: definePlugin(ParallelPlot),
-  [DefaultPlugins.XY]: definePlugin(PlotXY),
+  [DefaultPlugins.XY]: definePlugin(ScatterPlots),
   [DefaultPlugins.DISTRIBUTION]: definePlugin(HiPlotDistributionPlugin),
   [DefaultPlugins.TABLE]: definePlugin(RowsDisplayTable),
 };

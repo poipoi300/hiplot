@@ -1,0 +1,152 @@
+/* Groups of scatter and distribution plots, their headers and the 3D scatter. */
+.sectionBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px 6px;
+  border-top: 1px solid var(--hip-rule);
+  font-size: 12px;
+}
+.sectionTitle {
+  color: var(--hip-fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.panel {
+  margin: 0 20px 10px;
+  border: 1px solid var(--hip-rule);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.panelHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--hip-rule);
+  font-size: 12px;
+}
+.panelKind {
+  margin-right: auto;
+  color: var(--hip-muted);
+}
+.columnSelect {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--hip-muted);
+  font-weight: 600;
+}
+.columnSelect select {
+  height: 24px;
+  max-width: 180px;
+  padding: 0 24px 0 8px;
+  border: 1px solid var(--hip-rule);
+  border-radius: 5px;
+  background:
+    transparent
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 3.5 5 6.5 8 3.5' fill='none' stroke='%238b929a' stroke-width='1.4'/%3E%3C/svg%3E")
+    no-repeat right 7px center / 10px;
+  color: var(--hip-fg);
+  font: inherit;
+  font-weight: 400;
+  appearance: none;
+  cursor: pointer;
+}
+.columnSelect select:hover {
+  border-color: var(--hip-axis);
+}
+.columnSelect select:focus-visible {
+  outline: 2px solid var(--hip-accent);
+  outline-offset: -1px;
+}
+.columnSelect option {
+  background: var(--hip-surface);
+  color: var(--hip-fg);
+}
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--hip-muted);
+  cursor: pointer;
+  transition:
+    color 150ms ease-out,
+    background-color 150ms ease-out;
+}
+.close:hover {
+  background: var(--hip-brush-fill);
+  color: var(--hip-fg);
+}
+.close:focus-visible {
+  outline: 2px solid var(--hip-accent);
+  outline-offset: -2px;
+}
+.empty {
+  padding: 22px 14px;
+  color: var(--hip-muted);
+  font-size: 13px;
+}
+
+/* The 3D scatter: a canvas with HTML labels projected over it. */
+.scatter3d {
+  position: relative;
+  overflow: hidden;
+}
+.scatter3d canvas {
+  display: block;
+  cursor: grab;
+  touch-action: none;
+}
+.scatter3d canvas:active {
+  cursor: grabbing;
+}
+.axisName,
+.axisValue,
+.hoverText {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  white-space: nowrap;
+  pointer-events: none;
+  paint-order: stroke;
+  font-variant-numeric: tabular-nums;
+}
+.axisName {
+  color: var(--hip-fg);
+  font-size: 12px;
+  font-weight: 600;
+  text-shadow: 0 0 3px var(--hip-bg);
+}
+.axisValue {
+  color: var(--hip-muted);
+  font-size: 11px;
+  text-shadow: 0 0 3px var(--hip-bg);
+}
+.hoverRing {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--hip-fg);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.hoverText {
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: var(--hip-fg);
+  color: var(--hip-bg);
+  font-size: 12px;
+  transform: translate(12px, -50%);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}

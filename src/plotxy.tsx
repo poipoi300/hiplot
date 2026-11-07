@@ -37,7 +37,10 @@ export interface PlotXYDisplayData {
 }
 // DISPLAYS_DATA_DOC_END
 
-interface PlotXYProps extends HiPlotPluginData, PlotXYDisplayData {}
+interface PlotXYProps extends HiPlotPluginData, PlotXYDisplayData {
+  /** Closes the plot when it is one of several (see ScatterPlots), which then owns its axes. */
+  onClose?: () => void;
+}
 
 const HIGHLIGHT_PARENT = "parent";
 const HIGHLIGHT_CHILDREN = "children";
@@ -167,7 +170,11 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
     // Load default X/Y axis
     const plotConfig: PlotXYDisplayData = props;
     function get_default_axis(axis_name: AxisName): string | null {
-      const value = readState(props.persistentState, axis_name, isStringOrNull, props[axis_name]);
+      // A plot among several (it has `onClose`) gets its axes from the container.
+      const value =
+        props.onClose !== undefined
+          ? props[axis_name]
+          : readState(props.persistentState, axis_name, isStringOrNull, props[axis_name]);
       if (value !== null && props.params_def[value] === undefined) {
         return null;
       }
@@ -203,7 +210,7 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
   };
   componentDidMount() {
     const contextMenu = this.props.context_menu_ref?.current;
-    if (!contextMenu) {
+    if (!contextMenu || this.props.onClose !== undefined) {
       return;
     }
     contextMenu.addCallback((column, cm) => {
@@ -800,6 +807,10 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
     }
   }, 100);
   disable(): void {
+    if (this.props.onClose !== undefined) {
+      this.props.onClose();
+      return;
+    }
     this.setState({ axis_x: null, axis_y: null, height: this.state.initialHeight });
   }
   render() {
