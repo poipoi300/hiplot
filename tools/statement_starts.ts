@@ -118,7 +118,8 @@ export function statementTargets(fileName: string, source: string): Map<number, 
   return targets;
 }
 
-function main(argv: ReadonlyArray<string>): void {
+/** Writes the map of every SOURCE to OUTPUT; `argv` is OUTPUT then the sources. */
+export function main(argv: ReadonlyArray<string>): void {
   const [output, ...sources] = argv;
   if (output === undefined || sources.length === 0) {
     throw new Error("Usage: bun tools/statement_starts.ts OUTPUT.json SOURCE...");
