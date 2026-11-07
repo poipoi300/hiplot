@@ -6,5 +6,5 @@ import sys
 
 from .server import run_server_main
 
-if __name__ == "__main__":
-    sys.exit(run_server_main())
+# Only ever executed by `python -m hiplot`, so it needs no __name__ guard.
+sys.exit(run_server_main())

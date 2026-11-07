@@ -165,6 +165,7 @@ omit = ["hiplot/tests/*"]
 
 [tool.coverage.report]
 exclude_also = [
+    # Imports for annotations only (flask, IPython): never executed at runtime.
+    # Awaiting maintainer approval.
     'if (tp\.|typing\.)?TYPE_CHECKING:',
-    'if __name__ == "__main__":',
 ]

@@ -39,7 +39,8 @@ def create_app(fetchers: Iterable[exp.ExperimentFetcher]) -> "Flask":
     @app.route("/data")
     def data() -> Any:
         uri = request.args.get("uri", type=str)
-        assert uri is not None
+        if uri is None:
+            return jsonify({"error": "Missing the uri query parameter"}), 400
         try:
             xp = load_xp_with_fetchers(fetchers, uri)
             xp.validate()
