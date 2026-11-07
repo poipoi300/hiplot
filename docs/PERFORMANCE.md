@@ -152,3 +152,24 @@ What the steps show:
   would not buy a visible improvement and the table keeps its features.
 - The compact payload shrinks the 50k page 2.6x; with the leaner load path the
   first complete picture arrives in 1.7 s instead of 5.9 s.
+
+## Final: baseline against the finished branch
+
+Measured at `7460779`, after the design work, which added a two-pass density
+render (float accumulation targets, then a tone-mapped composite) and a
+context layer of deselected lines. Medians of three page loads.
+
+| Size | HTML MB | decode ms | DOM ready ms | initial drawn ms | full redraw ms | drag frame p50 / p95 / max ms | stalls | brush end → lines ms | brush end → table ms | JS heap MB |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5k × 20, baseline | 4.2 | 3 | 152 | 372 | 142 | 8 / 9 / 9 | 0/120 | 179 | 215 | 38 |
+| 5k × 20, final | 2.5 | 2 | 98 | 147 | 2 | 8 / 8 / 9 | 0/120 | 1 | 15 | 32 |
+| 20k × 30, baseline | 18.1 | 15 | 658 | 1443 | 663 | 8 / 17 / 17 | 0/120 | 631 | 185 | 262 |
+| 20k × 30, final | 7.7 | 16 | 357 | 475 | 5 | 8 / 9 / 17 | 0/120 | 1 | 22 | 117 |
+| 50k × 50, baseline | 69.4 | 64 | 2766 | 5946 | 2934 | 17 / 25 / 25 | 0/120 | 2730 | 273 | 542 |
+| 50k × 50, final | 27.2 | 74 | 1429 | 1686 | 7 | 8 / 9 / 9 | 0/120 | 2 | 88 | 277 |
+
+At 50k × 50 the page is 2.6x smaller, the first complete picture arrives 3.5x
+sooner, a full redraw is about 400x faster, brushing holds the 120 Hz frame
+clock, and the lines are final 2 ms after the mouse is released instead of
+2.7 s. The density pass costs nothing measurable against step 7: the GPU
+time of both passes is well inside one frame.
