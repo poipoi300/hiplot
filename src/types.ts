@@ -57,10 +57,25 @@ export interface DatapointsCompressed {
   rows: Array<Array<DatapointValue>>;
 }
 
+/** A JSON stand-in for a float JSON cannot represent (see `hiplot/compress.py`). */
+export interface NonFiniteValue {
+  $f: "inf" | "-inf" | "nan";
+}
+
+/** Column-major datapoints, as `hiplot/compress.py:compress_columnar` writes them. */
+export interface DatapointsColumnar {
+  uid: Array<string>;
+  from_uid: Array<string | null>;
+  columns: { [column: string]: Array<DatapointValue | NonFiniteValue> };
+  // Rows that have no value at all for a column (their slot holds null)
+  missing: { [column: string]: Array<number> };
+}
+
 export interface HiPlotExperiment {
   // Mirror of python `hip.Experiment`
   datapoints?: Array<RawDatapoint>;
   datapoints_compressed?: DatapointsCompressed;
+  datapoints_columnar?: DatapointsColumnar;
   parameters_definition?: { [key: string]: HiPlotValueDef };
   colormap?: string;
   colorby?: string;

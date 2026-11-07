@@ -43,13 +43,17 @@ export function isParamType(value: unknown): value is ParamType {
   return Object.values(ParamType).includes(value as ParamType);
 }
 
+function parseNumber(value: DatapointValue): number {
+  return typeof value === "number" ? value : parseFloat(String(value));
+}
+
 function get_min_max_for_numeric_scale(pd: ParamDef): [number, number] {
   let min = pd.force_value_min;
   let max = pd.force_value_max;
-  pd.distinct_values.forEach((value) => {
-    const parsed = parseFloat(String(value));
-    if (is_special_numeric(parsed)) {
-      return;
+  for (const value of pd.distinct_values) {
+    const parsed = parseNumber(value);
+    if (!Number.isFinite(parsed)) {
+      continue;
     }
     if (min === null || parsed < min) {
       min = parsed;
@@ -57,7 +61,7 @@ function get_min_max_for_numeric_scale(pd: ParamDef): [number, number] {
     if (max === null || parsed > max) {
       max = parsed;
     }
-  });
+  }
   if (min === null || max === null) {
     throw new Error(`Column "${pd.name}" has no finite value to build a numeric scale from`);
   }
@@ -65,7 +69,7 @@ function get_min_max_for_numeric_scale(pd: ParamDef): [number, number] {
 }
 
 function has_inf_or_nans(pd: ParamDef): boolean {
-  return pd.distinct_values.some((value) => is_special_numeric(parseFloat(String(value))));
+  return pd.distinct_values.some((value) => !Number.isFinite(parseNumber(value)));
 }
 
 export function create_d3_scale_without_outliers(pd: ParamDef): Scale {
@@ -175,29 +179,29 @@ export function infertypes(
     let optional = false;
     let numeric = ["uid", "from_uid"].indexOf(key) === -1;
     let can_be_timestamp = numeric;
-    const values: DatapointValue[] = [];
-    const addValue = (v: DatapointValue): void => {
+    let valueCount = 0;
+    const distinct = new Set<DatapointValue>();
+    for (const row of table) {
+      const v = row[key];
       if (v === undefined) {
         optional = true;
-        return;
+        continue;
       }
-      values.push(v);
+      valueCount += 1;
+      distinct.add(v);
+      if (typeof v === "number") {
+        if (!Number.isSafeInteger(v) || v < 0) {
+          can_be_timestamp = false;
+        }
+        continue;
+      }
+      can_be_timestamp = false;
       // Detect non-numeric column
-      if (
-        (typeof v !== "number" && !is_special_numeric(v) && Number.isNaN(Number(v))) ||
-        typeof v === "boolean"
-      ) {
+      if (typeof v === "boolean" || (!is_special_numeric(v) && Number.isNaN(Number(v)))) {
         numeric = false;
-        can_be_timestamp = false;
       }
-      if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) {
-        can_be_timestamp = false;
-      }
-    };
-    table.forEach((row) => {
-      addValue(row[key]);
-    });
-    const distinct_values = Array.from(new Set(values));
+    }
+    const distinct_values = Array.from(distinct);
     const numericSorted = numeric ? get_numeric_values_sorted(distinct_values) : [];
     const forceValueMinNegative =
       hint !== undefined &&
@@ -214,7 +218,7 @@ export function infertypes(
     }
     const categorical =
       !numeric ||
-      (Math.max(values.length, 10) / distinct_values.length > 10 && distinct_values.length < 6);
+      (Math.max(valueCount, 10) / distinct_values.length > 10 && distinct_values.length < 6);
     let inferred = ParamType.CATEGORICAL;
     if (numeric && !categorical) {
       inferred = ParamType.NUMERIC;

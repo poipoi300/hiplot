@@ -28,7 +28,6 @@
         "happy-dom": "^21.0.4",
         "hoist-non-react-statics": "^3.3.2",
         "jquery": "^3.7.1",
-        "json5": "^2.2.3",
         "nyc": "^18.0.0",
         "postcss": "^8.5.6",
         "postcss-prefix-selector": "^2.1.1",

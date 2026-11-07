@@ -177,12 +177,9 @@ export class HiPlotTester extends React.Component<{ hiplotProps: HiPlotProps }, 
       if (this.timeout !== null) {
         clearInterval(this.timeout);
       }
-      if (experiment.datapoints === undefined) {
-        throw new Error("The tester needs an experiment that provides `datapoints`");
-      }
       this.setState({
         testNum: 0,
-        keepCount: Math.floor(experiment.datapoints.length / 2),
+        keepCount: Math.floor(mounted(this.hiplot).state.rows_all_unfiltered.length / 2),
       });
     }
   }

@@ -60,7 +60,7 @@ Please use `experiment.to_streamlit(..., key=\"some_unique_key\")`""",
                 stacklevel=3,
             )
             key = f"hiplot_autogen_{uuid.uuid4()!s}"
-        self._exp_json = json.dumps(experiment._asdict())
+        self._exp_json = json.dumps(experiment._payload(), allow_nan=False)
         self._key = key
         self._ret = ret
         self._js_default_ret = tuple(self.get_default_return_for(experiment, ret=r) for r in self.js_ret_spec)

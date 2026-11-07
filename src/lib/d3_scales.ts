@@ -39,17 +39,18 @@ export interface ContinuousScale extends ScaleBase {
 
 export type Scale = CategoricalScale | ContinuousScale;
 
-const special_numerics: ReadonlyArray<unknown> = [
-  "inf",
-  "-inf",
-  Infinity,
-  -Infinity,
-  null,
-  "",
-  "NaN",
-];
+/** inf, -inf, NaN, null and the empty string, as numbers or as the text CSV gives. */
 export function is_special_numeric(x: unknown): boolean {
-  return special_numerics.indexOf(x) >= 0 || Number.isNaN(x);
+  switch (typeof x) {
+    case "number":
+      return !Number.isFinite(x);
+    case "string":
+      return x === "inf" || x === "-inf" || x === "NaN" || x === "";
+    case "object":
+      return x === null;
+    default:
+      return false;
+  }
 }
 
 /** Numeric coercion matching d3's own `+value`. */

@@ -19,7 +19,7 @@ if tp.TYPE_CHECKING:
 
 type TextWriterIO = tp.IO[str] | codecs.StreamWriter
 
-type DisplayableType = bool | int | float | str
+type DisplayableType = bool | int | float | str | None
 
 
 class ExperimentValidationError(Exception):
@@ -390,11 +390,10 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
         :param file: Path/handle to a file to write (optional)
         :returns: A standalone HTML code to display this Experiment.
         """
-        from .render import html_inlinize, make_experiment_standalone_page
+        from .render import make_experiment_standalone_page
 
         self.validate()
-        html = make_experiment_standalone_page(options={**kwargs, "experiment": self._asdict()})
-        html = html_inlinize(html)
+        html = make_experiment_standalone_page(options={**kwargs, "experiment": self._payload()}, inline_static=True)
         if file is not None:
             if isinstance(file, (Path, str)):
                 Path(file).write_text(html, encoding="utf-8")
@@ -428,8 +427,8 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
                 }
             )
 
-    def _asdict(self) -> dict[str, tp.Any]:
-        data: dict[str, tp.Any] = {
+    def _settings_asdict(self) -> dict[str, tp.Any]:
+        return {
             "parameters_definition": {k: v._asdict() for k, v in self.parameters_definition.items()},
             "colormap": self.colormap,
             "colorby": self.colorby,
@@ -437,6 +436,15 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
             "display_data": self._display_data,
             "enabled_displays": self.enabledDisplays,
         }
+
+    def _payload(self) -> dict[str, tp.Any]:
+        """What the frontend receives: the settings plus column-major datapoints in strict JSON."""
+        from .compress import compress_columnar
+
+        return {**self._settings_asdict(), "datapoints_columnar": compress_columnar(self.datapoints)}
+
+    def _asdict(self) -> dict[str, tp.Any]:
+        data = self._settings_asdict()
         if self._compress:
             from .compress import compress
 

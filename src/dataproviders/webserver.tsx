@@ -6,7 +6,6 @@
  */
 
 import $ from "jquery";
-import JSON5 from "json5";
 import React from "react";
 import style from "../hiplot.module.css";
 import { mounted } from "../lib/refs";
@@ -107,12 +106,7 @@ export function loadURIFromWebServer(uri: string): LoadURIPromise {
       resolve(response);
     };
     $.get(`/data?uri=${encodeURIComponent(uri)}`, resolveValidated, "json").fail((data) => {
-      if (data.readyState === 4 && data.status === 200) {
-        console.log(
-          "Unable to parse JSON with JS default decoder (Maybe it contains NaNs?). Using JSON5.",
-        );
-        resolveValidated(JSON5.parse(data.responseText));
-      } else if (data.status === 0) {
+      if (data.status === 0) {
         resolve({
           error: "Network error",
         });

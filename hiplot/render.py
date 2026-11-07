@@ -75,20 +75,46 @@ def html_inlinize(html: str, replace_local: bool = True) -> str:
     return str(soup)
 
 
+#: Where the template receives the JSON data block holding the options.
+DATA_MARKER = "<!--HIPLOT_DATA-->"
+
+
 def get_index_html_template() -> str:
     return render_jinja_html(str(Path(__file__).parent / "templates"), "index.html")
 
 
-def make_experiment_standalone_page(options: dict[str, Any]) -> str:
+def json_for_script_element(value: Any) -> str:
+    """Strict JSON that is safe as the text of a <script> element.
+
+    Escaping every "<" keeps "</script>" and "<!--" out of the element; JSON.parse
+    reads the escape back as "<".
+    """
+    return json.dumps(value, allow_nan=False).replace("<", "\\u003c")
+
+
+def make_experiment_standalone_page(options: dict[str, Any], inline_static: bool = False) -> str:
+    """A page rendering HiPlot with `options`, which are embedded as a JSON data block.
+
+    With `inline_static`, the bundle and assets are inlined (see `html_inlinize`)
+    before the options are added, so large experiments are never parsed as HTML.
+    """
     hiplot_options = {"dataProviderName": "none"}
     hiplot_options.update(options)
 
+    page_id = uuid.uuid4().hex
+    data_id = f"hiplot_data_{page_id}"
     index_html = get_index_html_template()
-    index_html = index_html.replace("hiplot_element_id", f"hiplot_{uuid.uuid4().hex}")
+    if inline_static:
+        index_html = html_inlinize(index_html)
+    index_html = index_html.replace("hiplot_element_id", f"hiplot_{page_id}")
+    index_html = index_html.replace(
+        DATA_MARKER,
+        f'<script type="application/json" id="{data_id}">{json_for_script_element(hiplot_options)}</script>',
+    )
     return index_html.replace(
         "/*ON_LOAD_SCRIPT_INJECT*/",
         f"""/*ON_LOAD_SCRIPT_INJECT*/
-        Object.assign(options, eval('(' + {escapejs(json.dumps(hiplot_options))} + ')'));
+        Object.assign(options, JSON.parse(document.getElementById({escapejs(data_id)}).textContent));
         """,
     )
 

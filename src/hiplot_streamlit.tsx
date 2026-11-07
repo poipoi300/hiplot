@@ -5,7 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import JSON5 from "json5";
 import React, { type ReactNode } from "react";
 import ReactDOMClient from "react-dom/client";
 import { HiPlot } from "./hiplot";
@@ -44,7 +43,7 @@ function readReturnSpec(args: ComponentProps["args"]): Array<string> {
 }
 
 function parseExperiment(experimentJson: string): HiPlotExperiment {
-  const experiment: unknown = JSON5.parse(experimentJson);
+  const experiment: unknown = JSON.parse(experimentJson);
   if (typeof experiment !== "object" || experiment === null) {
     throw new Error("Streamlit arg `experiment` must encode a JSON object");
   }

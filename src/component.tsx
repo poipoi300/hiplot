@@ -28,7 +28,7 @@ import style from "./hiplot.module.css";
 import { infertypes, type ParamDef, type ParamDefMap } from "./infertypes";
 import { setupBrowserCompat } from "./lib/browsercompat";
 import { type ColorBinning, colorBinning } from "./lib/colors";
-import { uncompress } from "./lib/compress";
+import { experimentRows } from "./lib/compress";
 import { mounted } from "./lib/refs";
 import { type PersistentState, PersistentStateInMemory } from "./lib/savedstate";
 import { ParallelPlot } from "./parallel/parallel";
@@ -385,16 +385,17 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     };
   }
   makeDatasets(
-    datapoints: ReadonlyArray<RawDatapoint>,
+    rows_all_unfiltered: Datapoint[],
     dp_lookup: DatapointLookup,
     initial_filters: Array<Filter>,
   ): IDatasets {
-    const rows_all_unfiltered = datapoints.map((t): Datapoint => {
-      const row: Datapoint = { ...t.values, uid: t.uid, from_uid: t.from_uid };
-      dp_lookup[t.uid] = row;
-      return row;
-    });
-    let rows_filtered = apply_filters(rows_all_unfiltered, initial_filters);
+    for (const row of rows_all_unfiltered) {
+      dp_lookup[row.uid] = row;
+    }
+    let rows_filtered =
+      initial_filters.length === 0
+        ? rows_all_unfiltered
+        : apply_filters(rows_all_unfiltered, initial_filters);
     if (!rows_filtered.length) {
       // Filters saved against another dataset would hide everything: start unfiltered.
       rows_filtered = rows_all_unfiltered;
@@ -419,19 +420,12 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     this.sendMessage("filtered_uids", () => this.state.rows_filtered.map((row) => `${row.uid}`));
   }, 200);
   _loadExperiment(experiment: HiPlotExperiment) {
-    const datapoints =
-      experiment.datapoints ??
-      (experiment.datapoints_compressed !== undefined
-        ? uncompress(experiment.datapoints_compressed)
-        : []);
-    experiment.datapoints = datapoints;
-
     // Generate dataset for Parallel Plot
     const dp_lookup: DatapointLookup = {};
     const persistedFilters = this.state.persistentState.get(PSTATE_FILTERS);
     let initFilters =
       Array.isArray(persistedFilters) && persistedFilters.every(isFilter) ? persistedFilters : [];
-    const datasets = this.makeDatasets(datapoints, dp_lookup, initFilters);
+    const datasets = this.makeDatasets(experimentRows(experiment), dp_lookup, initFilters);
     if (datasets.rows_all_unfiltered === datasets.rows_filtered) {
       initFilters = [];
     }
@@ -440,11 +434,14 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       datasets.rows_filtered,
       experiment.parameters_definition,
     );
-    const params_def_unfiltered = infertypes(
-      this.state.persistentState.children(PSTATE_PARAMS),
-      datasets.rows_all_unfiltered,
-      experiment.parameters_definition,
-    );
+    const params_def_unfiltered =
+      datasets.rows_filtered === datasets.rows_all_unfiltered
+        ? params_def
+        : infertypes(
+            this.state.persistentState.children(PSTATE_PARAMS),
+            datasets.rows_all_unfiltered,
+            experiment.parameters_definition,
+          );
 
     // Color handling
     function get_default_color(): string {

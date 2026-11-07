@@ -39,7 +39,7 @@ def run_server(
         try:
             xp = load_xp_with_fetchers(fetchers, uri)
             xp.validate()
-            return jsonify({"query": uri, "experiment": xp._asdict()})
+            return jsonify({"query": uri, "experiment": xp._payload()})
         except NoFetcherFound as e:
             return jsonify({"error": f"No fetcher found for this experiment: {e}"})
 

@@ -48,15 +48,17 @@ def demo_line_xy() -> hip.Experiment:
             "axis_y": "loss",
         }
     )
+    history: list[tuple[str, float, float]] = []  # (uid, loss, param) of every datapoint so far
     for i in range(200):
         param = 10 ** random.uniform(-1, 1)
         loss = random.uniform(-5, 5)
         from_uid = None
         if i > 10:
-            from_parent = random.choice(exp.datapoints[-10:])
-            from_uid = from_parent.uid  # <-- Connect the parent to the child
-            loss += float(from_parent.values["loss"])
-            param *= float(from_parent.values["param"])
+            parent_uid, parent_loss, parent_param = random.choice(history[-10:])
+            from_uid = parent_uid  # <-- Connect the parent to the child
+            loss += parent_loss
+            param *= parent_param
+        history.append((str(i), loss, param))
         values: dict[str, hip.DisplayableType] = {"generation": i, "param": param, "loss": loss}
         exp.datapoints.append(hip.Datapoint(uid=str(i), from_uid=from_uid, values=values))
     # DEMO_LINE_XY_END

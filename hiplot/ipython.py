@@ -168,7 +168,7 @@ def display_exp(
 
     comm_id = f"comm_{uuid.uuid4().hex[:6]}"
     displayed_xp = IPythonExperimentDisplayed(xp, comm_id)
-    options: dict[str, t.Any] = {**kwargs, "experiment": xp._asdict()}
+    options: dict[str, t.Any] = {**kwargs, "experiment": xp._payload()}
     if store_state_url is not None:
         options.update({"persistentStateUrlPrefix": store_state_url})
     else:
