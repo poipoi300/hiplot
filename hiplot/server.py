@@ -3,20 +3,23 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
-from typing import Any
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Any
 
 from . import experiment as exp
 from . import pkginfo
 from .fetchers import NoFetcherFound, get_fetchers, load_xp_with_fetchers
 from .render import get_index_html_template
 
+if TYPE_CHECKING:
+    from flask import Flask
 
-def run_server(
-    fetchers: list[exp.ExperimentFetcher], host: str = "127.0.0.1", port: int = 5005, debug: bool = False
-) -> None:
-    """
-    Runs the HiPlot server, given a list of ExperimentFetchers:
-    functions that convert a URI into a :class:`hiplot.Experiment`
+
+def create_app(fetchers: Iterable[exp.ExperimentFetcher]) -> "Flask":
+    """The HiPlot web app: the interface at `/`, experiments loaded by URI at `/data`.
+
+    Args:
+        fetchers: functions that convert a URI into a :class:`hiplot.Experiment`, tried in order.
     """
     try:
         from flask import Flask, jsonify, request
@@ -26,6 +29,7 @@ def run_server(
             "Flask is required to run the HiPlot server. Install it with: pip install hiplot-mm[server]"
         ) from e
 
+    fetchers = list(fetchers)
     app = Flask(__name__)
 
     @app.route("/")
@@ -44,7 +48,17 @@ def run_server(
             return jsonify({"error": f"No fetcher found for this experiment: {e}"})
 
     Compress(app)
-    app.run(debug=debug, host=host, port=port)
+    return app
+
+
+def run_server(
+    fetchers: list[exp.ExperimentFetcher], host: str = "127.0.0.1", port: int = 5005, debug: bool = False
+) -> None:
+    """
+    Runs the HiPlot server, given a list of ExperimentFetchers:
+    functions that convert a URI into a :class:`hiplot.Experiment`
+    """
+    create_app(fetchers).run(debug=debug, host=host, port=port)
 
 
 def run_server_main() -> int:
