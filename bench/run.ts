@@ -273,19 +273,19 @@ async function measureBrush(
             const mouseUpAt = performance.now();
             mouse("mouseup", window, yEnd);
             longTasks.disconnect();
-            const intervals = frameTimes.slice(1).map((time, index) => time - frameTimes[index]!);
+            const intervals = frameTimes.slice(1).map((time, index) => time - frameTimes[index]);
             const sorted = [...intervals].sort((a, b) => a - b);
             const quantile = (q: number): number =>
-              sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]!;
+              sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
             resolve({
               mouseUpAt,
               dragStartedAt,
               drag: {
                 frames: intervals.length,
-                durationMs: frameTimes[frameTimes.length - 1]! - frameTimes[0]!,
+                durationMs: frameTimes[frameTimes.length - 1] - frameTimes[0],
                 p50Ms: quantile(0.5),
                 p95Ms: quantile(0.95),
-                maxMs: sorted[sorted.length - 1]!,
+                maxMs: sorted[sorted.length - 1],
                 stalls: intervals.filter((interval) => interval > stallMs).length,
                 longTaskMs,
               },
@@ -334,7 +334,7 @@ async function runOnce(page: Page, url: string): Promise<RepResult> {
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
+  return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
 function medianResult(reps: RepResult[]): RepResult {

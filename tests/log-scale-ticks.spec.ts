@@ -1,8 +1,15 @@
+import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 
-async function loadDemo(page, uri = "demo_decay") {
+interface HiPlotWindow {
+  hiplot?: { render?: unknown };
+}
+
+async function loadDemo(page: Page, uri = "demo_decay") {
   await page.goto("/");
-  await page.waitForFunction(() => (window as any).hiplot?.render, { timeout: 15000 });
+  await page.waitForFunction(() => (window as unknown as HiPlotWindow).hiplot?.render, {
+    timeout: 15000,
+  });
   await expect(page.locator("#hiplot_element_id")).toBeVisible();
   const input = page.locator('textarea[placeholder="Experiments to load"]');
   await expect(input).toBeVisible();
@@ -13,7 +20,7 @@ async function loadDemo(page, uri = "demo_decay") {
 }
 
 /** Find the index of a parallel-plot dimension by its label text. */
-async function findDimIndex(page, labelName: string): Promise<number> {
+async function findDimIndex(page: Page, labelName: string): Promise<number> {
   return page.evaluate((name: string) => {
     const dims = document.querySelectorAll("svg g.dimension");
     for (let i = 0; i < dims.length; i++) {
@@ -31,7 +38,7 @@ async function findDimIndex(page, labelName: string): Promise<number> {
 }
 
 /** Get tick label texts for a parallel-plot dimension (excluding nan/inf/null). */
-async function getTickLabels(page, dimIndex: number): Promise<string[]> {
+async function getTickLabels(page: Page, dimIndex: number): Promise<string[]> {
   return page.evaluate((idx: number) => {
     const dim = document.querySelectorAll("svg g.dimension")[idx];
     if (!dim) return [];
@@ -47,7 +54,7 @@ async function getTickLabels(page, dimIndex: number): Promise<string[]> {
  * sorted top-to-bottom by vertical midpoint.
  */
 async function getTickBBoxes(
-  page,
+  page: Page,
   dimIndex: number,
 ): Promise<{ text: string; top: number; bottom: number }[]> {
   return page.evaluate((idx: number) => {
@@ -56,7 +63,7 @@ async function getTickBBoxes(
     const ticks = Array.from(dim.querySelectorAll(".tick text"));
     return ticks
       .map((el) => {
-        const r = (el as Element).getBoundingClientRect();
+        const r = el.getBoundingClientRect();
         return { text: (el.textContent || "").trim(), top: r.top, bottom: r.bottom };
       })
       .filter((t) => t.text.length > 0)
@@ -149,7 +156,7 @@ test.describe("distribution plot log-scale tick labels", () => {
         return textParts.join(" ").trim();
       }),
     );
-    const targetIndex = labelTexts.findIndex((t) => t === "remaining_grams");
+    const targetIndex = labelTexts.indexOf("remaining_grams");
     expect(targetIndex).toBeGreaterThanOrEqual(0);
 
     await labels.nth(targetIndex).click({ button: "right" });
@@ -168,7 +175,7 @@ test.describe("distribution plot log-scale tick labels", () => {
       const axisTicks = Array.from(root.querySelectorAll(".axisBottom .tick text"));
       const tickData = axisTicks
         .map((t) => {
-          const r = (t as Element).getBoundingClientRect();
+          const r = t.getBoundingClientRect();
           return {
             text: (t.textContent || "").trim(),
             left: r.left,

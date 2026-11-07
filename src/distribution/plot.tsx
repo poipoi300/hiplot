@@ -9,22 +9,45 @@ import * as d3 from "d3";
 import React from "react";
 import style from "../hiplot.module.css";
 import { create_d3_scale_without_outliers, type ParamDef } from "../infertypes";
-import { convert_to_categorical_input, getLogScaleTickValues } from "../lib/d3_scales";
+import {
+  type CategoricalScale,
+  type ContinuousScale,
+  convert_to_categorical_input,
+  getLogScaleTickValues,
+  type Scale,
+} from "../lib/d3_scales";
+import { labelTextFromHtml } from "../lib/escape";
+import { mounted } from "../lib/refs";
 import { type Datapoint, ParamType } from "../types";
-
-function labelTextFromHtml(html: string, fallback: string): string {
-  const tmp = document.createElement("div");
-  tmp.innerHTML = html || "";
-  const text = (tmp.textContent || tmp.innerText || "").trim();
-  return text.length ? text : fallback;
-}
 
 const margin = { top: 20, right: 20, bottom: 50, left: 60 };
 
+type DatapointBin = d3.Bin<Datapoint, number>;
+
+type DrawHistogramFn = (
+  hist: BinsDrawData,
+  densityScale: d3.ScaleLinear<number, number>,
+  animate: boolean,
+  displayIndexByOriginal: number[],
+) => void;
+
 interface BinsDrawData {
-  bins: d3.Bin<any, any>[];
-  g: SVGSVGElement;
-  draw_fn: any;
+  bins: DatapointBin[];
+  g: SVGGElement;
+  draw_fn: DrawHistogramFn;
+}
+
+/** The scales an axis is drawn from: ours, or the point scale of the reordered categories. */
+interface RangeableAxisScale<Domain extends d3.AxisDomain> extends d3.AxisScale<Domain> {
+  range(): number[];
+  range(range: [number, number]): unknown;
+}
+
+function binBounds(bin: DatapointBin): { x0: number; x1: number } {
+  if (bin.x0 === undefined || bin.x1 === undefined) {
+    throw new Error("Histogram bin without bounds");
+  }
+  return { x0: bin.x0, x1: bin.x1 };
 }
 
 export interface HistogramData {
@@ -43,21 +66,21 @@ export interface DistributionPlotData {
 }
 
 // Inspired by https://www.d3-graph-gallery.com/graph/histogram_binSize.html
-export class DistributionPlot extends React.Component<DistributionPlotData, {}> {
+export class DistributionPlot extends React.Component<DistributionPlotData, Record<never, never>> {
   /**
    * Supports both vertical and horizontal bar plots.
    * Will switch to vertical if we are plotting categorical data with too many distinct values.
    */
-  axisBottom = React.createRef<SVGSVGElement>();
-  axisLeft = React.createRef<SVGSVGElement>();
-  axisRight = React.createRef<SVGSVGElement>();
+  axisBottom = React.createRef<SVGGElement>();
+  axisLeft = React.createRef<SVGGElement>();
+  axisRight = React.createRef<SVGGElement>();
   axisBottomName = React.createRef<SVGGElement>();
 
-  svgContainer = React.createRef<SVGSVGElement>();
-  histAll = React.createRef<SVGSVGElement>();
-  histSelected = React.createRef<SVGSVGElement>();
+  svgContainer = React.createRef<SVGGElement>();
+  histAll = React.createRef<SVGGElement>();
+  histSelected = React.createRef<SVGGElement>();
 
-  dataScale: any;
+  dataScale: Scale = create_d3_scale_without_outliers(this.props.param_def);
 
   isVertical() {
     /*
@@ -85,11 +108,11 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
   figureHeight() {
     return this.props.height - margin.top - margin.bottom;
   }
-  applyLogScaleTicks(axis: any, tickCount: number): void {
+  applyLogScaleTicks(axis: d3.Axis<number>, dataScale: ContinuousScale, tickCount: number): void {
     if (this.props.param_def.type !== ParamType.NUMERICLOG) {
       return;
     }
-    const tickValues = getLogScaleTickValues(this.dataScale.domain(), tickCount);
+    const tickValues = getLogScaleTickValues(dataScale.domain(), tickCount);
     if (tickValues) {
       axis.tickValues(tickValues);
     }
@@ -97,38 +120,53 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
       axis.tickFormat(d3.format(this.props.param_def.ticks_format));
     }
   }
-  createDataAxis(dataScale: any, animate: boolean): void {
+  createDataAxis(dataScale: Scale | d3.ScalePoint<string>, animate: boolean): void {
+    if ("kind" in dataScale && dataScale.kind === "continuous") {
+      this.drawDataAxis<number>(
+        dataScale,
+        (axis, tickCount) => this.applyLogScaleTicks(axis, dataScale, tickCount),
+        animate,
+      );
+      return;
+    }
+    this.drawDataAxis<string>(dataScale, () => undefined, animate);
+  }
+  drawDataAxis<Domain extends d3.AxisDomain>(
+    dataScale: RangeableAxisScale<Domain>,
+    configureAxis: (axis: d3.Axis<Domain>, tickCount: number) => void,
+    animate: boolean,
+  ): void {
     if (this.isVertical()) {
       dataScale.range([0, this.figureWidth()]);
       const tickCount = 1 + this.props.width / 50;
       const axis = d3.axisBottom(dataScale).ticks(tickCount);
-      this.applyLogScaleTicks(axis, tickCount);
-      d3.select(this.axisBottom.current).call(axis);
-      d3.select(this.axisBottomName.current)
+      configureAxis(axis, tickCount);
+      d3.select(mounted(this.axisBottom)).call(axis);
+      d3.select(mounted(this.axisBottomName))
         .html(null)
         .append("text")
         .attr("text-anchor", "middle")
         .attr("font-weight", "bold")
         .attr("fill", "currentColor")
         .text(labelTextFromHtml(this.props.param_def.label_html, this.props.axis));
-      this.axisRight.current.innerHTML = "";
+      mounted(this.axisRight).innerHTML = "";
     } else {
       dataScale.range([this.figureHeight(), 0]);
       const tickCount = 1 + this.props.height / 50;
       const axisRight = d3.axisRight(dataScale).ticks(tickCount);
       const axisLeft = d3.axisLeft(dataScale).ticks(tickCount);
-      this.applyLogScaleTicks(axisRight, tickCount);
-      this.applyLogScaleTicks(axisLeft, tickCount);
-      d3.select(this.axisRight.current)
+      configureAxis(axisRight, tickCount);
+      configureAxis(axisLeft, tickCount);
+      d3.select(mounted(this.axisRight))
         .transition()
         .duration(animate ? this.props.animateMs : 0)
         .call(axisRight)
         .attr("text-anchor", "end");
-      d3.select(this.axisLeft.current)
+      d3.select(mounted(this.axisLeft))
         .transition()
         .duration(animate ? this.props.animateMs : 0)
         .call(axisLeft);
-      d3.select(this.axisBottomName.current)
+      d3.select(mounted(this.axisBottomName))
         .html(null)
         .append("text")
         .attr("text-anchor", "middle")
@@ -142,11 +180,18 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
     this.createDataAxis(this.dataScale, false);
   }
 
-  createHistogram(): d3.HistogramGeneratorNumber<any, any> {
-    const thresholds = [];
-    let valueFn: (d: any) => number;
-    if (this.props.param_def.type === ParamType.CATEGORICAL) {
-      const domain: string[] = this.dataScale.domain();
+  categoricalDataScale(): CategoricalScale {
+    if (this.dataScale.kind !== "categorical") {
+      throw new Error(`Column "${this.props.axis}" does not have a categorical scale`);
+    }
+    return this.dataScale;
+  }
+
+  createHistogram(): d3.HistogramGeneratorNumber<Datapoint, number> {
+    const thresholds: number[] = [];
+    let valueFn: (d: Datapoint) => number;
+    if (this.dataScale.kind === "categorical") {
+      const domain = this.dataScale.domain();
       const domainCount = domain.length;
       const indexByValue = new Map(domain.map((value, index) => [value, index]));
       for (let i = 1; i < domainCount; ++i) {
@@ -170,7 +215,11 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
       const scaleCopy = this.dataScale.copy().range([0, 1]);
       valueFn = (d) => scaleCopy(d[this.props.axis]);
     }
-    const histogram = d3.histogram().value(valueFn).domain([0, 1]).thresholds(thresholds);
+    const histogram = d3
+      .histogram<Datapoint, number>()
+      .value(valueFn)
+      .domain([0, 1])
+      .thresholds(thresholds);
     return histogram;
   }
 
@@ -179,31 +228,30 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
     const allHist: { selected: BinsDrawData; all: BinsDrawData } = {
       selected: {
         bins: histogram(this.props.histData.selected),
-        g: this.histAll.current,
+        g: mounted(this.histAll),
         draw_fn: this.drawHistogramRects.bind(this),
       },
       all: {
         bins: histogram(this.props.histData.all),
-        g: this.histSelected.current,
+        g: mounted(this.histSelected),
         draw_fn: this.drawHistogramLines.bind(this),
       },
     };
 
     // Density axis: set max based on maximum in histogram
-    const maxDensityHistogram = d3.max(Object.values(allHist), (hist) => {
-      const total = d3.sum(hist.bins, (d) => d.length);
-      if (!total) {
-        return 0;
-      }
-      return d3.max(hist.bins, (d) => d.length / total);
-    });
+    const maxDensityHistogram = Math.max(
+      ...Object.values(allHist).flatMap((hist) => {
+        const total = d3.sum(hist.bins, (d) => d.length);
+        return total ? hist.bins.map((d) => d.length / total) : [0];
+      }),
+    );
     let densityScale = d3.scaleLinear().domain([0, maxDensityHistogram]);
     // Map from original bin index -> displayed slot index.
     // In horizontal categorical mode we reorder categories by selected density.
     const displayIndexByOriginal = allHist.all.bins.map((_, i) => i);
     if (this.isVertical()) {
       densityScale = densityScale.range([this.figureHeight(), 0]);
-      d3.select(this.axisLeft.current)
+      d3.select(mounted(this.axisLeft))
         .transition()
         .duration(animate ? this.props.animateMs : 0)
         .call(
@@ -214,7 +262,7 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
         );
     } else {
       densityScale = densityScale.range([0, this.figureWidth()]);
-      d3.select(this.axisBottom.current)
+      d3.select(mounted(this.axisBottom))
         .transition()
         .duration(animate ? this.props.animateMs : 0)
         .call(d3.axisBottom(densityScale).ticks(1 + this.props.width / 50));
@@ -236,20 +284,18 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
         displayIndexByOriginal[value] = idx;
       });
       // Update ticks/axis as well
-      const domain: string[] = this.dataScale.domain();
-      const domainsOrdered = domain.map((v, idx) => domain[ordered1[idx]]);
+      const domain = this.categoricalDataScale().domain();
+      const domainsOrdered = domain.map((_value, idx) => domain[ordered1[idx]]);
       this.createDataAxis(
-        d3.scalePoint().domain(domainsOrdered).range(this.dataScale.range()),
+        d3.scalePoint<string>().domain(domainsOrdered).range(this.dataScale.range()),
         true,
       );
     }
 
     // Draw all the histograms
-    Object.values(allHist).forEach(
-      ((v) => {
-        v.draw_fn(v, densityScale, animate, displayIndexByOriginal);
-      }).bind(this),
-    );
+    Object.values(allHist).forEach((v) => {
+      v.draw_fn(v, densityScale, animate, displayIndexByOriginal);
+    });
   }
 
   drawHistogramLines(
@@ -259,10 +305,10 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
     displayIndexByOriginal: number[],
   ) {
     const total = d3.sum(hist.bins, (d) => d.length);
-    const densityScaleFromLength = (d) => densityScale(total ? d.length / total : 0);
+    const densityScaleFromLength = (d: DatapointBin) => densityScale(total ? d.length / total : 0);
     const dataScale = d3.scaleLinear().range(this.dataScale.range());
 
-    const u = d3.select(hist.g).selectAll<SVGLineElement, any>("line").data(hist.bins);
+    const u = d3.select(hist.g).selectAll<SVGLineElement, DatapointBin>("line").data(hist.bins);
 
     const dataCoord = this.isVertical() ? "x" : "y";
     const densityCoord = this.isVertical() ? "y" : "x";
@@ -271,10 +317,15 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
       .merge(u) // get the already existing elements as well
       .transition() // and apply changes to all of them
       .duration(animate ? this.props.animateMs : 0)
-      .attr(`${dataCoord}1`, (d, i) => dataScale(hist.bins[displayIndexByOriginal[i]].x0) + 1)
-      .attr(`${densityCoord}1`, (d, _i) => densityScaleFromLength(d))
-      .attr(`${dataCoord}2`, (d, i) => dataScale(hist.bins[displayIndexByOriginal[i]].x1))
-      .attr(`${densityCoord}2`, (d, _i) => densityScaleFromLength(d));
+      .attr(
+        `${dataCoord}1`,
+        (_d, i) => dataScale(binBounds(hist.bins[displayIndexByOriginal[i]]).x0) + 1,
+      )
+      .attr(`${densityCoord}1`, (d) => densityScaleFromLength(d))
+      .attr(`${dataCoord}2`, (_d, i) =>
+        dataScale(binBounds(hist.bins[displayIndexByOriginal[i]]).x1),
+      )
+      .attr(`${densityCoord}2`, (d) => densityScaleFromLength(d));
 
     u.exit().remove();
   }
@@ -286,24 +337,19 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
     displayIndexByOriginal: number[],
   ) {
     const total = d3.sum(hist.bins, (d) => d.length);
-    const densityScaleFromLength = (d) => densityScale(total ? d.length / total : 0);
+    const densityScaleFromLength = (d: DatapointBin) => densityScale(total ? d.length / total : 0);
     const dataScale = d3.scaleLinear().range(this.dataScale.range());
-    const u = d3.select(hist.g).selectAll<SVGRectElement, any>("rect").data(hist.bins);
+    const u = d3.select(hist.g).selectAll<SVGRectElement, DatapointBin>("rect").data(hist.bins);
 
     const ut = u
       .enter()
       .append("rect") // Add a new rect for each new elements
       .merge(u) // get the already existing elements as well
-      .attr(
-        "data-value-sample",
-        function (d, _i) {
-          return d.length ? d[0][this.props.axis] : "empty";
-        }.bind(this),
-      )
-      .on("mouseover", function (_d, _i) {
+      .attr("data-value-sample", (d) => (d.length ? (d[0][this.props.axis] ?? null) : "empty"))
+      .on("mouseover", function (this: SVGRectElement) {
         d3.select(this).transition().duration(150).attr("opacity", ".5");
       })
-      .on("mouseout", function (_d, _i) {
+      .on("mouseout", function (this: SVGRectElement) {
         d3.select(this).transition().duration(150).attr("opacity", "1");
       })
       .transition() // and apply changes to all of them
@@ -311,45 +357,39 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
 
     if (this.isVertical()) {
       ut.attr("x", 1)
-        .attr(
-          "transform",
-          (d) => "translate(" + dataScale(d.x0) + "," + densityScaleFromLength(d) + ")",
-        )
-        .attr("width", (d) => dataScale(d.x1) - dataScale(d.x0) - 1)
-        .attr(
-          "height",
-          function (d) {
-            return this.figureHeight() - densityScaleFromLength(d);
-          }.bind(this),
-        );
+        .attr("transform", (d) => {
+          const { x0 } = binBounds(d);
+          return `translate(${dataScale(x0)},${densityScaleFromLength(d)})`;
+        })
+        .attr("width", (d) => {
+          const { x0, x1 } = binBounds(d);
+          return dataScale(x1) - dataScale(x0) - 1;
+        })
+        .attr("height", (d) => this.figureHeight() - densityScaleFromLength(d));
     } else {
       ut
         //.attr("y", 1)
         .attr(
           "transform",
-          (_d, i) => "translate(0," + dataScale(hist.bins[displayIndexByOriginal[i]].x1) + ")",
+          (_d, i) =>
+            `translate(0,${dataScale(binBounds(hist.bins[displayIndexByOriginal[i]]).x1)})`,
         )
         .attr("width", (d) => densityScaleFromLength(d))
-        .attr(
-          "height",
-          ((_d, i) => {
-            const delta = Math.abs(
-              dataScale(hist.bins[displayIndexByOriginal[i]].x1) -
-                dataScale(hist.bins[displayIndexByOriginal[i]].x0),
-            );
-            return delta > 2 ? delta - 1 : delta;
-          }).bind(this),
-        );
+        .attr("height", (_d, i) => {
+          const { x0, x1 } = binBounds(hist.bins[displayIndexByOriginal[i]]);
+          const delta = Math.abs(dataScale(x1) - dataScale(x0));
+          return delta > 2 ? delta - 1 : delta;
+        });
     }
 
     u.exit().remove();
   }
   componentDidMount() {
-    this.createDataScaleAndAxis();
+    this.createDataAxis(this.dataScale, false);
     this.drawAllHistograms(false);
   }
 
-  componentDidUpdate(prevProps: DistributionPlotData, _prevState: {}) {
+  componentDidUpdate(prevProps: DistributionPlotData) {
     if (
       prevProps.axis !== this.props.axis ||
       prevProps.param_def !== this.props.param_def ||

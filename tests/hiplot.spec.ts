@@ -1,6 +1,72 @@
+import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 
-async function loadDemo(page, uri = "demo") {
+// The members of the live HiPlot objects (`window.hiplot_last_instance`) that the
+// page.evaluate bodies below reach into. They run in the browser, so these are
+// local descriptions of the runtime shape, not imports of the application classes.
+type BrushExtent = [number, number] | null;
+
+interface DimensionSelection {
+  filter(predicate: (dimension: string) => boolean): DimensionSelection;
+  select(selector: string): DimensionSelection;
+  node(): SVGGElement | null;
+}
+
+interface ParallelPlotUnderTest {
+  state: { dimensions: string[]; invert: Set<string> };
+  h: number;
+  yscale: Record<string, { range(): number[] }>;
+  dimensions_dom: DimensionSelection;
+  d3brush: { move(selection: DimensionSelection, extent: [number, number]): void };
+  toggleInvertAxis(dimension: string): BrushExtent;
+  update_ticks(dimension: string, extent: BrushExtent): void;
+}
+
+interface TableUnderTest {
+  dt: {
+    colReorder: {
+      order(): number[];
+      order(newOrder: number[]): void;
+    };
+  } | null;
+  ordered_cols: string[];
+}
+
+interface PlotXYUnderTest {
+  plot: object | null;
+  setState(partialState: { axis_x: string }): void;
+}
+
+interface PluginRef<Plugin> {
+  current: Plugin | null;
+}
+
+interface HiPlotUnderTest {
+  state: { rows_selected: unknown[]; rows_filtered: unknown[] };
+  plugins_ref: {
+    PARALLEL_PLOT?: PluginRef<ParallelPlotUnderTest>;
+    TABLE?: PluginRef<TableUnderTest>;
+    XY?: PluginRef<PlotXYUnderTest>;
+  };
+  getPlugin?: unknown;
+  filterRows(keep: boolean): void;
+  restoreAllRows(): void;
+}
+
+interface HiPlotWindow {
+  hiplot?: { render?: unknown };
+  hiplot_last_instance?: HiPlotUnderTest;
+}
+
+async function boundingBoxOf(locator: Locator) {
+  const box = await locator.boundingBox();
+  if (box === null) {
+    throw new Error(`No bounding box for ${locator}`);
+  }
+  return box;
+}
+
+async function loadDemo(page: Page, uri = "demo") {
   if (process.env.PW_LOG) {
     page.on("console", (msg) => {
       console.log(`[console:${msg.type()}] ${msg.text()}`);
@@ -10,7 +76,9 @@ async function loadDemo(page, uri = "demo") {
     });
   }
   await page.goto("/");
-  await page.waitForFunction(() => (window as any).hiplot?.render, { timeout: 15000 });
+  await page.waitForFunction(() => (window as unknown as HiPlotWindow).hiplot?.render, {
+    timeout: 15000,
+  });
   await expect(page.locator("#hiplot_element_id")).toBeVisible();
   await expect(page.locator(".hip_thm--light, .hip_thm--dark")).toBeVisible();
   const input = page.locator('textarea[placeholder="Experiments to load"]');
@@ -63,7 +131,7 @@ test("defaults to auto dark mode when query param is absent", async ({ page }) =
 test("window.hiplot.render returns a HiPlot instance-compatible object", async ({ page }) => {
   await page.goto("/");
   const hasGetPlugin = await page.evaluate(() => {
-    const instance = (window as any).hiplot_last_instance;
+    const instance = (window as unknown as HiPlotWindow).hiplot_last_instance;
     return !!instance && typeof instance.getPlugin === "function";
   });
   expect(hasGetPlugin).toBeTruthy();
@@ -122,11 +190,10 @@ test("rapidly dragging axes back and forth does not crash", async ({ page }) => 
   // Pick a middle axis label to drag
   const midIdx = Math.floor(dimCount / 2);
   const label = dims.nth(midIdx).locator(".pplot-label").first();
-  const box = await label.boundingBox();
-  expect(box).toBeTruthy();
+  const box = await boundingBoxOf(label);
 
-  const startX = box!.x + box!.width / 2;
-  const startY = box!.y + box!.height / 2;
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
 
   // Perform several rapid back-and-forth drags.
   // Use minimal steps to create fastest possible event dispatch,
@@ -222,8 +289,8 @@ test("distribution switches axes on menu selection", async ({ page }) => {
   expect(uniqueLabels.length).toBeGreaterThanOrEqual(2);
   const axis1 = uniqueLabels[0];
   const axis2 = uniqueLabels[1];
-  const axis1Index = labelTexts.findIndex((text) => text === axis1);
-  const axis2Index = labelTexts.findIndex((text) => text === axis2);
+  const axis1Index = labelTexts.indexOf(axis1);
+  const axis2Index = labelTexts.indexOf(axis2);
   expect(axis1Index).toBeGreaterThanOrEqual(0);
   expect(axis2Index).toBeGreaterThanOrEqual(0);
 
@@ -257,7 +324,7 @@ test("distribution categorical bars stay aligned with labels after keep/filter",
       return textParts.join(" ").trim();
     }),
   );
-  const cAxisIndex = labelTexts.findIndex((text) => text === "c");
+  const cAxisIndex = labelTexts.indexOf("c");
   expect(cAxisIndex).toBeGreaterThanOrEqual(0);
 
   await expect(page.locator('[data-testid="distribution-plot"][data-axis="c"]')).toBeVisible();
@@ -265,13 +332,11 @@ test("distribution categorical bars stay aligned with labels after keep/filter",
   const cDimension = page.locator("svg g.dimension").nth(cAxisIndex);
   const cOverlay = cDimension.locator(".pplot-brush rect.overlay").first();
   const greenTick = cDimension.locator(".tick text", { hasText: "green" }).first();
-  const overlayBox = await cOverlay.boundingBox();
-  const greenTickBox = await greenTick.boundingBox();
-  expect(overlayBox).toBeTruthy();
-  expect(greenTickBox).toBeTruthy();
-  const x = overlayBox!.x + overlayBox!.width / 2;
-  const y1 = greenTickBox!.y + 1;
-  const y2 = greenTickBox!.y + greenTickBox!.height - 1;
+  const overlayBox = await boundingBoxOf(cOverlay);
+  const greenTickBox = await boundingBoxOf(greenTick);
+  const x = overlayBox.x + overlayBox.width / 2;
+  const y1 = greenTickBox.y + 1;
+  const y2 = greenTickBox.y + greenTickBox.height - 1;
   await page.mouse.move(x, y1);
   await page.mouse.down();
   await page.mouse.move(x, y2, { steps: 8 });
@@ -285,16 +350,16 @@ test("distribution categorical bars stay aligned with labels after keep/filter",
   await expect
     .poll(async () => {
       return await page.evaluate(() => {
-        const root = document.querySelector(
+        const root = document.querySelector<HTMLElement>(
           '[data-testid="distribution-plot"][data-axis="c"]',
-        ) as HTMLElement | null;
+        );
         if (!root) {
           return { ok: false, reason: "missing-distribution-root" };
         }
         const bars = Array.from(
-          root.querySelectorAll('[data-testid="distribution-hist-all"] rect'),
+          root.querySelectorAll<SVGGraphicsElement>('[data-testid="distribution-hist-all"] rect'),
         ).map((rect) => {
-          const bb = (rect as SVGGraphicsElement).getBBox();
+          const bb = rect.getBBox();
           return {
             area: bb.width * bb.height,
             sample: (rect.getAttribute("data-value-sample") || "").trim(),
@@ -318,7 +383,9 @@ test("distribution categorical bars stay aligned with labels after keep/filter",
 
 test("plotxy y-axis tick labels are not clipped for large numeric ranges", async ({ page }) => {
   await page.goto("/");
-  await page.waitForFunction(() => (window as any).hiplot?.render, { timeout: 15000 });
+  await page.waitForFunction(() => (window as unknown as HiPlotWindow).hiplot?.render, {
+    timeout: 15000,
+  });
   const input = page.locator('textarea[placeholder="Experiments to load"]');
   await expect(input).toBeVisible();
   await input.fill("demo_plotxy_large_numeric");
@@ -328,9 +395,9 @@ test("plotxy y-axis tick labels are not clipped for large numeric ranges", async
   await expect
     .poll(async () => {
       return await page.evaluate(() => {
-        const svg = Array.from(document.querySelectorAll("svg")).find((candidate) =>
+        const svg = Array.from(document.querySelectorAll<SVGSVGElement>("svg")).find((candidate) =>
           candidate.querySelector(".axis_render"),
-        ) as SVGSVGElement | undefined;
+        );
         if (!svg) {
           return { ok: false, reason: "missing-xy-svg" };
         }
@@ -364,12 +431,12 @@ test("inverted axis orientation is preserved across keep/restore on another axis
   await loadDemo(page);
   const result = await page.evaluate(async () => {
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-    const hiplot = (window as any).hiplot_last_instance;
-    const pplot = hiplot?.plugins_ref?.PARALLEL_PLOT?.current;
+    const hiplot = (window as unknown as HiPlotWindow).hiplot_last_instance;
+    const pplot = hiplot?.plugins_ref.PARALLEL_PLOT?.current;
     if (!hiplot || !pplot) {
       return { error: "missing-hiplot-or-pplot" };
     }
-    const dims = Array.from(pplot.state.dimensions) as string[];
+    const dims = Array.from(pplot.state.dimensions);
     if (dims.length < 2) {
       return { error: "not-enough-dimensions" };
     }
@@ -384,9 +451,7 @@ test("inverted axis orientation is preserved across keep/restore on another axis
     await sleep(150);
     const rangeAfterInvert = pplot.yscale[invertDim].range().slice();
 
-    const brushEl = pplot.dimensions_dom
-      .filter((d: string) => d === filterDim)
-      .select(".pplot-brush");
+    const brushEl = pplot.dimensions_dom.filter((d) => d === filterDim).select(".pplot-brush");
     pplot.d3brush.move(brushEl, [60, Math.min(260, pplot.h - 20)]);
     await sleep(250);
 
@@ -425,8 +490,8 @@ test("inverting another axis does not temporarily unhide ticks on an actively fi
   await loadDemo(page);
   const result = await page.evaluate(async () => {
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-    const hiplot = (window as any).hiplot_last_instance;
-    const pplot = hiplot?.plugins_ref?.PARALLEL_PLOT?.current;
+    const hiplot = (window as unknown as HiPlotWindow).hiplot_last_instance;
+    const pplot = hiplot?.plugins_ref.PARALLEL_PLOT?.current;
     if (!hiplot || !pplot) {
       return { error: "missing-hiplot-or-pplot" };
     }
@@ -437,25 +502,20 @@ test("inverting another axis does not temporarily unhide ticks on an actively fi
     const filteredDim = dims[0];
     const actionDim = dims[1];
 
-    const brushEl = pplot.dimensions_dom
-      .filter((d: string) => d === filteredDim)
-      .select(".pplot-brush");
+    const brushEl = pplot.dimensions_dom.filter((d) => d === filteredDim).select(".pplot-brush");
     pplot.d3brush.move(brushEl, [60, Math.min(260, pplot.h - 20)]);
     await sleep(250);
 
-    const dimNode = pplot.dimensions_dom
-      .filter((d: string) => d === filteredDim)
-      .node() as SVGGElement;
+    const dimNode = pplot.dimensions_dom.filter((d) => d === filteredDim).node();
     if (!dimNode) {
       return { error: "missing-filtered-dimension-node" };
     }
 
     const isAxisTick = (el: SVGTextElement) =>
       !el.classList.contains("pplot-label") && !el.classList.contains("label-name");
-    const hiddenBefore = Array.from(dimNode.querySelectorAll("text")).filter((el) => {
-      const textEl = el as SVGTextElement;
-      return isAxisTick(textEl) && getComputedStyle(textEl).display === "none";
-    }) as SVGTextElement[];
+    const hiddenBefore = Array.from(dimNode.querySelectorAll("text")).filter(
+      (el) => isAxisTick(el) && getComputedStyle(el).display === "none",
+    );
     if (hiddenBefore.length === 0) {
       return { error: "no-hidden-ticks-after-brush" };
     }
@@ -464,8 +524,12 @@ test("inverting another axis does not temporarily unhide ticks on an actively fi
     const watched = new Set(hiddenBefore);
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
-        const target = mutation.target as SVGTextElement;
-        if (watched.has(target) && getComputedStyle(target).display !== "none") {
+        const target = mutation.target;
+        if (
+          target instanceof SVGTextElement &&
+          watched.has(target) &&
+          getComputedStyle(target).display !== "none"
+        ) {
           flashed = true;
           break;
         }
@@ -498,10 +562,10 @@ test("table keeps correct column-value mapping after column reorder and brush up
   await loadDemo(page);
   const result = await page.evaluate(async () => {
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-    const hiplot = (window as any).hiplot_last_instance;
-    const table = hiplot?.plugins_ref?.TABLE?.current;
-    const pplot = hiplot?.plugins_ref?.PARALLEL_PLOT?.current;
-    if (!hiplot || !table || !table.dt || !pplot) {
+    const hiplot = (window as unknown as HiPlotWindow).hiplot_last_instance;
+    const table = hiplot?.plugins_ref.TABLE?.current;
+    const pplot = hiplot?.plugins_ref.PARALLEL_PLOT?.current;
+    if (!hiplot || !table?.dt || !pplot) {
       return { error: "missing-hiplot-table-or-pplot" };
     }
     const dt = table.dt;
@@ -521,9 +585,7 @@ test("table keeps correct column-value mapping after column reorder and brush up
       return { error: "no-parallel-dimensions" };
     }
     const brushDim = dims[0];
-    const brushEl = pplot.dimensions_dom
-      .filter((d: string) => d === brushDim)
-      .select(".pplot-brush");
+    const brushEl = pplot.dimensions_dom.filter((d) => d === brushDim).select(".pplot-brush");
     pplot.d3brush.move(brushEl, [60, Math.min(260, pplot.h - 20)]);
     await sleep(300);
 
@@ -564,13 +626,13 @@ test("plotxy timestamp axis labels are not scientific notation", async ({ page }
   await loadDemo(page);
   // The XY plot mounts once its container has been measured (debounced resize).
   await page.waitForFunction(
-    () => (window as any).hiplot_last_instance?.plugins_ref?.XY?.current?.plot,
+    () => (window as unknown as HiPlotWindow).hiplot_last_instance?.plugins_ref.XY?.current?.plot,
   );
   const result = await page.evaluate(async () => {
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-    const hiplot = (window as any).hiplot_last_instance;
-    const plotxy = hiplot?.plugins_ref?.XY?.current;
-    if (!plotxy || !plotxy.plot) {
+    const hiplot = (window as unknown as HiPlotWindow).hiplot_last_instance;
+    const plotxy = hiplot?.plugins_ref.XY?.current;
+    if (!plotxy?.plot) {
       return { error: "missing-plotxy" };
     }
     plotxy.setState({ axis_x: "timestamp" });

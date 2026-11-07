@@ -37,8 +37,8 @@ test.describe("HiPlot Mobile Tests", () => {
 
     // Labels should still have valid bounding box
     expect(afterBox).not.toBeNull();
-    expect(afterBox!.width).toBeGreaterThan(0);
-    expect(afterBox!.height).toBeGreaterThan(0);
+    expect(afterBox?.width).toBeGreaterThan(0);
+    expect(afterBox?.height).toBeGreaterThan(0);
   });
 
   test("drag axis should work", async ({ page }) => {

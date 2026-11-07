@@ -5,22 +5,21 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import type { Datapoint, DatapointsCompressed } from "../types";
+import type { DatapointsCompressed, DatapointValue, RawDatapoint } from "../types";
 
 // See `compress.py` for compression code on the python side
-export function uncompress(compressed_data: DatapointsCompressed) {
+export function uncompress(compressed_data: DatapointsCompressed): RawDatapoint[] {
   const columns = compressed_data.columns;
-  const rows = compressed_data.rows;
-  return rows.map((row) => {
-    const values = {};
-    const dp: Datapoint = {
-      uid: row[0],
-      from_uid: row[1],
-      values: values,
-    };
+  return compressed_data.rows.map((row) => {
+    const values: { [column: string]: DatapointValue } = {};
     columns.forEach((column, i) => {
       values[column] = row[i + 2];
     });
-    return dp;
+    const [uid, from_uid] = row;
+    return {
+      uid: String(uid),
+      from_uid: from_uid === null || from_uid === undefined ? null : String(from_uid),
+      values,
+    };
   });
 }

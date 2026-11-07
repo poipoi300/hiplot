@@ -9,7 +9,7 @@ import * as d3 from "d3";
 import React from "react";
 import Dropzone, { type DropEvent, type FileRejection } from "react-dropzone";
 import type { DataProviderProps } from "../plugin";
-import { Experiment, type HiPlotExperiment } from "../types";
+import { Experiment, type LoadURIPromiseResult } from "../types";
 import style from "./upload.module.css";
 
 export const PSTATE_LOAD_URI = "load_uri";
@@ -18,10 +18,7 @@ interface State {
   currentFileName: string | null;
 }
 
-function readFileIntoExperiment(content: string): {
-  experiment?: HiPlotExperiment;
-  error?: string;
-} {
+function readFileIntoExperiment(content: string): LoadURIPromiseResult {
   const csvContent = d3.csvParse(content);
   return {
     experiment: Experiment.from_iterable(csvContent),
@@ -41,31 +38,33 @@ export class UploadDataProvider extends React.Component<DataProviderProps, State
 
   onDropFiles(acceptedFiles: File[], fileRejections: FileRejection[], _event: DropEvent): void {
     this.props.onLoadExperiment(
-      new Promise(
-        function (resolve, _reject) {
-          if (fileRejections.length) {
-            resolve({
-              error: `Unexpected file (is it a CSV file?): ${fileRejections[0].file.name} - ${fileRejections[0].errors[0].message}`,
-            });
-          }
-          if (acceptedFiles.length > 1) {
-            resolve({ error: `Uploading more than one file is not supported` });
-          }
-          if (acceptedFiles.length === 0) {
-            resolve({ error: `No file uploaded?` });
-          }
-          const file = acceptedFiles[0];
-          const reader = new FileReader();
+      new Promise<LoadURIPromiseResult>((resolve) => {
+        if (fileRejections.length) {
+          resolve({
+            error: `Unexpected file (is it a CSV file?): ${fileRejections[0].file.name} - ${fileRejections[0].errors[0].message}`,
+          });
+        }
+        if (acceptedFiles.length > 1) {
+          resolve({ error: `Uploading more than one file is not supported` });
+        }
+        if (acceptedFiles.length === 0) {
+          resolve({ error: `No file uploaded?` });
+        }
+        const file = acceptedFiles[0];
+        const reader = new FileReader();
 
-          reader.onabort = () => resolve({ error: "file reading aborted" });
-          reader.onerror = () => resolve({ error: "file reading has failed" });
-          reader.onload = () => {
-            resolve(readFileIntoExperiment(reader.result as string));
-            this.setState({ currentFileName: file.name });
-          };
-          reader.readAsText(file);
-        }.bind(this),
-      ),
+        reader.onabort = () => resolve({ error: "file reading aborted" });
+        reader.onerror = () => resolve({ error: "file reading has failed" });
+        reader.onload = () => {
+          if (typeof reader.result !== "string") {
+            resolve({ error: "file reading has failed" });
+            return;
+          }
+          resolve(readFileIntoExperiment(reader.result));
+          this.setState({ currentFileName: file.name });
+        };
+        reader.readAsText(file);
+      }),
     );
   }
   render() {

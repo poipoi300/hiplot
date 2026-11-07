@@ -8,19 +8,28 @@
 import $ from "jquery";
 import React from "react";
 import LogoSVG from "../../hiplot/static/logo.svg";
+import { mounted } from "../lib/refs";
 import style from "./style.module.css";
 
+// Injected by the Vite `define` option; absent when the source is not bundled by Vite.
+declare const HIPLOT_PACKAGE_NAME_FULL: string | undefined;
+
 interface TutorialStepProps {
-  rootRef: React.RefObject<HTMLElement>;
+  rootRef: React.RefObject<HTMLElement | null>;
 }
 
-class _StepHiPlotInfo extends React.Component<TutorialStepProps, {}> {
+/** The container that holds the plots next to the tutorial's navbar. */
+function plotsContainer(rootRef: React.RefObject<HTMLElement | null>): JQuery {
+  const container = mounted(rootRef).parentElement;
+  if (container === null) {
+    throw new Error("The tutorial navbar must be mounted inside the HiPlot container");
+  }
+  return $(container);
+}
+
+class _StepHiPlotInfo extends React.Component<TutorialStepProps> {
   render() {
-    // @ts-expect-error
-    let pkgInfo = HIPLOT_PACKAGE_NAME_FULL;
-    if (pkgInfo === undefined) {
-      pkgInfo = "hiplot (no version information)";
-    }
+    const pkgInfo = HIPLOT_PACKAGE_NAME_FULL ?? "hiplot (no version information)";
     return (
       <div className="alert alert-primary" role="alert">
         <div className="row">
@@ -95,16 +104,12 @@ class _StepHiPlotInfo extends React.Component<TutorialStepProps, {}> {
   }
 }
 
-class StepParallelPlot extends React.Component<TutorialStepProps, {}> {
+class StepParallelPlot extends React.Component<TutorialStepProps> {
   componentDidMount() {
-    $(this.props.rootRef.current.parentElement)
-      .find(".pplot-root")
-      .addClass(style.highlightElement);
+    plotsContainer(this.props.rootRef).find(".pplot-root").addClass(style.highlightElement);
   }
   componentWillUnmount() {
-    $(this.props.rootRef.current.parentElement)
-      .find(".pplot-root")
-      .removeClass(style.highlightElement);
+    plotsContainer(this.props.rootRef).find(".pplot-root").removeClass(style.highlightElement);
   }
   render() {
     return (
@@ -127,16 +132,12 @@ class StepParallelPlot extends React.Component<TutorialStepProps, {}> {
   }
 }
 
-class StepLearnToSlice extends React.Component<TutorialStepProps, {}> {
+class StepLearnToSlice extends React.Component<TutorialStepProps> {
   componentDidMount() {
-    $(this.props.rootRef.current.parentElement)
-      .find(".pplot-brush")
-      .addClass(style.highlightElement);
+    plotsContainer(this.props.rootRef).find(".pplot-brush").addClass(style.highlightElement);
   }
   componentWillUnmount() {
-    $(this.props.rootRef.current.parentElement)
-      .find(".pplot-brush")
-      .removeClass(style.highlightElement);
+    plotsContainer(this.props.rootRef).find(".pplot-brush").removeClass(style.highlightElement);
   }
   render() {
     return (
@@ -154,14 +155,12 @@ class StepLearnToSlice extends React.Component<TutorialStepProps, {}> {
   }
 }
 
-class StepMoveAndRemoveColumns extends React.Component<TutorialStepProps, {}> {
+class StepMoveAndRemoveColumns extends React.Component<TutorialStepProps> {
   componentDidMount() {
-    $(this.props.rootRef.current.parentElement).find(".pplot-label").addClass(style.highlightText);
+    plotsContainer(this.props.rootRef).find(".pplot-label").addClass(style.highlightText);
   }
   componentWillUnmount() {
-    $(this.props.rootRef.current.parentElement)
-      .find(".pplot-label")
-      .removeClass(style.highlightText);
+    plotsContainer(this.props.rootRef).find(".pplot-label").removeClass(style.highlightText);
   }
   render() {
     return (
@@ -177,14 +176,12 @@ class StepMoveAndRemoveColumns extends React.Component<TutorialStepProps, {}> {
   }
 }
 
-class StepDataTypeAndScaling extends React.Component<TutorialStepProps, {}> {
+class StepDataTypeAndScaling extends React.Component<TutorialStepProps> {
   componentDidMount() {
-    $(this.props.rootRef.current.parentElement).find(".pplot-label").addClass(style.highlightText);
+    plotsContainer(this.props.rootRef).find(".pplot-label").addClass(style.highlightText);
   }
   componentWillUnmount() {
-    $(this.props.rootRef.current.parentElement)
-      .find(".pplot-label")
-      .removeClass(style.highlightText);
+    plotsContainer(this.props.rootRef).find(".pplot-label").removeClass(style.highlightText);
   }
   render() {
     return (
@@ -206,7 +203,7 @@ class StepDataTypeAndScaling extends React.Component<TutorialStepProps, {}> {
 
 interface Props {
   onTutorialDone: () => void;
-  navbarRoot: React.RefObject<HTMLDivElement>;
+  navbarRoot: React.RefObject<HTMLDivElement | null>;
 }
 
 interface State {
@@ -232,11 +229,9 @@ export class HiPlotTutorial extends React.Component<Props, State> {
       this.props.onTutorialDone();
       return;
     }
-    this.setState(function (prevState, _prevProps) {
-      return {
-        stepNum: Math.min(prevState.stepNum + 1, this.steps.length - 1),
-      };
-    });
+    this.setState((prevState, _prevProps) => ({
+      stepNum: Math.min(prevState.stepNum + 1, this.steps.length - 1),
+    }));
   }
   onClickPreviousTutorial() {
     if (this.state.stepNum === 0) {

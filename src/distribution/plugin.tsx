@@ -5,11 +5,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import * as d3 from "d3";
 import $ from "jquery";
 import React from "react";
 import _ from "underscore";
 import { ResizableH } from "../lib/resizable";
+import { isString, readState } from "../lib/savedstate";
 import type { HiPlotPluginData } from "../plugin";
 import { DistributionPlot, type HistogramData } from "./plot";
 
@@ -41,26 +41,20 @@ export class HiPlotDistributionPlugin extends React.Component<
   DistributionPluginProps,
   HiPlotDistributionPluginState
 > {
-  container_ref: React.RefObject<HTMLDivElement> = React.createRef();
+  container_ref = React.createRef<HTMLDivElement>();
   constructor(props: DistributionPluginProps) {
     super(props);
-    let axis = this.props.persistentState.get("axis", null);
-    if (axis && this.props.params_def[axis] === undefined) {
-      axis = null;
-    }
-    if (!axis) {
-      axis = this.props.axis;
-    }
-    if (axis && this.props.params_def[axis] === undefined) {
-      axis = null;
-    }
-    const initialHeight = d3.min([d3.max([document.body.clientHeight - 540, 240]), 500]);
+    const knownAxis = (candidate: string | undefined): string | null =>
+      candidate && props.params_def[candidate] !== undefined ? candidate : null;
+    const axis =
+      knownAxis(readState(props.persistentState, "axis", isString, "")) ?? knownAxis(props.axis);
+    const initialHeight = Math.min(Math.max(document.body.clientHeight - 540, 240), 500);
     this.state = {
       initialHeight: initialHeight,
       height: initialHeight,
       width: 0,
       histData: { selected: props.rows_selected, all: props.rows_filtered },
-      axis: axis !== undefined ? axis : null, // Convert undefined into null
+      axis: axis,
     };
   }
   static defaultProps = {
@@ -69,7 +63,7 @@ export class HiPlotDistributionPlugin extends React.Component<
   };
 
   componentDidMount() {
-    if (this.props.context_menu_ref && this.props.context_menu_ref.current) {
+    if (this.props.context_menu_ref?.current) {
       this.props.context_menu_ref.current.addCallback((column, cm) => {
         const contextmenu = $(cm);
         contextmenu.append($('<div class="dropdown-divider"></div>'));
@@ -85,7 +79,7 @@ export class HiPlotDistributionPlugin extends React.Component<
       }, this);
     }
   }
-  componentDidUpdate(prevProps: HiPlotPluginData, prevState: HiPlotDistributionPluginState) {
+  componentDidUpdate(_prevProps: HiPlotPluginData, prevState: HiPlotDistributionPluginState) {
     if (prevState.axis !== this.state.axis) {
       this.props.sendMessage("height_changed", () => null);
       if (this.props.persistentState) {
@@ -93,45 +87,34 @@ export class HiPlotDistributionPlugin extends React.Component<
       }
     }
     if (this.state.histData.all !== this.props.rows_filtered) {
-      this.setState(
-        function (s: HiPlotDistributionPluginState, _p) {
-          return {
-            histData: {
-              ...s.histData,
-              all: this.props.rows_filtered,
-              selected: this.props.rows_selected,
-            },
-          };
-        }.bind(this),
-      );
+      this.setState((s: HiPlotDistributionPluginState) => ({
+        histData: {
+          ...s.histData,
+          all: this.props.rows_filtered,
+          selected: this.props.rows_selected,
+        },
+      }));
     } else if (this.state.histData.selected !== this.props.rows_selected) {
-      this.setState(
-        function (s: HiPlotDistributionPluginState, _p) {
-          return {
-            histData: {
-              ...s.histData,
-              selected: this.props.rows_selected,
-            },
-          };
-        }.bind(this),
-      );
+      this.setState((s: HiPlotDistributionPluginState) => ({
+        histData: {
+          ...s.histData,
+          selected: this.props.rows_selected,
+        },
+      }));
     }
   }
   componentWillUnmount() {
-    if (this.props.context_menu_ref && this.props.context_menu_ref.current) {
+    if (this.props.context_menu_ref?.current) {
       this.props.context_menu_ref.current.removeCallbacks(this);
     }
     this.onResize.cancel();
   }
-  onResize = _.debounce(
-    function (height: number, width: number) {
-      if (height !== this.state.height || width !== this.state.width) {
-        this.setState({ height: height, width: width });
-        this.props.sendMessage("height_changed", () => null);
-      }
-    }.bind(this),
-    150,
-  );
+  onResize = _.debounce((height: number, width: number) => {
+    if (height !== this.state.height || width !== this.state.width) {
+      this.setState({ height: height, width: width });
+      this.props.sendMessage("height_changed", () => null);
+    }
+  }, 150);
   disable(): void {
     this.setState({ width: 0, axis: null, height: this.state.initialHeight });
   }

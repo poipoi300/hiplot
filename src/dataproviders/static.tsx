@@ -8,7 +8,7 @@
 import React from "react";
 import type { DataProviderProps } from "../plugin";
 
-export class StaticDataProvider extends React.Component<DataProviderProps, {}> {
+export class StaticDataProvider extends React.Component<DataProviderProps> {
   render() {
     return [];
   }

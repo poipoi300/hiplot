@@ -5,10 +5,14 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+/** A cell value as it arrives from Python or a CSV: JSON scalars, with NaN and Infinity kept. */
+export type DatapointValue = string | number | boolean | null | undefined;
+
+/** One row: its identity plus one value per column. */
 export interface Datapoint {
   uid: string;
   from_uid: string | null;
-  [key: string]: any;
+  [column: string]: DatapointValue;
 }
 export interface DatapointLookup {
   [key: string]: Datapoint;
@@ -31,8 +35,8 @@ export enum ParamType {
 
 export interface HiPlotValueDef {
   // Mirror of python `hip.ValueDef`
-  type: ParamType;
-  colors: { [value: string]: string };
+  type: ParamType | null;
+  colors: { [value: string]: string } | null;
   colormap: string | null;
   force_value_min: number | null;
   force_value_max: number | null;
@@ -40,36 +44,41 @@ export interface HiPlotValueDef {
   label_html: string | null;
 }
 
+/** Mirror of python `hip.Datapoint`, as serialized in an experiment. */
+export interface RawDatapoint {
+  uid: string;
+  from_uid: string | null;
+  values: { [column: string]: DatapointValue };
+}
+
 export interface DatapointsCompressed {
   columns: Array<string>;
-  rows: Array<Array<any>>;
+  // Each row is [uid, from_uid, ...one value per column]
+  rows: Array<Array<DatapointValue>>;
 }
 
 export interface HiPlotExperiment {
   // Mirror of python `hip.Experiment`
-  datapoints: Array<Datapoint>;
+  datapoints?: Array<RawDatapoint>;
   datapoints_compressed?: DatapointsCompressed;
   parameters_definition?: { [key: string]: HiPlotValueDef };
   colormap?: string;
   colorby?: string;
   weightcolumn?: string;
-  display_data?: { [key: string]: { [key2: string]: any } };
+  display_data?: { [display: string]: { [setting: string]: unknown } };
   enabled_displays?: Array<string>;
 }
 
+// biome-ignore lint/complexity/noStaticOnlyClass: `hiplot.Experiment.from_iterable` is public library API.
 export class Experiment {
-  static from_iterable(values: object[]): HiPlotExperiment {
+  static from_iterable(rows: Iterable<{ [column: string]: DatapointValue }>): HiPlotExperiment {
     return {
-      datapoints: values.map((raw_row: object, index: number): Datapoint => {
-        const uid = raw_row["uid"] !== undefined ? raw_row["uid"] : `${index}`;
-        const from_uid = raw_row["from_uid"] !== undefined ? raw_row["from_uid"] : null;
-        const values = Object.assign({}, raw_row);
-        delete values["uid"];
-        delete values["from_uid"];
+      datapoints: Array.from(rows, (row, index): RawDatapoint => {
+        const { uid, from_uid, ...values } = row;
         return {
-          uid: uid,
-          from_uid: from_uid,
-          values: values,
+          uid: uid !== undefined && uid !== null ? String(uid) : `${index}`,
+          from_uid: from_uid !== undefined && from_uid !== null ? String(from_uid) : null,
+          values,
         };
       }),
       parameters_definition: {},
@@ -77,6 +86,9 @@ export class Experiment {
     };
   }
 }
+
+export type LoadURIPromiseResult = { experiment: HiPlotExperiment } | { error: string };
+export type LoadURIPromise = Promise<LoadURIPromiseResult>;
 
 export enum HiPlotLoadStatus {
   None,

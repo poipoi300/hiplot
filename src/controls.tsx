@@ -7,8 +7,8 @@
 
 import * as d3 from "d3";
 import React from "react";
-import * as _ from "underscore";
 import style from "./hiplot.module.css";
+import { mounted } from "./lib/refs";
 import type { IDatasets } from "./types";
 
 export interface HiPlotDataControlProps extends IDatasets {
@@ -20,15 +20,15 @@ interface HiPlotDataControlState {
   btnEnabled: boolean;
 }
 
-export class KeepOrExcludeDataBtn extends React.Component<
+export abstract class KeepOrExcludeDataBtn extends React.Component<
   HiPlotDataControlProps,
   HiPlotDataControlState
 > {
-  btnRef: React.RefObject<HTMLButtonElement> = React.createRef();
-  keep: boolean;
-  title: string;
-  label: string;
-  style: string;
+  btnRef = React.createRef<HTMLButtonElement>();
+  abstract readonly keep: boolean;
+  abstract readonly title: string;
+  abstract readonly label: string;
+  abstract readonly style: string;
   constructor(props: HiPlotDataControlProps) {
     super(props);
     this.state = {
@@ -66,17 +66,17 @@ export class KeepOrExcludeDataBtn extends React.Component<
 }
 
 export class KeepDataBtn extends KeepOrExcludeDataBtn {
-  keep = true;
-  title = "Zoom in on selected data";
-  label = "Keep";
-  style = "success";
+  readonly keep = true;
+  readonly title = "Zoom in on selected data";
+  readonly label = "Keep";
+  readonly style = "success";
 }
 
 export class ExcludeDataBtn extends KeepOrExcludeDataBtn {
-  keep = false;
-  title = "Remove selected data";
-  label = "Exclude";
-  style = "danger";
+  readonly keep = false;
+  readonly title = "Remove selected data";
+  readonly label = "Exclude";
+  readonly style = "danger";
 }
 
 function downloadURL(url: string, filename: string) {
@@ -160,7 +160,7 @@ export class SelectedCountProgressBar extends React.Component<
   HiPlotDataControlProps,
   HiPlotDataControlState
 > {
-  selectedBar: React.RefObject<HTMLDivElement> = React.createRef();
+  selectedBar = React.createRef<HTMLDivElement>();
   componentDidMount() {
     this.updateBarWidth();
   }
@@ -170,8 +170,8 @@ export class SelectedCountProgressBar extends React.Component<
   updateBarWidth() {
     const selected = this.props.rows_selected.length;
     const filtered = this.props.rows_filtered.length;
-    const selectedBar = this.selectedBar.current;
-    selectedBar.style.width = (100 * selected) / filtered + "%";
+    const selectedBar = mounted(this.selectedBar);
+    selectedBar.style.width = `${(100 * selected) / filtered}%`;
   }
 
   render() {

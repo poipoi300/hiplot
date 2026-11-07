@@ -25,7 +25,7 @@ import { type RenderData, Streamlit } from "./streamlit";
  */
 export interface ComponentProps {
   /** Named dictionary of arguments passed from Python. */
-  args: any;
+  args: Record<string, unknown>;
 
   /** The component's width. */
   width: number;
@@ -46,7 +46,7 @@ export interface ComponentProps {
  * `componentDidMount` and `componentDidUpdate` functions in your own class,
  * so that your plugin properly resizes.
  */
-export class StreamlitComponentBase<S = {}> extends React.PureComponent<ComponentProps, S> {
+export class StreamlitComponentBase<S = object> extends React.PureComponent<ComponentProps, S> {
   public componentDidMount(): void {
     // After we're rendered for the first time, tell Streamlit that our height
     // has changed.
@@ -67,7 +67,7 @@ export class StreamlitComponentBase<S = {}> extends React.PureComponent<Componen
 export function withStreamlitConnection(
   WrappedComponent: React.ComponentType<ComponentProps>,
 ): React.ComponentType {
-  type WrapperProps = {};
+  type WrapperProps = Record<string, never>;
 
   interface WrapperState {
     renderData?: RenderData;

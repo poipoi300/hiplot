@@ -8,10 +8,11 @@
 import $ from "jquery";
 import JSON5 from "json5";
 import React from "react";
-import type { LoadURIPromise } from "../component";
 import style from "../hiplot.module.css";
+import { mounted } from "../lib/refs";
+import { isString } from "../lib/savedstate";
 import type { DataProviderProps } from "../plugin";
-import { HiPlotLoadStatus } from "../types";
+import { HiPlotLoadStatus, type LoadURIPromise, type LoadURIPromiseResult } from "../types";
 
 export const PSTATE_LOAD_URI = "load_uri";
 
@@ -39,17 +40,17 @@ export class RunsSelectionTextArea extends React.Component<TextAreaProps, TextAr
     };
   }
   onInput() {
-    const elem = this.textarea.current;
+    const elem = mounted(this.textarea);
     if (this.props.hasFocus || !this.props.minimizeWhenOutOfFocus) {
       elem.style.height = "auto";
-      elem.style.height = elem.scrollHeight + "px";
+      elem.style.height = `${elem.scrollHeight}px`;
       return;
     }
     elem.style.height = "55px";
   }
   onKeyDown(evt: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (evt.which === 13 && !evt.shiftKey) {
-      this.props.onSubmit(this.textarea.current.value);
+      this.props.onSubmit(mounted(this.textarea).value);
       this.props.onFocusChange(false);
       evt.preventDefault();
     }
@@ -86,14 +87,31 @@ export class RunsSelectionTextArea extends React.Component<TextAreaProps, TextAr
   }
 }
 
+function isLoadURIPromiseResult(value: unknown): value is LoadURIPromiseResult {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  if ("error" in value) {
+    return isString(value.error);
+  }
+  return "experiment" in value && typeof value.experiment === "object" && value.experiment !== null;
+}
+
 export function loadURIFromWebServer(uri: string): LoadURIPromise {
   return new Promise((resolve, reject) => {
-    $.get("/data?uri=" + encodeURIComponent(uri), resolve, "json").fail((data) => {
+    const resolveValidated = (response: unknown): void => {
+      if (!isLoadURIPromiseResult(response)) {
+        reject(new Error("The HiPlot server returned a malformed response"));
+        return;
+      }
+      resolve(response);
+    };
+    $.get(`/data?uri=${encodeURIComponent(uri)}`, resolveValidated, "json").fail((data) => {
       if (data.readyState === 4 && data.status === 200) {
         console.log(
           "Unable to parse JSON with JS default decoder (Maybe it contains NaNs?). Using JSON5.",
         );
-        resolve(JSON5.parse(data.responseText));
+        resolveValidated(JSON5.parse(data.responseText));
       } else if (data.status === 0) {
         resolve({
           error: "Network error",
@@ -113,12 +131,16 @@ interface State {
 export class WebserverDataProvider extends React.Component<DataProviderProps, State> {
   constructor(props: DataProviderProps) {
     super(props);
+    const storedUri = this.props.persistentState.get(PSTATE_LOAD_URI);
     this.state = {
-      uri: this.props.persistentState.get(PSTATE_LOAD_URI),
+      uri: isString(storedUri) ? storedUri : undefined,
     };
   }
-  refresh(): Promise<any> | null {
+  refresh(): LoadURIPromise | null {
     console.assert(this.state.uri !== "");
+    if (this.state.uri === undefined) {
+      return null;
+    }
     return loadURIFromWebServer(this.state.uri);
   }
   componentDidMount() {
@@ -126,11 +148,12 @@ export class WebserverDataProvider extends React.Component<DataProviderProps, St
       this.props.onLoadExperiment(loadURIFromWebServer(this.state.uri));
     }
   }
-  componentDidUpdate(prevProps: DataProviderProps, prevState: State): void {
-    if (this.state.uri !== prevState.uri) {
-      this.props.onLoadExperiment(loadURIFromWebServer(this.state.uri));
-      this.props.persistentState.set(PSTATE_LOAD_URI, this.state.uri);
+  componentDidUpdate(_prevProps: DataProviderProps, prevState: State): void {
+    if (this.state.uri === undefined || this.state.uri === prevState.uri) {
+      return;
     }
+    this.props.onLoadExperiment(loadURIFromWebServer(this.state.uri));
+    this.props.persistentState.set(PSTATE_LOAD_URI, this.state.uri);
   }
 
   loadExperiment(uri: string) {
@@ -140,7 +163,7 @@ export class WebserverDataProvider extends React.Component<DataProviderProps, St
   render() {
     return (
       <RunsSelectionTextArea
-        initialValue={this.state.uri}
+        initialValue={this.state.uri ?? ""}
         enabled={this.props.loadStatus !== HiPlotLoadStatus.Loading}
         minimizeWhenOutOfFocus={this.props.loadStatus === HiPlotLoadStatus.Loaded}
         onSubmit={this.loadExperiment.bind(this)}

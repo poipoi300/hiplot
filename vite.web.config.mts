@@ -1,6 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
 import react from "@vitejs/plugin-react";
-import fs from "fs";
-import path from "path";
 import postcss from "postcss";
 import prefixSelector from "postcss-prefix-selector";
 import { defineConfig, type Plugin } from "vite";
@@ -22,7 +22,7 @@ function scopeVendorCssVitePlugin(): Plugin {
         }
         // Handle universal selector - scope it
         if (selector === "*" || selector.startsWith("*,") || selector.startsWith("*, ")) {
-          return selector.replace(/^\*/, prefix + " *");
+          return selector.replace(/^\*/, `${prefix} *`);
         }
         return prefixedSelector;
       },

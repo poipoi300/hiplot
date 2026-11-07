@@ -18,8 +18,14 @@
 
 /** Data sent in the custom Streamlit render event. */
 export interface RenderData {
-  args: any;
+  args: Record<string, unknown>;
   disabled: boolean;
+}
+
+/** The untyped payload of a render message sent by the Streamlit app. */
+interface RenderMessageData {
+  args?: Record<string, unknown> | null;
+  disabled?: unknown;
 }
 
 /** Messages from Component -> Streamlit */
@@ -31,7 +37,7 @@ enum ComponentMessageType {
 
   // The component has a new widget value. Send it back to Streamlit, which
   // will then re-run the app.
-  // Data: { value: any }
+  // Data: { value: unknown }
   SET_COMPONENT_VALUE = "streamlit:setComponentValue",
 
   // The component has a new height for its iframe.
@@ -45,6 +51,7 @@ enum ComponentMessageType {
  * Components can send data to Streamlit via the functions defined here,
  * and receive data from Streamlit via the `events` property.
  */
+// biome-ignore lint/complexity/noStaticOnlyClass: mirrors the streamlit-component-lib `Streamlit` API.
 export class Streamlit {
   /**
    * The Streamlit component API version we're targetting.
@@ -114,13 +121,13 @@ export class Streamlit {
    *
    * The value must be serializable into JSON.
    */
-  public static setComponentValue = (value: any): void => {
+  public static setComponentValue = (value: unknown): void => {
     Streamlit.sendBackMsg(ComponentMessageType.SET_COMPONENT_VALUE, { value });
   };
 
   /** Receive a ForwardMsg from the Streamlit app */
   private static onMessageEvent = (event: MessageEvent): void => {
-    const type = event.data["type"];
+    const type = event.data.type;
     switch (type) {
       case Streamlit.RENDER_EVENT:
         Streamlit.onRenderMessage(event.data);
@@ -132,8 +139,8 @@ export class Streamlit {
    * Handle an untyped Streamlit render event and redispatch it as a
    * StreamlitRenderEvent.
    */
-  private static onRenderMessage = (data: any): void => {
-    let args = data["args"];
+  private static onRenderMessage = (data: RenderMessageData): void => {
+    let args = data.args;
     if (args == null) {
       console.error(`Got null args in onRenderMessage. This should never happen`);
       args = {};
@@ -143,7 +150,7 @@ export class Streamlit {
       ...args,
     };
 
-    const disabled = Boolean(data["disabled"]);
+    const disabled = Boolean(data.disabled);
 
     // Dispatch a render event!
     const eventData = { disabled, args };
@@ -154,7 +161,7 @@ export class Streamlit {
   };
 
   /** Post a message to the Streamlit app. */
-  private static sendBackMsg = (type: string, data?: any): void => {
+  private static sendBackMsg = (type: string, data?: Record<string, unknown>): void => {
     window.parent.postMessage(
       {
         isStreamlitMessage: true,

@@ -7,8 +7,17 @@
 
 import $ from "jquery";
 import React from "react";
+import { mounted } from "./lib/refs";
 
-type ContextMenuProps = {};
+type ContextMenuProps = Record<never, never>;
+
+/** Appends this owner's entries to the menu for `column` ("" when not opened on a column). */
+export type ContextMenuCallback = (column: string, element: HTMLDivElement) => void;
+
+interface ContextMenuTrigger {
+  cb: ContextMenuCallback;
+  owner: object;
+}
 
 interface ContextMenuState {
   visible: boolean;
@@ -19,14 +28,9 @@ interface ContextMenuState {
 }
 
 export class ContextMenu extends React.Component<ContextMenuProps, ContextMenuState> {
-  context_menu_div: React.RefObject<HTMLDivElement> = React.createRef();
-  trigger_callbacks: Array<{ cb: (column: string, element: HTMLDivElement) => void; obj: any }> =
-    [];
-  trigger_callbacks_last: Array<{
-    cb: (column: string, element: HTMLDivElement) => void;
-    obj: any;
-  }> = [];
-  hide: any;
+  context_menu_div = React.createRef<HTMLDivElement>();
+  trigger_callbacks: ContextMenuTrigger[] = [];
+  trigger_callbacks_last: ContextMenuTrigger[] = [];
   constructor(props: ContextMenuProps) {
     super(props);
     this.state = {
@@ -35,50 +39,50 @@ export class ContextMenu extends React.Component<ContextMenuProps, ContextMenuSt
       top: 0,
       left: 0,
     };
-    this.hide = function () {
-      if (this.state.visible) {
-        this.setState({ visible: false });
-      }
-    }.bind(this);
     $(window).on("click", this.hide);
   }
-  addCallback(
-    fn: (column: string, element: HTMLDivElement) => void,
-    obj: any,
-    priority: "normal" | "last" = "normal",
-  ) {
+  hide = (): void => {
+    if (this.state.visible) {
+      this.setState({ visible: false });
+    }
+  };
+  addCallback(fn: ContextMenuCallback, owner: object, priority: "normal" | "last" = "normal") {
     if (priority === "last") {
-      this.trigger_callbacks_last.push({ cb: fn, obj: obj });
+      this.trigger_callbacks_last.push({ cb: fn, owner });
     } else {
-      this.trigger_callbacks.push({ cb: fn, obj: obj });
+      this.trigger_callbacks.push({ cb: fn, owner });
     }
   }
-  removeCallbacks(obj: any) {
-    this.trigger_callbacks = this.trigger_callbacks.filter((trigger) => trigger.obj !== obj);
+  removeCallbacks(owner: object) {
+    this.trigger_callbacks = this.trigger_callbacks.filter((trigger) => trigger.owner !== owner);
     this.trigger_callbacks_last = this.trigger_callbacks_last.filter(
-      (trigger) => trigger.obj !== obj,
+      (trigger) => trigger.owner !== owner,
     );
   }
   show(pageX: number, pageY: number, column: string) {
     // This assumes parent has `relative` positioning
-    const parent = $(this.context_menu_div.current.parentElement).offset();
+    const parent = mounted(this.context_menu_div).parentElement;
+    const offset = parent === null ? undefined : $(parent).offset();
     this.setState({
-      top: Math.max(0, pageY - 10 - parent.top),
-      left: Math.max(0, pageX - 90 - parent.left),
+      top: Math.max(0, pageY - 10 - (offset?.top ?? 0)),
+      left: Math.max(0, pageX - 90 - (offset?.left ?? 0)),
       visible: true,
       column: column,
     });
   }
-  onContextMenu = function (this: ContextMenu, event: React.MouseEvent<HTMLDivElement>): void {
+  onContextMenu = (event: React.MouseEvent<HTMLDivElement>): void => {
     this.show(event.pageX, event.pageY, "");
     event.preventDefault();
     event.stopPropagation();
-  }.bind(this);
+  };
   componentWillUnmount() {
     $(window).off("click", this.hide);
   }
-  componentDidUpdate(prevProps: Readonly<ContextMenuProps>, prevState: Readonly<ContextMenuState>) {
-    const cm = this.context_menu_div.current;
+  componentDidUpdate(
+    _prevProps: Readonly<ContextMenuProps>,
+    prevState: Readonly<ContextMenuState>,
+  ) {
+    const cm = mounted(this.context_menu_div);
     cm.style.display = this.state.visible ? "block" : "none";
     cm.style.top = `${this.state.top}px`;
     cm.style.left = `${this.state.left}px`;
@@ -96,7 +100,6 @@ export class ContextMenu extends React.Component<ContextMenuProps, ContextMenuSt
       // After content is added, check if menu overflows viewport and reposition if needed
       requestAnimationFrame(() => {
         const rect = cm.getBoundingClientRect();
-        const _parent = cm.parentElement.getBoundingClientRect();
         const viewportWidth = window.innerWidth;
         const viewportHeight = window.innerHeight;
 

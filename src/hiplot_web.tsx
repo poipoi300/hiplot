@@ -13,8 +13,27 @@ import { StaticDataProvider } from "./dataproviders/static";
 import { UploadDataProvider } from "./dataproviders/upload";
 import { WebserverDataProvider } from "./dataproviders/webserver";
 import { PersistentStateInURL } from "./lib/savedstate";
+import type { DataProviderClass } from "./plugin";
 
-export function build_props(extra?: any): HiPlotProps {
+const dataProviders = {
+  webserver: WebserverDataProvider,
+  upload: UploadDataProvider,
+  none: StaticDataProvider,
+} satisfies Record<string, DataProviderClass>;
+
+/** Options accepted by `hiplot.render`: any HiPlot prop, plus two selectors resolved here. */
+export interface HiPlotRenderOptions extends Partial<HiPlotProps> {
+  dataProviderName?: keyof typeof dataProviders;
+  persistentStateUrlPrefix?: string;
+}
+
+/** The DOM element HiPlot renders into, remembering what we mounted there. */
+interface HiPlotMountPoint extends HTMLElement {
+  __hiplot_root?: ReactDOMClient.Root;
+  __hiplot_instance_ref?: React.RefObject<HiPlot | null>;
+}
+
+export function build_props(extra?: HiPlotRenderOptions): HiPlotProps {
   const searchParams = new URLSearchParams(location.search);
   const themeParam =
     searchParams.get("hip.theme") ??
@@ -28,11 +47,10 @@ export function build_props(extra?: any): HiPlotProps {
   // compatibility fallback for existing links.
   const themeOrDarkParam = themeParam !== null ? themeParam : darkParam;
   const darkValue = normalizeDarkModeSetting(themeOrDarkParam, "auto");
-  const props = {
+  const props: HiPlotProps = {
     experiment: null,
     persistentState: new PersistentStateInURL("hip"),
     plugins: defaultPlugins,
-    comm: null,
     asserts: false,
     dataProvider: WebserverDataProvider,
     dark: darkValue,
@@ -41,30 +59,23 @@ export function build_props(extra?: any): HiPlotProps {
   if (extra !== undefined) {
     Object.assign(props, extra);
   }
-  if (extra && extra.dataProviderName !== undefined) {
-    props.dataProvider = {
-      webserver: WebserverDataProvider,
-      upload: UploadDataProvider,
-      none: StaticDataProvider,
-    }[extra.dataProviderName];
+  if (extra?.dataProviderName !== undefined) {
+    props.dataProvider = dataProviders[extra.dataProviderName];
   }
-  if (extra && extra.persistentStateUrlPrefix !== undefined) {
+  if (extra?.persistentStateUrlPrefix !== undefined) {
     props.persistentState = new PersistentStateInURL(extra.persistentStateUrlPrefix);
   }
   return props;
 }
 
-export function render(element: HTMLElement, extra?: any) {
-  const rootKey = "__hiplot_root";
-  const instanceRefKey = "__hiplot_instance_ref";
-  const existingRoot = (element as any)[rootKey] as ReactDOMClient.Root | undefined;
+export function render(element: HTMLElement, extra?: HiPlotRenderOptions) {
+  const mountPoint: HiPlotMountPoint = element;
+  const existingRoot = mountPoint.__hiplot_root;
   const root = existingRoot ?? ReactDOMClient.createRoot(element);
-  const instanceRef =
-    ((element as any)[instanceRefKey] as React.RefObject<HiPlot> | undefined) ??
-    React.createRef<HiPlot>();
+  const instanceRef = mountPoint.__hiplot_instance_ref ?? React.createRef<HiPlot>();
   if (!existingRoot) {
-    (element as any)[rootKey] = root;
-    (element as any)[instanceRefKey] = instanceRef;
+    mountPoint.__hiplot_root = root;
+    mountPoint.__hiplot_instance_ref = instanceRef;
   }
   flushSync(() => {
     root.render(
@@ -78,8 +89,10 @@ export function render(element: HTMLElement, extra?: any) {
 
 // Expose global for non-module consumers (legacy HTML templates).
 if (typeof window !== "undefined") {
-  (window as any).hiplot = {
-    render,
-    build_props,
-  };
+  Object.assign(window, {
+    hiplot: {
+      render,
+      build_props,
+    },
+  });
 }

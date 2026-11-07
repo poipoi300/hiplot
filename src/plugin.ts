@@ -16,29 +16,35 @@ import type {
   HiPlotExperiment,
   HiPlotLoadStatus,
   IDatasets,
+  LoadURIPromise,
 } from "./types";
+
+/** Per-plugin state that lives as long as the page (not persisted). */
+export interface PluginWindowState {
+  height?: number;
+}
 
 export interface HiPlotPluginDataWithoutDatasets {
   experiment: HiPlotExperiment;
   params_def: ParamDefMap;
   params_def_unfiltered: ParamDefMap;
 
-  get_color_for_row: (uid: Datapoint, opacity: number) => string;
-  render_row_text: (rows: Datapoint) => string;
+  get_color_for_row: (row: Datapoint, opacity: number) => string;
+  render_row_text: (row: Datapoint) => string;
   dp_lookup: DatapointLookup;
 
-  context_menu_ref?: React.RefObject<ContextMenu>;
+  context_menu_ref?: React.RefObject<ContextMenu | null>;
   colorby: string;
   name: string;
 
-  rows_selected_filter: Filter;
+  rows_selected_filter: Filter | null;
 
   // Data that persists until we close the window
-  window_state: any;
+  window_state: PluginWindowState;
   // Data that persists upon page reload, sharing link etc...
   persistentState: PersistentState;
 
-  sendMessage: (type: string, data: () => any) => void;
+  sendMessage: (type: string, data: () => unknown) => void;
 
   setSelected: (new_selected: Array<Datapoint>, filter: Filter | null) => void;
   setHighlighted: (new_highlighted: Array<Datapoint>) => void;
@@ -57,13 +63,11 @@ export interface DataProviderProps {
   hasFocus: boolean;
   onFocusChange: (hasFocus: boolean) => void;
 
-  onLoadExperiment: (load_promise: Promise<any>) => void;
+  onLoadExperiment: (load_promise: LoadURIPromise) => void;
 }
 
-export type DataProviderComponent = React.Component<DataProviderProps, any>;
-export type DataProviderComponentClass = React.ComponentClass<DataProviderProps>;
-export type DataProviderClass = React.ClassType<
-  DataProviderProps,
-  DataProviderComponent,
-  DataProviderComponentClass
-> & { refresh?: any };
+/** A data provider instance; providers that can reload expose `refresh`. */
+export interface DataProviderComponent extends React.Component<DataProviderProps> {
+  refresh?(): LoadURIPromise | null;
+}
+export type DataProviderClass = new (props: DataProviderProps) => DataProviderComponent;

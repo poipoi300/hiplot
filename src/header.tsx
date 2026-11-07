@@ -16,17 +16,18 @@ import {
   RestoreDataBtn,
 } from "./controls";
 import style from "./hiplot.module.css";
+import { mounted } from "./lib/refs";
 import type { PersistentState } from "./lib/savedstate";
-import type { DataProviderClass, DataProviderComponentClass, DataProviderProps } from "./plugin";
+import type { DataProviderClass, DataProviderComponent, DataProviderProps } from "./plugin";
 
 import { HiPlotTutorial } from "./tutorial/tutorial";
-import { type Datapoint, HiPlotLoadStatus, type IDatasets } from "./types";
+import { type Datapoint, HiPlotLoadStatus, type IDatasets, type LoadURIPromise } from "./types";
 
 interface HeaderBarProps extends IDatasets, HiPlotDataControlProps {
   weightColumn?: string;
   loadStatus: HiPlotLoadStatus; // Should not allow to load an xp when already loading another xp
   persistentState: PersistentState;
-  onLoadExperiment: (load_promise: Promise<any>) => void;
+  onLoadExperiment: (load_promise: LoadURIPromise) => void;
 
   dark: boolean;
   dataProvider: DataProviderClass;
@@ -44,8 +45,8 @@ interface HeaderBarState {
 }
 
 export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
-  dataProviderRef = React.createRef<DataProviderClass>();
-  controls_root_ref: React.RefObject<HTMLDivElement> = React.createRef();
+  dataProviderRef = React.createRef<DataProviderComponent>();
+  controls_root_ref = React.createRef<HTMLDivElement>();
 
   constructor(props: HeaderBarProps) {
     super(props);
@@ -77,10 +78,11 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
       });
       return;
     }
-    const getWeight = function (dp: Datapoint): number {
-      const w = parseFloat(dp[this.props.weightColumn]);
-      return !isNaN(w) && isFinite(w) && w > 0.0 ? w : 1.0;
-    }.bind(this);
+    const weightColumn = this.props.weightColumn;
+    const getWeight = (dp: Datapoint): number => {
+      const w = parseFloat(String(dp[weightColumn]));
+      return !Number.isNaN(w) && Number.isFinite(w) && w > 0.0 ? w : 1.0;
+    };
     let totalWeightFiltered = 0.0,
       totalWeightSelected = 0.0;
     this.props.rows_filtered.forEach((dp: Datapoint) => {
@@ -90,7 +92,7 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
       totalWeightSelected += getWeight(dp);
     });
     const pctage = (100 * totalWeightSelected) / totalWeightFiltered;
-    console.assert(!isNaN(pctage), {
+    console.assert(!Number.isNaN(pctage), {
       pctage: pctage,
       totalWeightFiltered: totalWeightFiltered,
       totalWeightSelected: totalWeightSelected,
@@ -119,21 +121,20 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
     }));
   }
   onRefresh() {
-    const promise = this.dataProviderRef.current.refresh();
-    if (promise !== null) {
+    const promise = mounted(this.dataProviderRef).refresh?.();
+    if (promise) {
       this.props.onLoadExperiment(promise);
     }
   }
   renderControls() {
-    const dataProviderProps: React.ClassAttributes<DataProviderComponentClass> & DataProviderProps =
-      {
-        ref: this.dataProviderRef,
-        persistentState: this.props.persistentState,
-        loadStatus: this.props.loadStatus,
-        hasFocus: this.state.isTextareaFocused,
-        onFocusChange: (hasFocus: boolean) => this.setState({ isTextareaFocused: hasFocus }),
-        onLoadExperiment: this.props.onLoadExperiment,
-      };
+    const dataProviderProps: React.ClassAttributes<DataProviderComponent> & DataProviderProps = {
+      ref: this.dataProviderRef,
+      persistentState: this.props.persistentState,
+      loadStatus: this.props.loadStatus,
+      hasFocus: this.state.isTextareaFocused,
+      onFocusChange: (hasFocus: boolean) => this.setState({ isTextareaFocused: hasFocus }),
+      onLoadExperiment: this.props.onLoadExperiment,
+    };
     return (
       <React.Fragment>
         {React.createElement(this.props.dataProvider, dataProviderProps)}
@@ -144,7 +145,7 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
               <RestoreDataBtn {...this.props} />
               <KeepDataBtn {...this.props} />
               <ExcludeDataBtn {...this.props} />
-              {this.dataProviderRef.current && this.dataProviderRef.current.refresh && (
+              {this.dataProviderRef.current?.refresh && (
                 <button
                   type="button"
                   title="Refresh"
@@ -163,17 +164,19 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
               >
                 Help
               </button>
-              {this.props.restorableColumnsCount > 0 && this.props.onRestoreColumns && (
-                <button
-                  type="button"
-                  title="Restore hidden columns in parallel plot"
-                  className="btn btn-sm btn-light"
-                  onClick={this.props.onRestoreColumns}
-                >
-                  Restore {this.props.restorableColumnsCount} column
-                  {this.props.restorableColumnsCount > 1 ? "s" : ""}
-                </button>
-              )}
+              {this.props.restorableColumnsCount !== undefined &&
+                this.props.restorableColumnsCount > 0 &&
+                this.props.onRestoreColumns && (
+                  <button
+                    type="button"
+                    title="Restore hidden columns in parallel plot"
+                    className="btn btn-sm btn-light"
+                    onClick={this.props.onRestoreColumns}
+                  >
+                    Restore {this.props.restorableColumnsCount} column
+                    {this.props.restorableColumnsCount > 1 ? "s" : ""}
+                  </button>
+                )}
 
               <div style={{ clear: "both" }}></div>
             </div>
@@ -214,7 +217,7 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
   }
   render() {
     return (
-      <div ref={this.controls_root_ref} className={"container-fluid " + style.header}>
+      <div ref={this.controls_root_ref} className={`container-fluid ${style.header}`}>
         <div className={"d-flex flex-wrap"}>
           <img style={{ height: "55px" }} src={this.props.dark ? IconSVGW : IconSVG} alt="HiPlot" />
           {this.renderControls()}

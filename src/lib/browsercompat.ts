@@ -12,6 +12,9 @@ export const IS_MOBILE =
  */
 export function redrawForeignObject(fo: SVGForeignObjectElement) {
   const parent = fo.parentNode;
+  if (parent === null) {
+    throw new Error("Cannot redraw a foreignObject that is not attached to the DOM");
+  }
   parent.removeChild(fo);
   parent.appendChild(fo);
 }

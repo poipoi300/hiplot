@@ -22,16 +22,17 @@ import { ContextMenu } from "./contextmenu";
 import { type HiPlotDataControlProps, SelectedCountProgressBar } from "./controls";
 import { StaticDataProvider } from "./dataproviders/static";
 import { HiPlotDistributionPlugin } from "./distribution/plugin";
-import { apply_filter, apply_filters, type Filter, FilterType } from "./filters";
+import { apply_filter, apply_filters, type Filter, FilterType, isFilter } from "./filters";
 import { ErrorDisplay, HeaderBar } from "./header";
 import style from "./hiplot.module.css";
 import { colorScheme, infertypes, type ParamDefMap } from "./infertypes";
 import { setupBrowserCompat } from "./lib/browsercompat";
 import { uncompress } from "./lib/compress";
+import { mounted } from "./lib/refs";
 import { type PersistentState, PersistentStateInMemory } from "./lib/savedstate";
 import { ParallelPlot } from "./parallel/parallel";
 import { PlotXY } from "./plotxy";
-import type { DataProviderClass, HiPlotPluginData } from "./plugin";
+import type { DataProviderClass, HiPlotPluginData, PluginWindowState } from "./plugin";
 import { RowsDisplayTable } from "./rowsdisplaytable";
 import {
   type Datapoint,
@@ -39,33 +40,53 @@ import {
   type HiPlotExperiment,
   HiPlotLoadStatus,
   type IDatasets,
+  type LoadURIPromise,
+  type LoadURIPromiseResult,
   ParamType,
   PSTATE_COLOR_BY,
   PSTATE_FILTERS,
   PSTATE_PARAMS,
+  type RawDatapoint,
 } from "./types";
 
-export { ParallelPlot } from "./parallel/parallel";
 // Exported from HiPlot
+export { ParallelPlot } from "./parallel/parallel";
 export { PlotXY } from "./plotxy";
 export type { HiPlotPluginData } from "./plugin";
 export { RowsDisplayTable } from "./rowsdisplaytable";
 export type { Datapoint, HiPlotExperiment, IDatasets } from "./types";
 export { HiPlotLoadStatus } from "./types";
 
-type PluginComponent<P> = React.Component<P, any>;
-type PluginComponentClass<P> = React.ComponentClass<P>;
-type PluginClass = React.ClassType<
-  HiPlotPluginData,
-  PluginComponent<HiPlotPluginData>,
-  PluginComponentClass<HiPlotPluginData>
->;
+/** A display plugin: a component class rendered with the plugin data as props. */
+export type PluginClass = React.ComponentClass<HiPlotPluginData>;
 interface PluginsMap {
   [k: string]: PluginClass;
 }
 
-type LoadURIPromiseResult = { experiment: HiPlotExperiment } | { error: string };
-export type LoadURIPromise = Promise<LoadURIPromiseResult>;
+type OptionalKeys<T> = {
+  [K in keyof T]-?: Record<never, never> extends Pick<T, K> ? K : never;
+}[keyof T];
+/** The props a plugin adds to HiPlotPluginData that are required, hence need a default. */
+type PluginDefaults<P> = Omit<P, keyof HiPlotPluginData | OptionalKeys<P>>;
+
+/**
+ * Registers a plugin whose own props extend HiPlotPluginData. HiPlot only passes
+ * HiPlotPluginData plus the experiment's display data, so every additional
+ * required prop must come from `defaultProps`; the constraint enforces that,
+ * which is what makes widening the class to PluginClass sound.
+ */
+export function definePlugin<P extends HiPlotPluginData>(
+  cls: React.ComponentClass<P> & { defaultProps: PluginDefaults<P> },
+): PluginClass {
+  return cls as unknown as PluginClass;
+}
+
+class CanceledLoad extends Error {}
+
+type PluginProps = HiPlotPluginData &
+  React.RefAttributes<React.Component<HiPlotPluginData>> & {
+    onHiddenColumnsChange?: (count: number) => void;
+  };
 
 // Makes a Promise cancelable
 interface CancelablePromise {
@@ -75,10 +96,10 @@ interface CancelablePromise {
 const makeCancelable = (promise: LoadURIPromise): CancelablePromise => {
   let hasCanceled_ = false;
 
-  const wrappedPromise = new Promise((resolve: (r: LoadURIPromiseResult) => void, reject) => {
+  const wrappedPromise = new Promise<LoadURIPromiseResult>((resolve, reject) => {
     promise.then(
-      (val) => (hasCanceled_ ? reject({ isCanceled: true }) : resolve(val)),
-      (error) => (hasCanceled_ ? reject({ isCanceled: true }) : reject(error)),
+      (val) => (hasCanceled_ ? reject(new CanceledLoad()) : resolve(val)),
+      (error: unknown) => (hasCanceled_ ? reject(new CanceledLoad()) : reject(error)),
     );
   });
 
@@ -100,9 +121,9 @@ export interface HiPlotProps {
   plugins: PluginsMap;
   // An object where we can persist changes
   // If not provided, will create a `PersistentStateInMemory` object
-  persistentState?: PersistentState;
+  persistentState?: PersistentState | null;
   // Callbacks when selection changes, filtering, or brush extents change
-  onChange: { [k: string]: (type: string, data: any) => void };
+  onChange: { [k: string]: (type: string, data: unknown) => void } | null;
   // Enable dark-mode. Use "auto" to follow system / JupyterLab theme.
   dark: HiPlotDarkMode;
   // Adds extra assertions (disabled by default)
@@ -112,7 +133,7 @@ export interface HiPlotProps {
     - WebserverDataProvider: textarea to input URI, fetches experiments from server
     - UploadDataProvider: upload CSV files in your browser
     */
-  dataProvider: DataProviderClass;
+  dataProvider: DataProviderClass | null;
 }
 // END_HIPLOT_PROPS
 
@@ -120,15 +141,15 @@ interface HiPlotState extends IDatasets {
   experiment: HiPlotExperiment | null;
   loadStatus: HiPlotLoadStatus;
   loadPromise: CancelablePromise | null;
-  error: string;
+  error: string | null;
   params_def: ParamDefMap;
   params_def_unfiltered: ParamDefMap;
   dp_lookup: DatapointLookup;
-  colorby: string;
-  colormap: string;
+  colorby: string | null;
+  colormap: string | null;
 
   rows_filtered_filters: Array<Filter>; // `rows_all` -> `rows_filtered`
-  rows_selected_filter: Filter; // `rows_filtered` -> `rows_selected`
+  rows_selected_filter: Filter | null; // `rows_filtered` -> `rows_selected`
 
   // Data that persists upon page reload, sharing link etc...
   persistentState: PersistentState;
@@ -212,14 +233,10 @@ export enum DefaultPlugins {
 }
 
 export const defaultPlugins: PluginsMap = {
-  // @ts-expect-error
-  [DefaultPlugins.PARALLEL_PLOT]: ParallelPlot,
-  // @ts-expect-error
-  [DefaultPlugins.XY]: PlotXY,
-  // @ts-expect-error
-  [DefaultPlugins.DISTRIBUTION]: HiPlotDistributionPlugin,
-  // @ts-expect-error
-  [DefaultPlugins.TABLE]: RowsDisplayTable,
+  [DefaultPlugins.PARALLEL_PLOT]: definePlugin(ParallelPlot),
+  [DefaultPlugins.XY]: definePlugin(PlotXY),
+  [DefaultPlugins.DISTRIBUTION]: definePlugin(HiPlotDistributionPlugin),
+  [DefaultPlugins.TABLE]: definePlugin(RowsDisplayTable),
 };
 
 export function createDefaultPlugins(): PluginsMap {
@@ -231,9 +248,10 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
   contextMenuRef = React.createRef<ContextMenu>();
   rootRef = React.createRef<HTMLDivElement>();
 
-  plugins_window_state: { [plugin: string]: any } = {};
+  plugins_window_state: { [plugin: string]: PluginWindowState } = {};
 
-  plugins_ref: { [plugin: string]: React.RefObject<PluginClass> } = {}; // For debugging/tests
+  // For debugging/tests
+  plugins_ref: { [plugin: string]: React.RefObject<React.Component<HiPlotPluginData> | null> } = {};
   mediaQueryList: MediaQueryList | null = null;
   mediaQueryListener: ((event: MediaQueryListEvent) => void) | null = null;
   jupyterThemeObserver: MutationObserver | null = null;
@@ -269,7 +287,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     };
     Object.keys(props.plugins).forEach((name, _index) => {
       this.plugins_window_state[name] = {};
-      this.plugins_ref[name] = React.createRef<PluginClass>();
+      this.plugins_ref[name] = React.createRef<React.Component<HiPlotPluginData>>();
     });
   }
   static defaultProps = {
@@ -307,11 +325,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
           this.setState({ dark: event.matches });
         }
       };
-      if (this.mediaQueryList.addEventListener) {
-        this.mediaQueryList.addEventListener("change", this.mediaQueryListener);
-      } else if ((this.mediaQueryList as any).addListener) {
-        (this.mediaQueryList as any).addListener(this.mediaQueryListener);
-      }
+      this.mediaQueryList.addEventListener("change", this.mediaQueryListener);
     }
     if (this.jupyterThemeObserver === null && typeof document !== "undefined" && document.body) {
       this.jupyterThemeObserver = new MutationObserver(() => {
@@ -348,11 +362,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
   }
   stopAutoThemeListeners(): void {
     if (this.mediaQueryList && this.mediaQueryListener) {
-      if (this.mediaQueryList.removeEventListener) {
-        this.mediaQueryList.removeEventListener("change", this.mediaQueryListener);
-      } else if ((this.mediaQueryList as any).removeListener) {
-        (this.mediaQueryList as any).removeListener(this.mediaQueryListener);
-      }
+      this.mediaQueryList.removeEventListener("change", this.mediaQueryListener);
     }
     this.mediaQueryList = null;
     this.mediaQueryListener = null;
@@ -374,84 +384,53 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     };
   }
   makeDatasets(
-    experiment: HiPlotExperiment | null,
+    datapoints: ReadonlyArray<RawDatapoint>,
     dp_lookup: DatapointLookup,
     initial_filters: Array<Filter>,
   ): IDatasets {
-    if (experiment) {
-      const rows_all_unfiltered = experiment.datapoints.map((t) => {
-        const obj_with_uid = $.extend(
-          {
-            uid: t.uid,
-            from_uid: t.from_uid,
-          },
-          t.values,
-        );
-        dp_lookup[t.uid] = obj_with_uid;
-        return obj_with_uid;
-      });
-      let rows_filtered = rows_all_unfiltered;
-      try {
-        rows_filtered = apply_filters(rows_all_unfiltered, initial_filters);
-        if (!rows_filtered.length) {
-          rows_filtered = rows_all_unfiltered;
-          console.log("Not reapplying filters (would filter out all rows)");
-        }
-      } catch (err) {
-        console.error("Error trying to apply filters", initial_filters, ":", err);
-      }
-      return {
-        rows_all_unfiltered: rows_all_unfiltered,
-        rows_filtered: rows_filtered,
-        rows_selected: rows_filtered,
-        rows_highlighted: [],
-      };
+    const rows_all_unfiltered = datapoints.map((t): Datapoint => {
+      const row: Datapoint = { ...t.values, uid: t.uid, from_uid: t.from_uid };
+      dp_lookup[t.uid] = row;
+      return row;
+    });
+    let rows_filtered = apply_filters(rows_all_unfiltered, initial_filters);
+    if (!rows_filtered.length) {
+      // Filters saved against another dataset would hide everything: start unfiltered.
+      rows_filtered = rows_all_unfiltered;
     }
     return {
-      rows_all_unfiltered: [],
-      rows_filtered: [],
-      rows_selected: [],
+      rows_all_unfiltered: rows_all_unfiltered,
+      rows_filtered: rows_filtered,
+      rows_selected: rows_filtered,
       rows_highlighted: [],
     };
   }
-  sendMessage(type: string, get_data: () => any): void {
-    if (this.props.onChange !== null && this.props.onChange[type]) {
-      const data = get_data();
-      this.props.onChange[type](type, data);
+  sendMessage(type: string, get_data: () => unknown): void {
+    const callback = this.props.onChange?.[type];
+    if (callback !== undefined) {
+      callback(type, get_data());
     }
   }
-  callSelectedUidsHooks = _.debounce(
-    function (this: HiPlot): void {
-      this.sendMessage(
-        "selected_uids",
-        function () {
-          return this.state.rows_selected.map((row) => "" + row["uid"]);
-        }.bind(this),
-      );
-    }.bind(this),
-    200,
-  );
-  callFilteredUidsHooks = _.debounce(
-    function (this: HiPlot): void {
-      this.sendMessage(
-        "filtered_uids",
-        function () {
-          return this.state.rows_filtered.map((row) => "" + row["uid"]);
-        }.bind(this),
-      );
-    }.bind(this),
-    200,
-  );
+  callSelectedUidsHooks = _.debounce((): void => {
+    this.sendMessage("selected_uids", () => this.state.rows_selected.map((row) => `${row.uid}`));
+  }, 200);
+  callFilteredUidsHooks = _.debounce((): void => {
+    this.sendMessage("filtered_uids", () => this.state.rows_filtered.map((row) => `${row.uid}`));
+  }, 200);
   _loadExperiment(experiment: HiPlotExperiment) {
-    // Uncompress if compressed
-    if (experiment.datapoints === undefined) {
-      experiment.datapoints = uncompress(experiment.datapoints_compressed);
-    }
+    const datapoints =
+      experiment.datapoints ??
+      (experiment.datapoints_compressed !== undefined
+        ? uncompress(experiment.datapoints_compressed)
+        : []);
+    experiment.datapoints = datapoints;
 
     // Generate dataset for Parallel Plot
-    const dp_lookup = {};
-    let initFilters = this.state.persistentState.get(PSTATE_FILTERS, []);
-    const datasets = this.makeDatasets(experiment, dp_lookup, initFilters);
+    const dp_lookup: DatapointLookup = {};
+    const persistedFilters = this.state.persistentState.get(PSTATE_FILTERS);
+    let initFilters =
+      Array.isArray(persistedFilters) && persistedFilters.every(isFilter) ? persistedFilters : [];
+    const datasets = this.makeDatasets(datapoints, dp_lookup, initFilters);
     if (datasets.rows_all_unfiltered === datasets.rows_filtered) {
       initFilters = [];
     }
@@ -467,11 +446,11 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     );
 
     // Color handling
-    function get_default_color() {
+    function get_default_color(): string {
       if (experiment.colorby && params_def[experiment.colorby]) {
         return experiment.colorby;
       }
-      function select_as_coloring_score(r) {
+      function select_as_coloring_score(r: string): number {
         const pd = params_def[r];
         let score = 0;
         if (pd.colors || pd.colormap) {
@@ -490,13 +469,14 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       );
       return possibles[0];
     }
-    let colorby = this.state.persistentState.get(PSTATE_COLOR_BY, get_default_color());
-    if (params_def[colorby] === undefined) {
-      colorby = get_default_color();
-    }
-    this.setState((_state, _props) => ({
+    const persistedColorby = this.state.persistentState.get(PSTATE_COLOR_BY);
+    const colorby =
+      typeof persistedColorby === "string" && params_def[persistedColorby] !== undefined
+        ? persistedColorby
+        : get_default_color();
+    this.setState({
       experiment: experiment,
-      colormap: experiment.colormap,
+      colormap: experiment.colormap ?? null,
       loadStatus: HiPlotLoadStatus.Loaded,
       dp_lookup: dp_lookup,
       colorby: colorby,
@@ -504,15 +484,14 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       params_def_unfiltered: params_def_unfiltered,
       rows_filtered_filters: initFilters,
       ...datasets,
-    }));
+    });
   }
   getColorForRow(trial: Datapoint, alpha: number): string {
-    return colorScheme(
-      this.state.params_def[this.state.colorby],
-      trial[this.state.colorby],
-      alpha,
-      this.state.colormap,
-    );
+    const colorby = this.state.colorby;
+    if (colorby === null) {
+      throw new Error("Rows are only colored once an experiment is loaded");
+    }
+    return colorScheme(this.state.params_def[colorby], trial[colorby], alpha, this.state.colormap);
   }
   loadWithPromise(prom: LoadURIPromise) {
     this.setState({
@@ -532,24 +511,19 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     this.callFilteredUidsHooks.cancel();
   }
   componentDidMount() {
-    setupBrowserCompat(this.rootRef.current);
+    setupBrowserCompat(mounted(this.rootRef));
     if (this.state.darkModeSetting === "auto") {
       this.startAutoThemeListeners();
     }
 
     // Setup contextmenu when we right-click a parameter
-    this.contextMenuRef.current.addCallback(this.columnContextMenu.bind(this), this);
-    this.contextMenuRef.current.addCallback(this.columnContextMenuFooter.bind(this), this, "last");
+    const contextMenu = mounted(this.contextMenuRef);
+    contextMenu.addCallback(this.columnContextMenu.bind(this), this);
+    contextMenu.addCallback(this.columnContextMenuFooter.bind(this), this, "last");
 
     // Load experiment provided in constructor if any
     if (this.props.experiment) {
-      this.loadWithPromise(
-        new Promise(
-          function (resolve, _reject) {
-            resolve({ experiment: this.props.experiment });
-          }.bind(this),
-        ),
-      );
+      this.loadWithPromise(Promise.resolve({ experiment: this.props.experiment }));
     }
   }
   componentDidUpdate(prevProps: HiPlotProps, prevState: HiPlotState): void {
@@ -570,13 +544,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
           (this.state.loadStatus !== HiPlotLoadStatus.Error &&
             this.props.experiment !== this.state.experiment))
       ) {
-        this.loadWithPromise(
-          new Promise(
-            function (resolve, _reject) {
-              resolve({ experiment: this.props.experiment });
-            }.bind(this),
-          ),
-        );
+        this.loadWithPromise(Promise.resolve({ experiment: this.props.experiment }));
       } else {
         if (prevState.rows_selected !== this.state.rows_selected) {
           this.callSelectedUidsHooks();
@@ -588,12 +556,13 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     }
     if (
       this.state.loadStatus === HiPlotLoadStatus.Loading &&
+      this.state.loadPromise !== null &&
       this.state.loadPromise !== prevState.loadPromise
     ) {
       const prom = this.state.loadPromise.promise;
       prom
-        .then((data: { error?: string; experiment?: HiPlotExperiment }) => {
-          if (data.error !== undefined) {
+        .then((data) => {
+          if ("error" in data) {
             console.log("Experiment loading failed", data);
             this.setState({
               loadStatus: HiPlotLoadStatus.Error,
@@ -604,8 +573,8 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
           }
           this._loadExperiment(data.experiment);
         })
-        .catch((error) => {
-          if (error.isCanceled) {
+        .catch((error: unknown) => {
+          if (error instanceof CanceledLoad) {
             return;
           }
           console.log("Error", error);
@@ -629,64 +598,51 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
 
     const contextmenu = $(cm);
     contextmenu.append($('<h6 class="dropdown-header">Data scaling</h6>'));
-    this.state.params_def[column].type_options.forEach(
-      function (this: HiPlot, possible_type) {
-        const option = $('<a class="dropdown-item" href="#">').text(
-          VAR_TYPE_TO_NAME[possible_type],
-        );
-        if (possible_type === this.state.params_def[column].type) {
-          option.addClass("disabled").css("pointer-events", "none");
-        }
-        option.click(
-          function (this: HiPlot, event) {
-            contextmenu.css("display", "none");
-            this.setState((state: Readonly<HiPlotState>, _props) => ({
-              params_def: {
-                ...state.params_def,
-                [column]: {
-                  ...state.params_def[column],
-                  type: possible_type,
-                },
-              },
-            }));
-            this.state.persistentState
-              .children(PSTATE_PARAMS)
-              .children(column)
-              .set("type", possible_type);
-            event.preventDefault();
-          }.bind(this),
-        );
-        contextmenu.append(option);
-      }.bind(this),
-    );
+    this.state.params_def[column].type_options.forEach((possible_type) => {
+      const option = $('<a class="dropdown-item" href="#">').text(VAR_TYPE_TO_NAME[possible_type]);
+      if (possible_type === this.state.params_def[column].type) {
+        option.addClass("disabled").css("pointer-events", "none");
+      }
+      option.on("click", (event) => {
+        contextmenu.css("display", "none");
+        this.setState((state) => ({
+          params_def: {
+            ...state.params_def,
+            [column]: {
+              ...state.params_def[column],
+              type: possible_type,
+            },
+          },
+        }));
+        this.state.persistentState
+          .children(PSTATE_PARAMS)
+          .children(column)
+          .set("type", possible_type);
+        event.preventDefault();
+      });
+      contextmenu.append(option);
+    });
     contextmenu.append($('<div class="dropdown-divider"></div>'));
 
-    const ppRef = this.plugins_ref[DefaultPlugins.PARALLEL_PLOT];
-    const pp = ppRef && ppRef.current ? (ppRef.current as unknown as ParallelPlot) : null;
-    if (pp && pp.toggleInvertAxis) {
+    const pp = this.parallelPlot();
+    if (pp !== null) {
       const invert_axis = $('<a class="dropdown-item" href="#">Invert axis</a>');
-      invert_axis.click(
-        function (this: HiPlot, event) {
-          const extent = pp.toggleInvertAxis(column);
-          if (pp.update_ticks) {
-            pp.update_ticks(column, extent);
-          }
-          event.preventDefault();
-        }.bind(this),
-      );
+      invert_axis.on("click", (event) => {
+        const extent = pp.toggleInvertAxis(column);
+        pp.update_ticks(column, extent);
+        event.preventDefault();
+      });
       contextmenu.append(invert_axis);
     }
 
     // Color by
     const link_colorize = $('<a class="dropdown-item" href="#">Use for coloring</a>');
-    link_colorize.click(
-      function (this: HiPlot, event) {
-        this.setState({
-          colorby: column,
-        });
-        event.preventDefault();
-      }.bind(this),
-    );
+    link_colorize.on("click", (event) => {
+      this.setState({
+        colorby: column,
+      });
+      event.preventDefault();
+    });
     if (this.state.colorby === column) {
       link_colorize.addClass("disabled").css("pointer-events", "none");
     }
@@ -694,31 +650,29 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
   }
   columnContextMenuFooter(column: string, cm: HTMLDivElement) {
     const contextmenu = $(cm);
-    const ppRef = this.plugins_ref[DefaultPlugins.PARALLEL_PLOT];
-    const pp = ppRef && ppRef.current ? (ppRef.current as unknown as ParallelPlot) : null;
+    const pp = this.parallelPlot();
     contextmenu.append($('<div class="dropdown-divider"></div>'));
 
-    if (pp && pp.can_hide_axis && pp.can_hide_axis(column)) {
+    if (pp?.can_hide_axis(column)) {
       const hide_axis = $('<a class="dropdown-item" href="#">Hide axis</a>');
-      hide_axis.click(
-        function (this: HiPlot, event) {
-          if (pp.remove_axis) {
-            pp.remove_axis(column);
-          }
-          event.preventDefault();
-        }.bind(this),
-      );
+      hide_axis.on("click", (event) => {
+        pp.remove_axis(column);
+        event.preventDefault();
+      });
       contextmenu.append(hide_axis);
     }
 
     const close_menu = $('<a class="dropdown-item" href="#">Close menu</a>');
-    close_menu.click(
-      function (this: HiPlot, event) {
-        this.contextMenuRef.current.hide();
-        event.preventDefault();
-      }.bind(this),
-    );
+    close_menu.on("click", (event) => {
+      mounted(this.contextMenuRef).hide();
+      event.preventDefault();
+    });
     contextmenu.append(close_menu);
+  }
+  /** The mounted parallel plot, if this HiPlot displays one. */
+  parallelPlot(): ParallelPlot | null {
+    const current = this.plugins_ref[DefaultPlugins.PARALLEL_PLOT]?.current;
+    return current instanceof ParallelPlot ? current : null;
   }
   createNewParamsDef(rows_filtered: Array<Datapoint>): ParamDefMap {
     const new_pd = Object.assign({}, this.state.params_def);
@@ -736,45 +690,37 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     /**
      * When we hit `Restore` button
      */
-    this.setState(
-      function (this: HiPlot, state: Readonly<HiPlotState>, _props): Partial<HiPlotState> {
-        const all_rows = state.rows_all_unfiltered;
-        const new_pd = this.createNewParamsDef(all_rows);
-        return {
-          rows_selected: all_rows,
-          rows_selected_filter: null,
-          rows_filtered: all_rows,
-          rows_filtered_filters: [],
-          params_def: new_pd,
-        };
-      }.bind(this),
-    );
+    this.setState((state) => {
+      const all_rows = state.rows_all_unfiltered;
+      return {
+        rows_selected: all_rows,
+        rows_selected_filter: null,
+        rows_filtered: all_rows,
+        rows_filtered_filters: [],
+        params_def: this.createNewParamsDef(all_rows),
+      };
+    });
   }
   filterRows(keep: boolean): void {
     /**
      * When we hit Keep (keep=true), or Exclude (keep=false) buttons
      */
-    this.setState(
-      function (this: HiPlot, state: Readonly<HiPlotState>, _props): Partial<HiPlotState> {
-        const new_filtered = keep
-          ? state.rows_selected
-          : _.difference(state.rows_filtered, state.rows_selected);
-        let filter: Filter = state.rows_selected_filter;
-        if (!keep) {
-          filter = {
-            type: FilterType.Not,
-            data: filter,
-          };
-        }
-        const new_pd = this.createNewParamsDef(new_filtered);
-        return {
-          rows_filtered: new_filtered,
-          params_def: new_pd,
-          rows_selected_filter: null,
-          rows_filtered_filters: state.rows_filtered_filters.concat([filter]),
-        };
-      }.bind(this),
-    );
+    this.setState((state) => {
+      const new_filtered = keep
+        ? state.rows_selected
+        : _.difference(state.rows_filtered, state.rows_selected);
+      const selection = state.rows_selected_filter;
+      // A selection that no filter describes still filters the rows; it just cannot be
+      // replayed from the saved state.
+      const applied: Filter[] =
+        selection === null ? [] : [keep ? selection : { type: FilterType.Not, data: selection }];
+      return {
+        rows_filtered: new_filtered,
+        params_def: this.createNewParamsDef(new_filtered),
+        rows_selected_filter: null,
+        rows_filtered_filters: state.rows_filtered_filters.concat(applied),
+      };
+    });
   }
   setSelected(rows: Array<Datapoint>, filter: Filter | null = null): void {
     if (filter && _.isEqual(filter, this.state.rows_selected_filter)) {
@@ -816,15 +762,14 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       filterRows: this.filterRows.bind(this),
       ...datasets,
     };
-    const createPluginProps = function (
-      this: HiPlot,
-      name: string,
-    ): React.ClassAttributes<React.ComponentClass<HiPlotPluginData>> & HiPlotPluginData {
-      const baseProps = {
+    const createPluginProps = (experiment: HiPlotExperiment, name: string): PluginProps => {
+      const colorby = this.state.colorby;
+      if (colorby === null) {
+        throw new Error("A loaded experiment always has a color-by column");
+      }
+      const baseProps: PluginProps = {
         ref: this.plugins_ref[name],
-        ...(this.state.experiment.display_data && this.state.experiment.display_data[name]
-          ? this.state.experiment.display_data[name]
-          : {}),
+        ...experiment.display_data?.[name],
         ...datasets,
         rows_selected_filter: this.state.rows_selected_filter,
         name: name,
@@ -832,11 +777,11 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
         window_state: this.plugins_window_state[name],
         sendMessage: this.sendMessage.bind(this),
         get_color_for_row: this.getColorForRow.bind(this),
-        experiment: this.state.experiment,
+        experiment,
         params_def: this.state.params_def,
         params_def_unfiltered: this.state.params_def_unfiltered,
         dp_lookup: this.state.dp_lookup,
-        colorby: this.state.colorby,
+        colorby,
         render_row_text: this.renderRowText.bind(this),
         context_menu_ref: this.contextMenuRef,
         setSelected: this.setSelected.bind(this),
@@ -845,10 +790,11 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       };
       // Add callback for ParallelPlot to notify when hidden columns change
       if (name === DefaultPlugins.PARALLEL_PLOT) {
-        (baseProps as any).onHiddenColumnsChange = this.onHiddenColumnsChange.bind(this);
+        baseProps.onHiddenColumnsChange = this.onHiddenColumnsChange.bind(this);
       }
       return baseProps;
-    }.bind(this);
+    };
+    const experiment = this.state.experiment;
     return (
       <div ref={this.rootRef} className={`hip_thm--${this.state.dark ? "dark" : "light"}`}>
         <div className={style.hiplot}>
@@ -864,27 +810,24 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
             onRestoreColumns={this.restoreAllColumns.bind(this)}
             {...controlProps}
           />
-          {this.state.loadStatus === HiPlotLoadStatus.Error && (
+          {this.state.loadStatus === HiPlotLoadStatus.Error && this.state.error !== null && (
             <ErrorDisplay error={this.state.error} />
           )}
           {this.state.loadStatus !== HiPlotLoadStatus.Loaded && (
             <DocAndCredits dark={this.state.dark} />
           )}
           <ContextMenu ref={this.contextMenuRef} />
-          {this.state.loadStatus === HiPlotLoadStatus.Loaded && (
+          {this.state.loadStatus === HiPlotLoadStatus.Loaded && experiment !== null && (
             <div>
-              {(this.state.experiment.enabled_displays !== undefined
-                ? this.state.experiment.enabled_displays
-                : Object.keys(this.props.plugins)
-              ).map(
-                function (display_name: string) {
-                  const plugin = this.props.plugins[display_name];
-                  return (
-                    <React.Fragment key={display_name}>
-                      {React.createElement(plugin, createPluginProps(display_name))}
-                    </React.Fragment>
-                  );
-                }.bind(this),
+              {(experiment.enabled_displays ?? Object.keys(this.props.plugins)).map(
+                (display_name: string) => (
+                  <React.Fragment key={display_name}>
+                    {React.createElement(
+                      this.props.plugins[display_name],
+                      createPluginProps(experiment, display_name),
+                    )}
+                  </React.Fragment>
+                ),
               )}
             </div>
           )}
@@ -892,16 +835,16 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       </div>
     );
   }
-  getPlugin<P extends HiPlotPluginData, T extends React.Component<P>>(
-    cls: React.ClassType<P, T, React.ComponentClass<P>>,
+  /** The mounted instance of a plugin class. */
+  getPlugin<T extends React.Component<HiPlotPluginData>>(
+    cls: abstract new (...args: never[]) => T,
   ): T {
-    const entries = Object.entries(this.props.plugins);
-    for (let i = 0; i < entries.length; ++i) {
-      if (entries[i][1] === cls) {
-        return this.plugins_ref[entries[i][0]].current as unknown as T;
+    for (const ref of Object.values(this.plugins_ref)) {
+      if (ref.current instanceof cls) {
+        return ref.current;
       }
     }
-    throw new Error("Can not find plugin" + cls);
+    throw new Error(`Can not find plugin ${cls.name}`);
   }
   onHiddenColumnsChange(count: number): void {
     if (count !== this.state.restorableColumnsCount) {
@@ -909,23 +852,10 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     }
   }
   getRestorableColumnsCount(): number {
-    const ppRef = this.plugins_ref[DefaultPlugins.PARALLEL_PLOT];
-    if (ppRef && ppRef.current) {
-      const pp = ppRef.current as unknown as ParallelPlot;
-      if (pp.getRestorableColumnsCount) {
-        return pp.getRestorableColumnsCount();
-      }
-    }
-    return 0;
+    return this.parallelPlot()?.getRestorableColumnsCount() ?? 0;
   }
   restoreAllColumns(): void {
-    const ppRef = this.plugins_ref[DefaultPlugins.PARALLEL_PLOT];
-    if (ppRef && ppRef.current) {
-      const pp = ppRef.current as unknown as ParallelPlot;
-      if (pp.restore_all_columns) {
-        pp.restore_all_columns();
-      }
-    }
+    this.parallelPlot()?.restore_all_columns();
   }
 }
 

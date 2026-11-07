@@ -10,7 +10,8 @@ import $ from "jquery";
 import React from "react";
 import ReactDOMClient from "react-dom/client";
 import { HiPlot, type HiPlotProps } from "./hiplot";
-import { build_props } from "./hiplot_web";
+import { build_props, type HiPlotRenderOptions } from "./hiplot_web";
+import { mounted } from "./lib/refs";
 import { ParallelPlot } from "./parallel/parallel";
 import { PlotXY } from "./plotxy";
 
@@ -22,21 +23,26 @@ interface TesterState {
   keepCount: number;
 }
 
-type Test = { name: string; test: () => void };
+type Test = { name: string; test: (this: HiPlotTester) => void };
+
+/** The DOM element the tester renders into, remembering its React root. */
+interface HiPlotTesterMountPoint extends HTMLElement {
+  __hiplot_test_root?: ReactDOMClient.Root;
+}
 
 export class HiPlotTester extends React.Component<{ hiplotProps: HiPlotProps }, TesterState> {
   root = React.createRef<HTMLDivElement>();
   hiplot = React.createRef<HiPlot>();
 
-  timeout: ReturnType<typeof setTimeout> = null;
-  state = {
+  timeout: ReturnType<typeof setTimeout> | null = null;
+  state: TesterState = {
     testNum: -1,
     testDone: false,
     renderNum: 0,
     keepCount: 10,
     width: 1024,
   };
-  testSelection = [
+  testSelection: Array<Test> = [
     { name: "testSelect", test: this.testSelect },
     {
       name: "keepBtn",
@@ -47,7 +53,7 @@ export class HiPlotTester extends React.Component<{ hiplotProps: HiPlotProps }, 
     {
       name: "kept",
       test: function () {
-        console.assert(this.hiplot.current.state.rows_filtered.length === this.state.keepCount);
+        console.assert(this.mountedHiPlot().state.rows_filtered.length === this.state.keepCount);
       },
     },
     {
@@ -59,7 +65,7 @@ export class HiPlotTester extends React.Component<{ hiplotProps: HiPlotProps }, 
     {
       name: "restored",
       test: function () {
-        console.assert(this.hiplot.current.state.rows_filtered.length !== this.state.keepCount);
+        console.assert(this.mountedHiPlot().state.rows_filtered.length !== this.state.keepCount);
       },
     },
     { name: "testSelect", test: this.testSelect },
@@ -77,11 +83,11 @@ export class HiPlotTester extends React.Component<{ hiplotProps: HiPlotProps }, 
     },
   ];
 
-  testFn = [
+  testFn: Array<Test> = [
     {
       name: "responsiveWidth",
       test: function () {
-        console.assert(this.root.current.scrollWidth === this.state.width);
+        console.assert(mounted(this.root).scrollWidth === this.state.width);
       },
     },
     { name: "testSelect", test: this.testSelect },
@@ -103,7 +109,7 @@ export class HiPlotTester extends React.Component<{ hiplotProps: HiPlotProps }, 
     {
       name: "responsiveWidth",
       test: function () {
-        console.assert(this.root.current.scrollWidth === this.state.width);
+        console.assert(mounted(this.root).scrollWidth === this.state.width);
       },
     },
     {
@@ -129,43 +135,54 @@ export class HiPlotTester extends React.Component<{ hiplotProps: HiPlotProps }, 
     ...test_plotxy.bind(this)(),
   ];
 
+  mountedHiPlot(): HiPlot {
+    return mounted(this.hiplot);
+  }
+
   // Selection/highlights
   testSelect() {
-    const allRows = this.hiplot.current.state.rows_filtered;
-    this.hiplot.current.setSelected(allRows.slice(0, this.state.keepCount));
+    const allRows = this.mountedHiPlot().state.rows_filtered;
+    this.mountedHiPlot().setSelected(allRows.slice(0, this.state.keepCount));
   }
   testSelectNone() {
-    this.hiplot.current.setSelected([]);
+    this.mountedHiPlot().setSelected([]);
   }
   testSelectAll() {
-    const allRows = this.hiplot.current.state.rows_filtered;
-    this.hiplot.current.setSelected(allRows);
+    const allRows = this.mountedHiPlot().state.rows_filtered;
+    this.mountedHiPlot().setSelected(allRows);
   }
   testHighlightAllSelected() {
-    this.hiplot.current.setHighlighted(this.hiplot.current.state.rows_selected);
+    this.mountedHiPlot().setHighlighted(this.mountedHiPlot().state.rows_selected);
   }
 
   // Keep/restore/exclude buttons
   testButton(text: string) {
-    const btn = $(this.root.current).find(`button:contains(${text})`)[0];
+    const btn = $(mounted(this.root)).find(`button:contains(${text})`)[0];
     console.assert(btn !== undefined, `Can't find button "${text}"`);
     btn.click();
   }
 
   testChangeColor() {
-    const s = this.hiplot.current.state;
+    const s = this.mountedHiPlot().state;
     const params = Object.keys(s.params_def).filter((v) => v !== "uid" && v !== "from_uid");
-    const newColorIdx = (params.indexOf(s.colorby) + 1) % params.length;
-    this.hiplot.current.setState({ colorby: params[newColorIdx] });
+    const currentColorIdx = s.colorby === null ? -1 : params.indexOf(s.colorby);
+    const newColorIdx = (currentColorIdx + 1) % params.length;
+    this.mountedHiPlot().setState({ colorby: params[newColorIdx] });
   }
 
   checkStartTesting() {
     console.log("Waiting for user to load an experiment...");
-    if (this.hiplot.current.state.experiment) {
-      clearInterval(this.timeout);
+    const experiment = this.mountedHiPlot().state.experiment;
+    if (experiment) {
+      if (this.timeout !== null) {
+        clearInterval(this.timeout);
+      }
+      if (experiment.datapoints === undefined) {
+        throw new Error("The tester needs an experiment that provides `datapoints`");
+      }
       this.setState({
         testNum: 0,
-        keepCount: Math.floor(this.hiplot.current.state.experiment.datapoints.length / 2),
+        keepCount: Math.floor(experiment.datapoints.length / 2),
       });
     }
   }
@@ -183,11 +200,9 @@ export class HiPlotTester extends React.Component<{ hiplotProps: HiPlotProps }, 
     this.setState({ testDone: true });
     const testDef = this.testFn[this.state.testNum];
     console.log(`## TEST ${this.state.testNum}: ${testDef.name}`);
-    testDef.test.bind(this)();
-    this.timeout = setTimeout(
-      this.setState.bind(this, { testNum: this.state.testNum + 1, testDone: false }),
-      500,
-    );
+    testDef.test.call(this);
+    const nextTestNum = this.state.testNum + 1;
+    this.timeout = setTimeout(() => this.setState({ testNum: nextTestNum, testDone: false }), 500);
   }
   componentWillUnmount() {
     if (this.timeout !== null) {
@@ -195,15 +210,11 @@ export class HiPlotTester extends React.Component<{ hiplotProps: HiPlotProps }, 
     }
   }
   simulateRefresh() {
-    const exp = this.hiplot.current.state.experiment;
-    console.assert(exp !== null);
-    this.hiplot.current.loadWithPromise(
-      new Promise((rs, _rj) => {
-        rs({
-          experiment: exp,
-        });
-      }),
-    );
+    const exp = this.mountedHiPlot().state.experiment;
+    if (exp === null) {
+      throw new Error("Cannot refresh before an experiment is loaded");
+    }
+    this.mountedHiPlot().loadWithPromise(Promise.resolve({ experiment: exp }));
   }
 
   render() {
@@ -215,10 +226,10 @@ export class HiPlotTester extends React.Component<{ hiplotProps: HiPlotProps }, 
   }
 
   pplot(): ParallelPlot {
-    return this.hiplot.current.getPlugin(ParallelPlot);
+    return this.mountedHiPlot().getPlugin(ParallelPlot);
   }
   plotxy(): PlotXY {
-    return this.hiplot.current.getPlugin(PlotXY);
+    return this.mountedHiPlot().getPlugin(PlotXY);
   }
 }
 
@@ -233,13 +244,13 @@ function test_pplot(this: HiPlotTester): Array<Test> {
   const pplot = this.pplot.bind(this);
 
   function brushIdx(pplot: ParallelPlot, colIdx: number) {
-    let brush_el = d3.select(pplot.svg_ref.current).selectAll<SVGGElement, any>(".pplot-brush");
+    let brush_el = d3.select(mounted(pplot.svg_ref)).selectAll<SVGGElement, string>(".pplot-brush");
     const size = brush_el.nodes().length; // Why does `brush_el.size()` returns 0?!
     console.assert(size > 0);
-    brush_el = brush_el.filter((d, i) => i === colIdx % size);
+    brush_el = brush_el.filter((_d, i) => i === colIdx % size);
     pplot.d3brush.move(brush_el, [colIdx % 3 === 0 ? 0 : 100, 200]);
   }
-  const brushKeepRestore = function (this: HiPlotTester, colIdx: number) {
+  const brushKeepRestore = (colIdx: number): Array<Test> => {
     const tests: Array<Test> = [{ name: "brush", test: () => brushIdx(pplot(), colIdx) }];
     if (colIdx % 4 !== 0) {
       tests.push({
@@ -262,7 +273,7 @@ function test_pplot(this: HiPlotTester): Array<Test> {
       },
     });
     return prefix(`col${colIdx}`, tests);
-  }.bind(this);
+  };
 
   let tests: Array<Test> = [];
   for (let i = 0; i < 15; ++i) {
@@ -274,12 +285,12 @@ function test_pplot(this: HiPlotTester): Array<Test> {
 function test_plotxy(this: HiPlotTester): Array<Test> {
   const plotxy = this.plotxy.bind(this);
 
-  const selectAxis = function (this: HiPlotTester, idx: number) {
-    const k = Object.keys(this.hiplot.current.state.params_def).filter(
+  const selectAxis = (idx: number): string => {
+    const k = Object.keys(this.mountedHiPlot().state.params_def).filter(
       (v) => v !== "uid" && v !== "from_uid",
     );
     return k[idx % k.length];
-  }.bind(this);
+  };
 
   const tests: Array<Test> = [
     {
@@ -311,14 +322,14 @@ function test_plotxy(this: HiPlotTester): Array<Test> {
   return prefix("plotxy", tests);
 }
 
-export function render(element: HTMLElement, extra?: object) {
+export function render(element: HTMLElement, extra?: HiPlotRenderOptions) {
   const props: HiPlotProps = build_props(extra);
   Object.assign(props, { asserts: true });
-  const rootKey = "__hiplot_test_root";
-  const existingRoot = (element as any)[rootKey] as ReactDOMClient.Root | undefined;
+  const mountPoint: HiPlotTesterMountPoint = element;
+  const existingRoot = mountPoint.__hiplot_test_root;
   const root = existingRoot ?? ReactDOMClient.createRoot(element);
   if (!existingRoot) {
-    (element as any)[rootKey] = root;
+    mountPoint.__hiplot_test_root = root;
   }
   root.render(
     <React.StrictMode>

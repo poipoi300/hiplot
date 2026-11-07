@@ -5,15 +5,14 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import DataTable from "datatables.net";
+import DataTable, { type Api, type ConfigColumns } from "datatables.net";
 import $ from "jquery";
 import React from "react";
 import "datatables.net-bs5";
 
 // Ensure jQuery is on window for DataTables modules
 if (typeof window !== "undefined") {
-  (window as any).$ = $;
-  (window as any).jQuery = $;
+  Object.assign(window, { $, jQuery: $ });
   DataTable.use($);
 }
 
@@ -23,9 +22,8 @@ function ensureDataTablesExtensions(): Promise<void> {
   if (dataTablesExtensionsPromise) {
     return dataTablesExtensionsPromise;
   }
-  if (!($.fn as any).DataTable) {
-    ($.fn as any).DataTable = DataTable;
-    ($.fn as any).dataTable = DataTable;
+  if (!$.fn.DataTable) {
+    Object.assign($.fn, { DataTable, dataTable: DataTable });
   }
   dataTablesExtensionsPromise = import("datatables.net-buttons")
     .then(() => import("datatables.net-buttons-bs5"))
@@ -36,12 +34,16 @@ function ensureDataTablesExtensions(): Promise<void> {
 }
 
 import _ from "underscore";
-import { FilterType } from "./filters";
+import { type Filter, FilterType } from "./filters";
 import style from "./hiplot.module.css";
+import { mounted } from "./lib/refs";
 import type { HiPlotPluginData } from "./plugin";
-import type { Datapoint } from "./types";
+import type { Datapoint, DatapointValue } from "./types";
 
-type RowsDisplayTableState = {};
+type RowsDisplayTableState = Record<never, never>;
+
+/** One table row: the color cell ("") followed by one value per column of `ordered_cols`. */
+type TableRowData = Array<DatapointValue>;
 
 // DISPLAYS_DATA_DOC_BEGIN
 // Corresponds to values in the dict of `exp.display_data(hip.Displays.TABLE)`
@@ -51,7 +53,7 @@ export interface TableDisplayData {
 
   // Default ordering of the rows in the table.
   // To order by `loss` for instance, set it to [['loss', 'desc']]
-  order_by: Array<[string /* column name */, string /* "asc" or "desc" */]>;
+  order_by: Array<[string /* column name */, "asc" | "desc"]>;
 
   // Ordering of the columns
   order?: Array<string>;
@@ -61,33 +63,33 @@ export interface TableDisplayData {
 interface TablePluginProps extends HiPlotPluginData, TableDisplayData {}
 
 export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisplayTableState> {
-  table_ref: React.RefObject<HTMLTableElement> = React.createRef();
-  table_container: React.RefObject<HTMLDivElement> = React.createRef();
-  dt = null;
+  table_ref = React.createRef<HTMLTableElement>();
+  table_container = React.createRef<HTMLDivElement>();
+  dt: Api<TableRowData> | null = null;
   ordered_cols: Array<string> = [];
-  empty: boolean;
+  empty = true;
 
   setSelected_debounced = _.debounce(this.setSelected, 150);
 
-  private getUidFromRowData(rowData: Array<any>): string {
+  private getUidFromRowData(rowData: TableRowData): string {
     const uidIdx = this.ordered_cols.indexOf("uid");
     if (uidIdx >= 0) {
-      const direct = rowData[uidIdx];
+      const direct = String(rowData[uidIdx]);
       if (this.props.dp_lookup[direct] !== undefined) {
         return direct;
       }
-      if (this.dt && this.dt.colReorder) {
+      if (this.dt?.colReorder) {
         const reorderedUidIdx = this.dt.colReorder.order().indexOf(uidIdx);
-        const remapped = rowData[reorderedUidIdx];
+        const remapped = String(rowData[reorderedUidIdx]);
         if (this.props.dp_lookup[remapped] !== undefined) {
           return remapped;
         }
       }
     }
-    return rowData[uidIdx];
+    return String(rowData[uidIdx]);
   }
 
-  static defaultProps = {
+  static defaultProps: TableDisplayData = {
     hide: [],
     order_by: [["uid", "asc"]],
   };
@@ -100,11 +102,11 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
     void this.mountDt();
   }
   async mountDt() {
-    if (!this.props.params_def["uid"]) {
+    if (!this.props.params_def.uid) {
       return;
     }
     await ensureDataTablesExtensions();
-    const dom = $(this.table_ref.current);
+    const dom = $(mounted(this.table_ref));
     this.ordered_cols = ["uid"];
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const me = this;
@@ -114,11 +116,12 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
       }
       me.ordered_cols.push(k);
     });
-    if (me.props.order) {
+    const columnOrder = me.props.order;
+    if (columnOrder) {
       const columnOrderScore = (col: string) => {
-        const index = me.props.order.indexOf(col);
+        const index = columnOrder.indexOf(col);
         if (index === -1) {
-          return me.props.order.length;
+          return columnOrder.length;
         }
         return index;
       };
@@ -130,7 +133,7 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
     me.ordered_cols.unshift("");
 
     dom.empty();
-    const columns: Array<{ [k: string]: any }> = this.ordered_cols.map((x) => {
+    const columns: Array<ConfigColumns> = this.ordered_cols.map((x) => {
       const pd = me.props.params_def[x];
       return {
         title:
@@ -139,11 +142,11 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
             : $("<span />").attr("class", pd.label_css).html(pd.label_html)[0].outerHTML,
         defaultContent: "null",
         type: x === "" ? "html" : pd.numeric ? "num" : "string",
-        visible: !me.props.hide || !me.props.hide.includes(x),
+        visible: !me.props.hide?.includes(x),
         orderable: x !== "", // Don't allow to sort by color
       };
     });
-    const order_by = this.props.order_by.map((col_otype: [string, string]): [number, string] => {
+    const order_by = this.props.order_by.map((col_otype): [number, "asc" | "desc"] => {
       const col_idx = me.ordered_cols.indexOf(col_otype[0]);
       console.assert(
         col_idx >= 0,
@@ -151,7 +154,7 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
       );
       return [col_idx, col_otype[1]];
     });
-    columns[0]["render"] = (data, type, row, _meta) => {
+    columns[0].render = (_data: unknown, _type: unknown, row: TableRowData) => {
       if (!me.dt) {
         return "";
       }
@@ -159,23 +162,18 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
       const color = me.props.get_color_for_row(me.props.dp_lookup[uid], 1.0);
       return `<span class="${style.colorBlock}" style="background-color: ${color}" />`;
     };
-    this.dt = dom.DataTable({
+    this.dt = dom.DataTable<TableRowData>({
       columns: columns,
       data: [],
-      order: order_by as any,
+      order: order_by,
       deferRender: true, // Create HTML elements only when displayed
-      headerCallback: function headerCallback(
-        thead: HTMLTableRowElement,
-        _data: Array<Array<any>>,
-        _start: number,
-        _end: number,
-        _display,
-      ) {
+      headerCallback: function headerCallback(thead: HTMLTableRowElement) {
+        const contextMenuRef = me.props.context_menu_ref;
         Array.from(thead.cells).forEach((th: HTMLElement, _i) => {
-          const col = th.innerText;
-          if (col !== "" && me.dt === null && me.props.context_menu_ref !== undefined) {
+          const col = th.textContent ?? "";
+          if (col !== "" && me.dt === null && contextMenuRef !== undefined) {
             th.addEventListener("contextmenu", (e) => {
-              me.props.context_menu_ref.current.show(e.pageX, e.pageY, col);
+              mounted(contextMenuRef).show(e.pageX, e.pageY, col);
               e.preventDefault();
               e.stopPropagation();
             });
@@ -192,7 +190,7 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
       colReorder: true,
     });
     dom.wrap('<div class="hiplot-table-scroll"></div>');
-    const btnsContainer = $(this.table_container.current).find(".col-md-6:eq(1)");
+    const btnsContainer = $(mounted(this.table_container)).find(".col-md-6:eq(1)");
     btnsContainer.addClass("btn-group");
     this.dt.buttons().container().appendTo(btnsContainer);
     btnsContainer.find(".dt-buttons").removeClass("btn-group");
@@ -205,7 +203,7 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
         const node = this.dt.buttons()[0].node;
         node.classList.remove("d-none");
         node.classList.remove("btn-secondary");
-        const searchResults = this.dt.rows({ filter: "applied" });
+        const searchResults = this.dt.rows({ search: "applied" });
         if (this.dt.search() === "" || searchResults.count() === 0) {
           node.classList.add("d-none");
         }
@@ -289,18 +287,19 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
     if (!dt) {
       return;
     }
-    const searchResults = dt.rows({ filter: "applied" });
+    const searchResults = dt.rows({ search: "applied" });
     const uidIdx = this.ordered_cols.indexOf("uid");
-    const searchResultsDatapoints = [];
-    $.each(
-      searchResults.data(),
-      function (index, value) {
-        searchResultsDatapoints.push(this.props.dp_lookup[value[uidIdx]]);
-      }.bind(this),
-    );
-    let filter = {
+    const searchResultsDatapoints: Array<Datapoint> = searchResults
+      .data()
+      .toArray()
+      .map((row: TableRowData) => this.props.dp_lookup[String(row[uidIdx])]);
+    const searchTerm = dt.search();
+    if (typeof searchTerm !== "string") {
+      throw new Error("The table search box only produces string searches");
+    }
+    let filter: Filter = {
       type: FilterType.Search,
-      data: dt.search(),
+      data: searchTerm,
     };
     if (this.props.rows_selected_filter) {
       filter = {
