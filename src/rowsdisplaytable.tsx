@@ -33,7 +33,6 @@ function ensureDataTablesExtensions(): Promise<void> {
   return dataTablesExtensionsPromise;
 }
 
-import _ from "underscore";
 import { type Filter, FilterType } from "./filters";
 import style from "./hiplot.module.css";
 import { mounted } from "./lib/refs";
@@ -68,8 +67,6 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
   dt: Api<TableRowData> | null = null;
   ordered_cols: Array<string> = [];
   empty = true;
-
-  setSelected_debounced = _.debounce(this.setSelected, 150);
 
   private getUidFromRowData(rowData: TableRowData): string {
     const uidIdx = this.ordered_cols.indexOf("uid");
@@ -279,7 +276,8 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
       // Color scale changed - need redraw with the correct color
       prevProps.params_def !== this.props.params_def
     ) {
-      this.setSelected_debounced(this.props.rows_selected);
+      // Selections arrive once per brush gesture (see ParallelPlot), so no debounce.
+      this.setSelected(this.props.rows_selected);
     }
   }
   setSelectedToSearchResult() {
@@ -354,6 +352,5 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
   }
   componentWillUnmount() {
     this.destroyDt();
-    this.setSelected_debounced.cancel();
   }
 }

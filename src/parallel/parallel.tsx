@@ -40,14 +40,14 @@ interface ParallelPlotState {
   hide: Set<string>;
   invert: Set<string>;
   dimensions: Array<string>;
-  brush_count: number;
 
   dragging: { col: string; pos: number; origin: number; dragging: boolean } | null;
 }
 
 interface PPlotInternal {
   redraw_axis: () => void;
-  brush: () => void;
+  /** Recomputes the selection from the brushes; `publish` hands it to HiPlot. */
+  brush: (publish: boolean) => void;
 }
 
 // DISPLAYS_DATA_DOC_BEGIN
@@ -176,6 +176,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   private lineGeometry: LineGeometry | null = null;
   /** Per-axis brush masks over the filtered rows. */
   private masks: BrushMasks | null = null;
+  /** The rows whose lines are drawn: the brush selection, or a selection made elsewhere. */
+  private drawnSelection: ReadonlyArray<Datapoint> | null = null;
+  /** The last selection this plot handed to HiPlot. */
+  private publishedSelection: ReadonlyArray<Datapoint> | null = null;
+  /** Incremented by every draw, so a progressive draw stops once superseded. */
+  private drawGeneration = 0;
   /** The pending animation frame of a progressive draw, if one is in flight. */
   drawingFrame: number | null = null;
   /** Smoothed cost of one line, from measured frame intervals (see `paths`). */
@@ -276,7 +282,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         readState(props.persistentState, "invert", isStringArray, props.invert ?? []),
       ),
       dimensions: [],
-      brush_count: 0,
       dragging: null,
     };
   }
@@ -287,7 +292,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     d3.select(this.svgg_ref.current).selectAll("*").remove();
     this.cancelDrawing();
     this.props.context_menu_ref?.current?.removeCallbacks(this);
-    this.onBrushChange.cancel();
+    this.cancelBrushMove();
     this.sendBrushExtents.cancel();
   }
   componentDidUpdate(prevProps: ParallelPlotData, prevState: ParallelPlotState) {
@@ -366,23 +371,47 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.update_ticks();
       this.cancelDrawing();
     }
-    // When we need to redraw lines
+    // A selection made elsewhere (table search, Keep/Exclude): draw it. Our own
+    // brush selections are already drawn when they are published.
+    const selectionChanged =
+      prevProps.rows_selected !== this.props.rows_selected &&
+      this.props.rows_selected !== this.publishedSelection;
+    if (selectionChanged) {
+      this.drawnSelection = this.props.rows_selected;
+    }
     if (
-      prevProps.rows_selected !== this.props.rows_selected ||
+      selectionChanged ||
+      prevProps.color_binning !== this.props.color_binning ||
       prevProps.colorby !== this.props.colorby ||
       prevState.height !== this.state.height ||
       prevState.width !== this.state.width
     ) {
-      this.setState((prevState) => ({ brush_count: prevState.brush_count + 1 }));
-    } else if (prevState.brush_count !== this.state.brush_count && this.foreground !== null) {
-      this.paths(this.props.rows_selected, this.foreground, this.state.brush_count);
+      this.redrawLines();
     }
     this.props.window_state.height = this.state.height;
   }
-  onBrushChange = _.throttle((): void => {
+  /** Brush moves are coalesced to one selection update per animation frame. */
+  private brushMoveFrame: number | null = null;
+  onBrushMove = (): void => {
+    if (this.brushMoveFrame !== null) {
+      return;
+    }
+    this.brushMoveFrame = requestAnimationFrame(() => {
+      this.brushMoveFrame = null;
+      this.pplot?.brush(false);
+    });
+  };
+  onBrushEnd = (): void => {
+    this.cancelBrushMove();
     this.sendBrushExtents();
-    this.pplot?.brush();
-  }, 75);
+    this.pplot?.brush(true);
+  };
+  cancelBrushMove(): void {
+    if (this.brushMoveFrame !== null) {
+      cancelAnimationFrame(this.brushMoveFrame);
+      this.brushMoveFrame = null;
+    }
+  }
   onResize = (height: number, width: number): void => {
     if (this.state.height !== height || this.state.width !== width) {
       this.setState({ height: height, width: width });
@@ -717,9 +746,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       dimensions_dom.selectAll(".extent").append("title").text("Drag or resize this filter");
     }
 
-    function brush(): void {
+    function brush(publish: boolean): void {
       /**
-       * Called whenever a brush happens. Recomputes which points are selected.
+       * Called whenever a brush moves. Recomputes and draws the selected lines
+       * right away; with `publish`, also hands the selection to HiPlot, which
+       * updates the other displays (done when a brush gesture ends).
        */
       me.props.context_menu_ref?.current?.hide();
       const extents = me.getBrushExtents();
@@ -774,10 +805,16 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       );
       const masks = me.brushMasks();
       const selected = masks.selectedRows(masks.select(selections));
+      me.drawnSelection = selected;
+      me.redrawLines();
+      if (!publish) {
+        return;
+      }
 
       if (me.props.asserts) {
         me.assertPixelSelectionMatches(actives, extents, filters, selected);
       }
+      me.publishedSelection = selected;
       me.props.setSelected(selected, {
         type: FilterType.All,
         data: filters,
@@ -800,8 +837,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       });
       me.updateAxisTitlesAnglesAndFontSize();
 
-      // render data
-      this.setState((prevState) => ({ brush_count: prevState.brush_count + 1 }));
+      me.redrawLines();
       this.props.sendMessage("height_changed", () => null);
     }, 100);
 
@@ -813,12 +849,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       brush: brush,
     };
 
-    // Render full foreground
-    brush();
+    // Initial selection and full foreground
+    brush(true);
     me.sendBrushExtents();
-
-    // Trigger initial brush
-    me.setState((prevState) => ({ brush_count: prevState.brush_count + 1 }));
   }
 
   /**
@@ -906,8 +939,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         [-23, 0],
         [15, this.h],
       ])
-      .on("brush", this.onBrushChange)
-      .on("end", this.onBrushChange);
+      .on("brush", this.onBrushMove)
+      .on("end", this.onBrushEnd);
     // Scale chart and canvas height
     const div = d3.select(mounted(this.root_ref));
     div.style("height", `${this.state.height}px`);
@@ -950,7 +983,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         node.transition().duration(720).call(this.get_axis(dimension));
         node.selectAll(".tick text").style("font-weight", null).style("font-size", null);
       });
-    this.setState((prevState) => ({ brush_count: prevState.brush_count + 1 }));
+    this.redrawLines();
   }
 
   /** Geometry of the filtered rows, rebuilt only when they change. */
@@ -998,7 +1031,20 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
    * systematically on top, and each frame strokes one path per color bin.
    * Pixels and color bins come from the cached LineGeometry.
    */
-  paths(selected: Array<Datapoint>, ctx: CanvasRenderingContext2D, count: number): void {
+  /** Redraws the selected lines (all filtered rows before any selection exists). */
+  redrawLines(): void {
+    if (this.foreground === null) {
+      return;
+    }
+    this.drawGeneration += 1;
+    this.paths(
+      this.drawnSelection ?? this.props.rows_selected,
+      this.foreground,
+      this.drawGeneration,
+    );
+  }
+
+  paths(selected: ReadonlyArray<Datapoint>, ctx: CanvasRenderingContext2D, count: number): void {
     const opacity = Math.min(2 / selected.length ** 0.3, 1);
     const geometry = this.geometry();
     const rows = this.drawnRows(geometry, selected);
@@ -1022,7 +1068,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
     const drawFrame = (now: number): void => {
       this.drawingFrame = null;
-      if (count < this.state.brush_count) {
+      if (count < this.drawGeneration) {
         return;
       }
       if (previousFrame !== null && drawnLastFrame > 0) {
@@ -1071,8 +1117,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         null,
       );
     }
-    this.d3brush.on("brush", this.onBrushChange).on("end", this.onBrushChange);
-    this.onBrushChange();
+    this.d3brush.on("brush", this.onBrushMove).on("end", this.onBrushEnd);
+    this.onBrushEnd();
   }
 
   remove_axis(d: string): void {
