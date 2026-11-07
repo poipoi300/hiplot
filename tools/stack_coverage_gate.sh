@@ -19,17 +19,22 @@ uv run coverage run -m pytest
 uv run coverage lcov -o "${REPORTS}/python.lcov"
 
 rm -rf "${REPORTS}/unit"
-bun test --coverage --coverage-reporter=lcov --coverage-dir="${REPORTS}/unit"
+bun test --coverage --coverage-reporter=lcov --coverage-dir="${REPORTS}/unit" ./src ./tools
 
 if [ -z "${E2E_LCOV:-}" ]; then
   bash tools/e2e_coverage.sh
   E2E_LCOV="${REPORTS}/e2e/lcov.info"
 fi
 
+# bun lists every physical line of a statement; its lines are folded onto
+# the statement lines istanbul counts (see tools/statement_starts.ts).
+git ls-files -z '*.ts' '*.tsx' | xargs -0 bun tools/statement_starts.ts "${REPORTS}/statements.json"
+
 # One report, repo-relative paths, unit and end-to-end hits summed per line:
 # diff-cover cannot mix Cobertura with LCOV, and matches git's diff paths.
 uv run python tools/merge_lcov.py "${REPORTS}/merged.lcov" \
-  "${REPORTS}/python.lcov" "${REPORTS}/unit/lcov.info" "${E2E_LCOV}"
+  "${REPORTS}/python.lcov" "${E2E_LCOV}" \
+  --bun "${REPORTS}/unit/lcov.info" --statements "${REPORTS}/statements.json"
 
 # diff-cover needs the comparison branch present locally. In a fresh clone/CI
 # checkout it may be missing; fetch it best-effort before comparing.

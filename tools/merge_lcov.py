@@ -4,30 +4,36 @@ diff-cover matches report paths against git's repo-relative diff paths, but
 coverage.py, `bun test`, and nyc each write paths differently (relative,
 absolute, backslashed). The same TypeScript file is also covered twice, by the
 bun unit tests and by the Playwright suite, so line hits are summed per file
-into one record: a line counts as covered when any suite executed it.
+into one record: a line counts as covered when any suite executed it, and a
+line any suite calls executable stays in the record, hit or not.
 
-The suites disagree on which lines are executable. coverage.py and istanbul
-(Playwright) count a multi-line statement on its first line only, while bun
-counts every physical line it spans. Unioning the line sets would report the
-continuation lines of a statement the browser ran as missed whenever bun only
-imported the file. A file reported by several suites therefore keeps just the
-lines all of them call executable.
+The suites disagree on which lines of a statement are executable. coverage.py
+and istanbul (Playwright) count a multi-line statement on its first line only,
+while bun lists every physical line it spans, including signatures and closing
+braces. bun's lines are therefore folded first, with the map
+tools/statement_starts.ts writes: each line onto the first line of the
+statement istanbul counts it under, keeping the highest hit count among the
+lines folded together.
 
 Only line records (DA) are kept; diff-cover reads nothing else.
 
 Usage:
-    uv run python tools/merge_lcov.py OUTPUT REPORT[=ROOT] [REPORT[=ROOT] ...]
+    uv run python tools/merge_lcov.py OUTPUT REPORT[=ROOT] ... \\
+        [--bun REPORT[=ROOT] ... --statements STATEMENTS.json]
 
 ROOT is the directory a report's relative paths start from (default: the
 repo root, i.e. the current directory).
 """
 
 import argparse
+import json
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 type LineHits = dict[int, int]
+#: Per source path, the line each folded line is counted under.
+type StatementTargets = dict[str, dict[int, int]]
 
 
 def read_report(report: Path, root: Path, repo: Path) -> dict[str, LineHits]:
@@ -50,17 +56,39 @@ def read_report(report: Path, root: Path, repo: Path) -> dict[str, LineHits]:
     return files
 
 
-def merge(reports: Iterable[dict[str, LineHits]]) -> dict[str, LineHits]:
-    """Sum line hits per source path over the lines every covering report lists."""
-    per_path: defaultdict[str, list[LineHits]] = defaultdict(list)
+def read_statement_targets(path: Path) -> StatementTargets:
+    """The map tools/statement_starts.ts writes, with integer line numbers."""
+    raw: dict[str, dict[str, int]] = json.loads(path.read_text(encoding="utf-8"))
+    return {source: {int(line): target for line, target in lines.items()} for source, lines in raw.items()}
+
+
+def fold_statements(report: Mapping[str, LineHits], targets: StatementTargets) -> dict[str, LineHits]:
+    """Folds every line of a per-line report onto the line its statement is counted under."""
+    folded: dict[str, LineHits] = {}
+    for path, hits in report.items():
+        if path not in targets:
+            raise ValueError(f"No statement map for {path}: add it to the tools/statement_starts.ts run")
+        file_targets = targets[path]
+        lines: LineHits = {}
+        for number, count in hits.items():
+            target = file_targets.get(number, number)
+            lines[target] = max(lines.get(target, 0), count)
+        folded[path] = lines
+    return folded
+
+
+def merge(reports: Iterable[Mapping[str, LineHits]]) -> dict[str, LineHits]:
+    """Sum line hits per source path over every line any report lists."""
+    merged: defaultdict[str, LineHits] = defaultdict(dict)
     for report in reports:
         for path, hits in report.items():
-            per_path[path].append(hits)
-    merged: dict[str, LineHits] = {}
-    for path, reported in per_path.items():
-        executable = set.intersection(*(set(hits) for hits in reported))
-        merged[path] = {number: sum(hits[number] for hits in reported) for number in executable}
-    return merged
+            lines = merged[path]
+            for number, count in hits.items():
+                lines[number] = lines.get(number, 0) + count
+    for path, lines in merged.items():
+        if not lines:
+            raise ValueError(f"{path}: no report lists an executable line")
+    return dict(merged)
 
 
 def render(files: dict[str, LineHits]) -> str:
@@ -84,14 +112,26 @@ def parse_report_argument(argument: str, repo: Path) -> tuple[Path, Path]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("output", type=Path)
-    parser.add_argument("reports", nargs="+", help="REPORT or REPORT=ROOT")
+    parser.add_argument("reports", nargs="*", default=[], help="REPORT or REPORT=ROOT, merged as they are")
+    parser.add_argument(
+        "--bun", action="append", default=[], help="REPORT or REPORT=ROOT listing every line, folded first"
+    )
+    parser.add_argument("--statements", type=Path, help="statement map from tools/statement_starts.ts")
     args = parser.parse_args(argv)
+    if args.bun and args.statements is None:
+        parser.error("--bun reports need --statements")
+    if not args.reports and not args.bun:
+        parser.error("give at least one report")
     repo = Path.cwd().resolve()
-    sources = [parse_report_argument(argument, repo) for argument in args.reports]
-    merged = merge(read_report(report, root, repo) for report, root in sources)
+    reports = [read_report(*parse_report_argument(argument, repo), repo) for argument in args.reports]
+    if args.bun:
+        targets = read_statement_targets(args.statements)
+        reports.extend(
+            fold_statements(read_report(*parse_report_argument(argument, repo), repo), targets) for argument in args.bun
+        )
     output: Path = args.output
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(render(merged), encoding="utf-8", newline="\n")
+    output.write_text(render(merge(reports)), encoding="utf-8", newline="\n")
     return 0
 
 

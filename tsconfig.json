@@ -15,5 +15,5 @@
     "noEmit": true,
     "types": ["bun"]
   },
-  "include": ["src", "tests", "bench", "*.ts", "*.mts"]
+  "include": ["src", "tests", "bench", "tools", "*.ts", "*.mts"]
 }

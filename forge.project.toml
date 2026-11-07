@@ -42,7 +42,7 @@ timeout_s = 600
 [[checks]]
 id = "bun-test"
 label = "Frontend unit tests"
-argv = ["bun", "test", "--reporter=junit", "--reporter-outfile={report_path}"]
+argv = ["bun", "test", "--reporter=junit", "--reporter-outfile={report_path}", "./src", "./tools"]
 report = "junit"
 stage = "push"
 
@@ -68,7 +68,7 @@ stage = "commit"
 [[checks]]
 id = "biome"
 label = "Biome check"
-argv = ["bun", "run", "biome", "check", "."]
+argv = ["bun", "run", "biome", "check", "--error-on-warnings", "."]
 stage = "commit"
 
 [[checks]]

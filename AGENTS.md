@@ -106,7 +106,7 @@ Python runs through `uv`, the frontend through Bun. Never invoke `pip`, bare
 | Build the bundles | `bun run build` |
 | Dev server (needs a build) | `uv run --extra server hiplot --port 8765` |
 | Python tests | `uv run pytest -q` |
-| Frontend unit tests | `bun test` |
+| Frontend unit tests | `bun test ./src ./tools` |
 | End-to-end tests (Playwright) | `bun run test:js` |
 | Format | `uv run ruff format .` · `bun run biome check --write .` |
 | Lint | `uv run ruff check .` · `bun run biome check --error-on-warnings .` |
@@ -144,8 +144,8 @@ the first run instead of iterating against the gates.
 - `bench/` — the rendering benchmark (`docs/PERFORMANCE.md` has the numbers).
 - `tools/` — gate scripts. `repo_hygiene.py` and `coverage_gate.sh` are
   verbatim from forge; `stack_coverage_gate.sh`, `e2e_coverage.sh` and
-  `merge_lcov.py` extend the push gate to Python plus TypeScript; `gates.py`
-  is the registry.
+  `merge_lcov.py` with `statement_starts.ts` extend the push gate to Python
+  plus TypeScript; `gates.py` is the registry.
 - `docs/` — the Sphinx site; `examples/` — notebooks and Streamlit demos.
 
 ## Verifying
