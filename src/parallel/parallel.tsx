@@ -32,6 +32,7 @@ import { type Datapoint, ParamType } from "../types";
 import { LineGeometry } from "./geometry";
 import pstyle from "./parallel.module.css";
 import { type AxisSelection, BrushMasks } from "./selection";
+import { WebGLLineRenderer } from "./webgl";
 
 interface ParallelPlotState {
   height: number;
@@ -176,6 +177,14 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   private lineGeometry: LineGeometry | null = null;
   /** Per-axis brush masks over the filtered rows. */
   private masks: BrushMasks | null = null;
+  /** Line renderer on the GPU; null when WebGL2 is unavailable and Canvas 2D draws. */
+  webgl: WebGLLineRenderer | null = null;
+  /** The selection flags last computed, reused while the selection is unchanged. */
+  private maskMemo: {
+    geometry: LineGeometry;
+    rows: ReadonlyArray<Datapoint>;
+    mask: Uint8Array;
+  } | null = null;
   /** The rows whose lines are drawn: the brush selection, or a selection made elsewhere. */
   private drawnSelection: ReadonlyArray<Datapoint> | null = null;
   /** The last selection this plot handed to HiPlot. */
@@ -291,6 +300,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   componentWillUnmount() {
     d3.select(this.svgg_ref.current).selectAll("*").remove();
     this.cancelDrawing();
+    this.webgl?.dispose();
+    this.webgl = null;
     this.props.context_menu_ref?.current?.removeCallbacks(this);
     this.cancelBrushMove();
     this.sendBrushExtents.cancel();
@@ -545,15 +556,22 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     const div = d3.select(mounted(me.root_ref));
     const svg = d3.select(mounted(me.svg_ref));
 
-    // Foreground canvas for primary view
-    const foreground = mounted(this.foreground_ref).getContext("2d");
+    // Foreground canvas for the lines: WebGL2 when available, Canvas 2D otherwise
+    const foregroundCanvas = mounted(this.foreground_ref);
+    me.webgl = WebGLLineRenderer.create(foregroundCanvas);
+    if (me.webgl === null) {
+      const foreground = foregroundCanvas.getContext("2d");
+      if (foreground === null) {
+        throw new Error("Neither WebGL2 nor Canvas 2D is available");
+      }
+      foreground.globalCompositeOperation = "destination-over";
+      me.foreground = foreground;
+    }
     // Highlight canvas for temporary interactions
     const highlighted = mounted(this.highlighted_ref).getContext("2d");
-    if (foreground === null || highlighted === null) {
+    if (highlighted === null) {
       throw new Error("Canvas 2D is not available");
     }
-    foreground.globalCompositeOperation = "destination-over";
-    me.foreground = foreground;
     me.highlighted = highlighted;
 
     // Load the data and visualization
@@ -804,8 +822,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             : { type: FilterType.Range, data: selection },
       );
       const masks = me.brushMasks();
-      const selected = masks.selectedRows(masks.select(selections));
+      const mask = masks.select(selections);
+      const selected = masks.selectedRows(mask);
       me.drawnSelection = selected;
+      if (masks.rows === me.geometry().rows) {
+        me.maskMemo = { geometry: me.geometry(), rows: selected, mask };
+      }
       me.redrawLines();
       if (!publish) {
         return;
@@ -1001,6 +1023,53 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return this.masks;
   }
 
+  /** Per-row flags (1 = drawn) of the rows whose lines are drawn. */
+  selectionMask(geometry: LineGeometry): Uint8Array {
+    const selected = this.drawnSelection ?? this.props.rows_selected;
+    const memo = this.maskMemo;
+    if (memo !== null && memo.geometry === geometry && memo.rows === selected) {
+      return memo.mask;
+    }
+    const mask = new Uint8Array(geometry.rows.length);
+    if (selected === geometry.rows) {
+      mask.fill(1);
+    } else {
+      selected.forEach((row) => {
+        mask[geometry.indexOf(row)] = 1;
+      });
+    }
+    this.maskMemo = { geometry, rows: selected, mask };
+    return mask;
+  }
+
+  /** Draws every selected line in one WebGL pass. */
+  private drawWithWebGL(webgl: WebGLLineRenderer): void {
+    const geometry = this.geometry();
+    const binning = this.props.color_binning;
+    const mask = this.selectionMask(geometry);
+    let selectedCount = 0;
+    for (let i = 0; i < mask.length; ++i) {
+      selectedCount += mask[i];
+    }
+    webgl.setRows(geometry.rows.length, geometry.order);
+    webgl.setColors(geometry.colorBins(binning, this.props.colorby), binning.palette);
+    webgl.setSelection(mask);
+    webgl.draw({
+      axes: this.state.dimensions.map((dimension) => ({
+        x: this.position(dimension),
+        pixels: geometry.pixels(
+          dimension,
+          this.yscale[dimension],
+          this.props.params_def[dimension].numeric,
+        ),
+      })),
+      width: this.w,
+      height: this.h,
+      alpha: Math.min(2 / Math.max(1, selectedCount) ** 0.3, 1),
+      curved: true,
+    });
+  }
+
   /** Indices of the selected rows, in draw order. */
   drawnRows(geometry: LineGeometry, selected: ReadonlyArray<Datapoint>): Uint32Array {
     if (selected === geometry.rows) {
@@ -1033,6 +1102,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
    */
   /** Redraws the selected lines (all filtered rows before any selection exists). */
   redrawLines(): void {
+    if (this.webgl !== null) {
+      this.drawWithWebGL(this.webgl);
+      return;
+    }
     if (this.foreground === null) {
       return;
     }
