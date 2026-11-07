@@ -83,9 +83,130 @@ const MISSING: { [theme in ColorTheme]: RGB } = {
   dark: { r: 125, g: 132, b: 140 },
 };
 
-/** Default numeric color map: viridis, starting lighter on the dark theme so low values stay visible. */
-function defaultColorMap(theme: ColorTheme): ColorMap {
-  return theme === "dark" ? (t) => d3.interpolateViridis(0.18 + 0.82 * t) : d3.interpolateViridis;
+/** A numeric color map the user can pick, named after its d3 interpolator. */
+export interface NumericColorMap {
+  id: string;
+  label: string;
+  kind: "sequential" | "diverging";
+}
+
+interface ColorMapDefinition extends NumericColorMap {
+  interpolate: ColorMap;
+  /** The part of the map used on each theme: ends that vanish into the background are cut. */
+  range: { [theme in ColorTheme]: readonly [number, number] };
+}
+
+const FULL = [0, 1] as const;
+const COLOR_MAP_DEFINITIONS: ReadonlyArray<ColorMapDefinition> = [
+  {
+    id: "interpolateViridis",
+    label: "Viridis",
+    kind: "sequential",
+    interpolate: d3.interpolateViridis,
+    range: { light: FULL, dark: [0.18, 1] },
+  },
+  {
+    id: "interpolateCividis",
+    label: "Cividis",
+    kind: "sequential",
+    interpolate: d3.interpolateCividis,
+    range: { light: FULL, dark: [0.18, 1] },
+  },
+  {
+    id: "interpolateMagma",
+    label: "Magma",
+    kind: "sequential",
+    interpolate: d3.interpolateMagma,
+    range: { light: [0, 0.88], dark: [0.25, 1] },
+  },
+  {
+    id: "interpolateInferno",
+    label: "Inferno",
+    kind: "sequential",
+    interpolate: d3.interpolateInferno,
+    range: { light: [0, 0.88], dark: [0.25, 1] },
+  },
+  {
+    id: "interpolatePlasma",
+    label: "Plasma",
+    kind: "sequential",
+    interpolate: d3.interpolatePlasma,
+    range: { light: [0, 0.94], dark: [0.12, 1] },
+  },
+  {
+    id: "interpolateTurbo",
+    label: "Turbo",
+    kind: "sequential",
+    interpolate: d3.interpolateTurbo,
+    range: { light: FULL, dark: [0.08, 1] },
+  },
+  {
+    id: "interpolateRdBu",
+    label: "Red–Blue",
+    kind: "diverging",
+    interpolate: d3.interpolateRdBu,
+    range: { light: FULL, dark: FULL },
+  },
+  {
+    id: "interpolatePuOr",
+    label: "Purple–Orange",
+    kind: "diverging",
+    interpolate: d3.interpolatePuOr,
+    range: { light: FULL, dark: FULL },
+  },
+  {
+    id: "interpolateBrBG",
+    label: "Brown–Teal",
+    kind: "diverging",
+    interpolate: d3.interpolateBrBG,
+    range: { light: FULL, dark: FULL },
+  },
+  {
+    id: "interpolatePiYG",
+    label: "Pink–Green",
+    kind: "diverging",
+    interpolate: d3.interpolatePiYG,
+    range: { light: FULL, dark: FULL },
+  },
+  {
+    id: "interpolateSpectral",
+    label: "Spectral",
+    kind: "diverging",
+    interpolate: d3.interpolateSpectral,
+    range: { light: FULL, dark: FULL },
+  },
+];
+
+/** The color maps offered for numeric columns, sequential first. */
+export const NUMERIC_COLOR_MAPS: ReadonlyArray<NumericColorMap> = COLOR_MAP_DEFINITIONS;
+export const DEFAULT_COLOR_MAP = "interpolateViridis";
+
+/**
+ * Lightness bounds (CIELAB L*) that keep the near-white middle of a diverging
+ * map visible on the light background, and its darkest ends on the dark one.
+ */
+const DIVERGING_LIGHTNESS: { [theme in ColorTheme]: readonly [number, number] } = {
+  light: [0, 80],
+  dark: [38, 100],
+};
+
+/** One of NUMERIC_COLOR_MAPS adapted to the theme, or null for any other name. */
+export function themedColorMap(id: string, theme: ColorTheme): ColorMap | null {
+  const definition = COLOR_MAP_DEFINITIONS.find((map) => map.id === id);
+  if (definition === undefined) {
+    return null;
+  }
+  const [start, end] = definition.range[theme];
+  const sample = (t: number): string => definition.interpolate(start + (end - start) * t);
+  if (definition.kind === "sequential") {
+    return sample;
+  }
+  const [darkest, lightest] = DIVERGING_LIGHTNESS[theme];
+  return (t) => {
+    const color = d3.lab(sample(t));
+    color.l = Math.max(darkest, Math.min(lightest, color.l));
+    return color.formatHex();
+  };
 }
 
 /** A stable color for a category beyond the palettes: hue from a hash, fixed chroma and lightness. */
@@ -222,11 +343,28 @@ function categoricalBinning(pd: ParamDef, theme: ColorTheme): ColorBinning {
   );
 }
 
-function numericBinning(pd: ParamDef, colormap: string | null, theme: ColorTheme): ColorBinning {
-  const name = pd.colormap ?? colormap;
-  const colorMap = name
-    ? parseColorMap(name, pd.colormap ? `for column ${pd.name}` : "(global default color map)")
-    : defaultColorMap(theme);
+/**
+ * The numeric color map in effect: the one picked in the legend, else the
+ * column's, else the experiment's, else the default.
+ */
+export function effectiveColorMap(
+  pd: ParamDef,
+  colormap: string | null,
+  picked: string | null,
+): string {
+  return picked ?? pd.colormap ?? colormap ?? DEFAULT_COLOR_MAP;
+}
+
+function numericBinning(
+  pd: ParamDef,
+  colormap: string | null,
+  theme: ColorTheme,
+  picked: string | null,
+): ColorBinning {
+  const name = effectiveColorMap(pd, colormap, picked);
+  const description =
+    picked === null && pd.colormap ? `for column ${pd.name}` : "(global default color map)";
+  const colorMap = themedColorMap(name, theme) ?? parseColorMap(name, description);
   const palette = Array.from({ length: NUMERIC_COLOR_BINS }, (_, bin) => {
     const css = colorMap(bin / (NUMERIC_COLOR_BINS - 1));
     try {
@@ -256,14 +394,16 @@ function numericBinning(pd: ParamDef, colormap: string | null, theme: ColorTheme
 
 /**
  * Builds the color bins of a color-by column. `colormap` is the experiment's
- * color map; null selects viridis.
+ * color map and `picked` the one chosen in the legend; with neither, numeric
+ * columns use viridis.
  */
 export function colorBinning(
   pd: ParamDef,
   colormap: string | null,
   theme: ColorTheme = "light",
+  picked: string | null = null,
 ): ColorBinning {
   return pd.type === ParamType.CATEGORICAL
     ? categoricalBinning(pd, theme)
-    : numericBinning(pd, colormap, theme);
+    : numericBinning(pd, colormap, theme, picked);
 }

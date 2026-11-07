@@ -29,10 +29,15 @@ import style from "./hiplot.module.css";
 import { infertypes, type ParamDef, type ParamDefMap } from "./infertypes";
 import { ColorLegend } from "./legend";
 import { setupBrowserCompat } from "./lib/browsercompat";
-import { type ColorBinning, colorBinning } from "./lib/colors";
+import {
+  type ColorBinning,
+  colorBinning,
+  effectiveColorMap,
+  NUMERIC_COLOR_MAPS,
+} from "./lib/colors";
 import { experimentRows } from "./lib/compress";
 import { mounted } from "./lib/refs";
-import { type PersistentState, PersistentStateInMemory } from "./lib/savedstate";
+import { type PersistentState, PersistentStateInMemory, readState } from "./lib/savedstate";
 import { storeThemeChoice, type ThemeChoice } from "./lib/theme";
 import { ParallelPlot } from "./parallel/parallel";
 import { PlotXY } from "./plotxy";
@@ -48,6 +53,7 @@ import {
   type LoadURIPromiseResult,
   ParamType,
   PSTATE_COLOR_BY,
+  PSTATE_COLOR_MAP,
   PSTATE_FILTERS,
   PSTATE_PARAMS,
 } from "./types";
@@ -150,6 +156,8 @@ interface HiPlotState extends IDatasets {
   dp_lookup: DatapointLookup;
   colorby: string | null;
   colormap: string | null;
+  /** The numeric color map picked in the legend; null until one is. */
+  pickedColorMap: string | null;
 
   rows_filtered_filters: Array<Filter>; // `rows_all` -> `rows_filtered`
   rows_selected_filter: Filter | null; // `rows_filtered` -> `rows_selected`
@@ -223,6 +231,9 @@ export function normalizeDarkModeSetting(
   return fallback;
 }
 
+const isNumericColorMap = (value: unknown): value is string =>
+  NUMERIC_COLOR_MAPS.some((map) => map.id === value);
+
 function themeChoiceOf(setting: HiPlotDarkMode): ThemeChoice {
   if (setting === "auto") {
     return "system";
@@ -270,9 +281,11 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
   constructor(props: HiPlotProps) {
     super(props);
     const darkModeSetting = normalizeDarkModeSetting(this.props.dark, "auto");
+    const persistentState = props.persistentState ?? new PersistentStateInMemory("", {});
     this.state = {
       experiment: null,
       colormap: null,
+      pickedColorMap: readState(persistentState, PSTATE_COLOR_MAP, isNumericColorMap, null),
       loadStatus: HiPlotLoadStatus.None,
       loadPromise: null,
       error: null,
@@ -288,10 +301,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       colorby: null,
       dark: resolveDarkModeSetting(darkModeSetting),
       darkModeSetting,
-      persistentState:
-        props.persistentState !== undefined && props.persistentState !== null
-          ? props.persistentState
-          : new PersistentStateInMemory("", {}),
+      persistentState,
       dataProvider: this.props.dataProvider ? this.props.dataProvider : StaticDataProvider,
       restorableColumnsCount: 0,
     };
@@ -501,6 +511,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
   private cachedColorBinning: {
     pd: ParamDef;
     colormap: string | null;
+    pickedColorMap: string | null;
     dark: boolean;
     binning: ColorBinning;
   } | null = null;
@@ -511,19 +522,26 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       throw new Error("Rows are only colored once an experiment is loaded");
     }
     const pd = this.state.params_def[colorby];
+    const { colormap, pickedColorMap, dark } = this.state;
     const cached = this.cachedColorBinning;
     if (
       cached !== null &&
       cached.pd === pd &&
-      cached.colormap === this.state.colormap &&
-      cached.dark === this.state.dark
+      cached.colormap === colormap &&
+      cached.pickedColorMap === pickedColorMap &&
+      cached.dark === dark
     ) {
       return cached.binning;
     }
-    const binning = colorBinning(pd, this.state.colormap, this.state.dark ? "dark" : "light");
-    this.cachedColorBinning = { pd, colormap: this.state.colormap, dark: this.state.dark, binning };
+    const binning = colorBinning(pd, colormap, dark ? "dark" : "light", pickedColorMap);
+    this.cachedColorBinning = { pd, colormap, pickedColorMap, dark, binning };
     return binning;
   }
+  /** A numeric color map picked in the legend, remembered with the page state. */
+  onPickColorMap = (id: string): void => {
+    this.setState({ pickedColorMap: id });
+    this.state.persistentState.set(PSTATE_COLOR_MAP, id);
+  };
   getColorForRow(trial: Datapoint, alpha: number): string {
     const colorby = this.state.colorby;
     if (colorby === null) {
@@ -864,6 +882,13 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
               binning={this.colorBinning()}
               column={this.state.colorby}
               labelHtml={this.state.params_def[this.state.colorby].label_html}
+              colorMap={effectiveColorMap(
+                this.state.params_def[this.state.colorby],
+                this.state.colormap,
+                this.state.pickedColorMap,
+              )}
+              theme={this.state.dark ? "dark" : "light"}
+              onPickColorMap={this.onPickColorMap}
             />
           )}
           <ContextMenu ref={this.contextMenuRef} />

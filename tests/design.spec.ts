@@ -207,3 +207,27 @@ test("the deselected-line color follows the theme", async ({ page }) => {
   expect(light).not.toBe("");
   expect(light).not.toBe(dark);
 });
+
+test("a numeric color map can be picked and is remembered", async ({ page }) => {
+  await loadDemo(page);
+  await page.locator(".pplot-label[data-dimension='lr']").click({ button: "right" });
+  await page.locator(".context-menu .dropdown-item", { hasText: "Use for coloring" }).click();
+  const button = page.getByTestId("color-map-button");
+  await expect(button).toHaveText("Viridis");
+  const gradient = () =>
+    page
+      .getByTestId("color-legend")
+      .locator("[style*='linear-gradient']")
+      .first()
+      .getAttribute("style");
+  const viridis = await gradient();
+  await button.click();
+  await page.getByRole("dialog", { name: "Color map" }).getByLabel("Magma").click();
+  await expect(page.getByRole("dialog", { name: "Color map" })).toBeHidden();
+  await expect(button).toHaveText("Magma");
+  expect(await gradient()).not.toBe(viridis);
+  expect(page.url()).toContain("color_map");
+  await page.reload();
+  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
+  await expect(page.getByTestId("color-map-button")).toHaveText("Magma");
+});

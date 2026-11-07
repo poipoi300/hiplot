@@ -1,13 +1,18 @@
 import { describe, expect, test } from "bun:test";
+import * as d3 from "d3";
 import { infertypes, type ParamDef } from "../infertypes";
 import { type Datapoint, type DatapointValue, ParamType } from "../types";
 import {
   colorBinning,
+  DEFAULT_COLOR_MAP,
+  effectiveColorMap,
   hashedCategoryColor,
   NUMERIC_COLOR_BINS,
+  NUMERIC_COLOR_MAPS,
   OKABE_ITO,
   parseColorMap,
   TABLEAU_10,
+  themedColorMap,
 } from "./colors";
 import { PersistentStateInMemory } from "./savedstate";
 
@@ -110,5 +115,46 @@ describe("color maps", () => {
 
   test("unknown color maps fail loudly", () => {
     expect(() => parseColorMap("interpolateNope", "")).toThrow("Invalid color map");
+  });
+});
+
+describe("color map picker", () => {
+  test("every offered map has a themed definition, viridis first and by default", () => {
+    expect(NUMERIC_COLOR_MAPS[0].id).toBe(DEFAULT_COLOR_MAP);
+    expect(DEFAULT_COLOR_MAP).toBe("interpolateViridis");
+    for (const map of NUMERIC_COLOR_MAPS) {
+      expect(themedColorMap(map.id, "light")).not.toBeNull();
+      expect(themedColorMap(map.id, "dark")).not.toBeNull();
+    }
+    expect(themedColorMap("interpolateNotAMap", "light")).toBeNull();
+  });
+
+  test("ends that vanish into the background are cut on each theme", () => {
+    const darkViridis = themedColorMap("interpolateViridis", "dark");
+    const lightMagma = themedColorMap("interpolateMagma", "light");
+    expect(darkViridis?.(0)).toBe(d3.interpolateViridis(0.18));
+    expect(lightMagma?.(1)).toBe(d3.interpolateMagma(0.88));
+  });
+
+  test("the near-white middle of a diverging map stays visible on the light theme", () => {
+    const light = themedColorMap("interpolateRdBu", "light");
+    const dark = themedColorMap("interpolateRdBu", "dark");
+    expect(d3.lab(light?.(0.5) ?? "").l).toBeLessThanOrEqual(80.5);
+    expect(d3.lab(dark?.(0.5) ?? "").l).toBeGreaterThan(90);
+  });
+
+  test("a picked map wins over the column's and the experiment's", () => {
+    const pd = { ...column(numbers), colormap: "interpolateTurbo" };
+    expect(effectiveColorMap(pd, "interpolateMagma", "interpolateCividis")).toBe(
+      "interpolateCividis",
+    );
+    expect(effectiveColorMap(pd, "interpolateMagma", null)).toBe("interpolateTurbo");
+    expect(effectiveColorMap(column(numbers), null, null)).toBe(DEFAULT_COLOR_MAP);
+    const picked = colorBinning(pd, null, "light", "interpolatePlasma");
+    const css = (rgb: { r: number; g: number; b: number }) =>
+      d3.rgb(rgb.r, rgb.g, rgb.b).formatHex();
+    expect(css(picked.palette[NUMERIC_COLOR_BINS - 1])).toBe(
+      d3.rgb(d3.interpolatePlasma(0.94)).formatHex(),
+    );
   });
 });
