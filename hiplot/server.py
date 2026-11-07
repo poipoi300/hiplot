@@ -3,25 +3,23 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
-import importlib
-import json
-import copy
-from typing import List, Any, Dict
+from typing import Any
 
 from . import experiment as exp
-from .fetchers import get_fetchers, MultipleFetcher, NoFetcherFound, load_xp_with_fetchers
-from .render import get_index_html_template, html_inlinize
 from . import pkginfo
+from .fetchers import NoFetcherFound, get_fetchers, load_xp_with_fetchers
+from .render import get_index_html_template
 
 
 def run_server(
-    fetchers: List[exp.ExperimentFetcher], host: str = "127.0.0.1", port: int = 5005, debug: bool = False
+    fetchers: list[exp.ExperimentFetcher], host: str = "127.0.0.1", port: int = 5005, debug: bool = False
 ) -> None:
     """
-    Runs the HiPlot server, given a list of ExperimentFetchers - functions that convert a URI into a :class:`hiplot.Experiment`
+    Runs the HiPlot server, given a list of ExperimentFetchers:
+    functions that convert a URI into a :class:`hiplot.Experiment`
     """
     try:
-        from flask import Flask, render_template, jsonify, request
+        from flask import Flask, jsonify, request
         from flask_compress import Compress
     except ImportError as e:
         raise ImportError(
@@ -31,12 +29,11 @@ def run_server(
     app = Flask(__name__)
 
     @app.route("/")
-    def index() -> Any:  # pylint: disable=unused-variable
-        template = get_index_html_template()
-        return template
+    def index() -> Any:
+        return get_index_html_template()
 
     @app.route("/data")
-    def data() -> Any:  # pylint: disable=unused-variable
+    def data() -> Any:
         uri = request.args.get("uri", type=str)
         assert uri is not None
         try:

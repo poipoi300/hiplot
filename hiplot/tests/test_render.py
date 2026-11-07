@@ -4,8 +4,9 @@
 
 import unittest.mock
 from html.parser import HTMLParser
-import typing as tp
+
 from bs4 import BeautifulSoup
+
 from ..fetchers_demo import README_DEMOS
 from ..render import get_index_html_template
 
@@ -37,10 +38,10 @@ def test_index_html_valid() -> None:
     class MyHTMLParser(HTMLParser):
         def __init__(self, data: str) -> None:
             super().__init__()
-            self.content: tp.List[str] = []
+            self.content: list[str] = []
             self.feed(data)
 
-        def handle_starttag(self, tag: str, attrs: tp.List[tp.Tuple[str, tp.Optional[str]]]) -> None:
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
             attrs.sort(key=lambda x: x[0])
             attrs_rendered = " ".join([a[0] + "=" + a[1] if a[1] is not None else a[0] for a in attrs])
             self.content.append(f"<{tag} {attrs_rendered}>")
@@ -52,7 +53,7 @@ def test_index_html_valid() -> None:
             self.content.append(data.strip())
 
         def error(self, message: str) -> None:
-            assert False
+            raise AssertionError(message)
 
     parser_actual = MyHTMLParser(html_soup)
     parser_expected = MyHTMLParser(html_template)

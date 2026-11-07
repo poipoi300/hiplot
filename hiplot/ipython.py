@@ -2,10 +2,9 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import uuid
-import html
-import typing as t
 import json
+import typing as t
+import uuid
 from pathlib import Path
 
 from . import experiment as exp
@@ -13,7 +12,6 @@ from .render import escapejs, make_experiment_standalone_page
 
 # Lazy imports for optional dependencies
 if t.TYPE_CHECKING:
-    import IPython.display
     from ipykernel.comm import Comm
 
 
@@ -29,12 +27,10 @@ def _get_ipython_display() -> t.Any:
         ) from e
 
 
-def _get_comm_class() -> t.Any:
-    """Lazy import of ipykernel.comm.Comm with helpful error message."""
+def _require_ipykernel() -> None:
+    """Fail early with a helpful message when ipykernel is missing."""
     try:
-        from ipykernel.comm import Comm
-
-        return Comm
+        import ipykernel.comm  # noqa: F401
     except ImportError as e:
         raise ImportError(
             "ipykernel is required for notebook support. Install it with: pip install hiplot-mm[notebook]"
@@ -76,7 +72,8 @@ def jupyter_make_full_width(content: str) -> str:
     try {{
         Jupyter.notebook.kernel; // `Jupyter` is not defined on Labs
     }} catch(err) {{
-        console.warn('Option "force_full_width" is only supported on Jupyter Notebooks (Labs is not supported as the display area is larger)');
+        console.warn('Option "force_full_width" is only supported on Jupyter Notebooks ' +
+            '(Labs is not supported as the display area is larger)');
         return;
     }}
     elem.style.width = "100vw";
@@ -103,29 +100,26 @@ class IPythonExperimentDisplayed(exp.ExperimentDisplayed):
     def __init__(self, xp: exp.Experiment, comm_name: str) -> None:
         self._exp = xp
         self._num_recv = 0
-        self._selected_ids: t.List[str] = []
-        self._last_data_per_type: t.Dict[str, t.Any] = {}
+        self._selected_ids: list[str] = []
+        self._last_data_per_type: dict[str, t.Any] = {}
 
-        Comm = _get_comm_class()
+        _require_ipykernel()
 
-        def target_func(comm: "Comm", open_msg: t.Dict[str, t.Any]) -> None:  # pylint: disable=unused-argument
-            # comm is the kernel Comm instance
-            # msg is the comm_open message
+        def _recv(msg: dict[str, t.Any]) -> None:
+            self._num_recv += 1
+            msg_data = msg["content"]["data"]
+            self._last_data_per_type[msg_data["type"]] = msg_data["data"]
 
-            # Register handler for later messages
-            @comm.on_msg
-            def _recv(msg: t.Dict[str, t.Any]) -> None:
-                self._num_recv += 1
-                msg_data = msg["content"]["data"]
-                print(msg_data)
-                self._last_data_per_type[msg_data["type"]] = msg_data["data"]
+        def target_func(comm: "Comm", _open_msg: dict[str, t.Any]) -> None:
+            """Registers the handler for later messages on the comm the front-end opened."""
+            comm.on_msg(_recv)
 
         try:
-            ip: t.Any = get_ipython()  # type: ignore  # pylint: disable=undefined-variable
-            ip.kernel.comm_manager.register_target(comm_name, target_func)
-        except NameError:  # NameError: name 'get_ipython' is not defined
-            # We are not in an ipython environment - for example in testing
-            pass
+            ip: t.Any = get_ipython()  # type: ignore[name-defined]
+        except NameError:
+            # Not in an ipython environment, for example in tests: there is no front-end to talk to.
+            return
+        ip.kernel.comm_manager.register_target(comm_name, target_func)
 
     no_data_received_error = GetSelectedFailure(
         """No data received from the front-end. Please make sure that:
@@ -134,7 +128,7 @@ class IPythonExperimentDisplayed(exp.ExperimentDisplayed):
     3. You are in a Jupyter notebook (Jupyter lab is *not* supported)"""
     )
 
-    def get_selected(self) -> t.List[exp.Datapoint]:
+    def get_selected(self) -> list[exp.Datapoint]:
         last_selected_uids = self._last_data_per_type.get("selected_uids")
         if last_selected_uids is None:
             raise self.no_data_received_error
@@ -143,17 +137,18 @@ class IPythonExperimentDisplayed(exp.ExperimentDisplayed):
         assert len(datapoints) == len(selected_set)
         return datapoints
 
-    def get_brush_extents(self) -> t.Dict[str, t.Dict[str, t.Any]]:
+    def get_brush_extents(self) -> dict[str, dict[str, t.Any]]:
         last_msg = self._last_data_per_type.get("brush_extents")
         if last_msg is None:
             raise self.no_data_received_error
-        return last_msg
+        brush_extents: dict[str, dict[str, t.Any]] = last_msg
+        return brush_extents
 
 
 def _should_embed_js_with_html() -> bool:
-    from IPython import get_ipython
+    from IPython.core.getipython import get_ipython
 
-    ip = get_ipython()
+    ip = get_ipython()  # type: ignore[no-untyped-call]  # IPython leaves it unannotated
     if ip is None:
         return True
     return "BentoApp" in ip.config
@@ -162,8 +157,8 @@ def _should_embed_js_with_html() -> bool:
 def display_exp(
     xp: exp.Experiment,
     force_full_width: bool = False,
-    store_state_url: t.Optional[str] = None,
-    embed_js_with_html: t.Optional[bool] = None,
+    store_state_url: str | None = None,
+    embed_js_with_html: bool | None = None,
     **kwargs: t.Any,
 ) -> IPythonExperimentDisplayed:
     IPython_display = _get_ipython_display()
@@ -173,7 +168,7 @@ def display_exp(
 
     comm_id = f"comm_{uuid.uuid4().hex[:6]}"
     displayed_xp = IPythonExperimentDisplayed(xp, comm_id)
-    options: t.Dict[str, t.Any] = {**kwargs, "experiment": xp._asdict()}
+    options: dict[str, t.Any] = {**kwargs, "experiment": xp._asdict()}
     if store_state_url is not None:
         options.update({"persistentStateUrlPrefix": store_state_url})
     else:

@@ -2,15 +2,15 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import tempfile
 import shutil
+import tempfile
+import typing as tp
 from contextlib import contextmanager
 from unittest.mock import patch
-import typing as tp
 
-import pytest
-import pandas as pd
 import optuna
+import pandas as pd
+import pytest
 
 import hiplot as hip
 
@@ -62,7 +62,7 @@ def test_from_optuna() -> None:
 
 def test_from_optuna_multi_objective() -> None:
 
-    def objective(trial: "optuna.trial.Trial") -> tp.Tuple[float, float]:
+    def objective(trial: "optuna.trial.Trial") -> tuple[float, float]:
         x = trial.suggest_float("x", -1, 1)
         y = trial.suggest_float("y", -1, 1)
         return x**2, y
@@ -150,7 +150,8 @@ def test_export_csv() -> None:
 
 def test_to_html() -> None:
     xp = hip.Experiment.from_iterable([{"uid": 1, "k": "v"}, {"uid": 2, "k": "vk", "k2": "vk2"}])
-    xp.to_html(tempfile.TemporaryFile(mode="w", encoding="utf-8"))
+    with tempfile.TemporaryFile(mode="w", encoding="utf-8") as file:
+        xp.to_html(file)
 
 
 def test_to_filename() -> None:
@@ -181,12 +182,12 @@ def test_doc() -> None:
 
 @contextmanager
 def patch_streamlit() -> tp.Iterator[None]:
-    with patch("hiplot.streamlit_helpers._StreamlitHelpers.is_running_within_streamlit", lambda: True):
-        with patch(
-            "hiplot.streamlit_helpers._StreamlitHelpers.create_component", lambda: lambda experiment, ret, key: None
-        ):
-            with patch("hiplot.streamlit_helpers._StreamlitHelpers.component"):
-                yield
+    with (
+        patch("hiplot.streamlit_helpers._StreamlitHelpers.is_running_within_streamlit", lambda: True),
+        patch("hiplot.streamlit_helpers._StreamlitHelpers.create_component", lambda: lambda experiment, ret, key: None),
+        patch("hiplot.streamlit_helpers._StreamlitHelpers.component"),
+    ):
+        yield
 
 
 def test_to_streamlit() -> None:

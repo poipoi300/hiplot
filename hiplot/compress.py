@@ -2,30 +2,23 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-
-import typing as tp
+from collections.abc import Iterable
+from typing import Any
 
 from .experiment import Datapoint
 
+RESERVED_COLUMNS = frozenset(("uid", "from_uid"))
 
-def _build_columns_list(datapoints: tp.List[Datapoint]) -> tp.List[str]:
-    columns: tp.Set[str] = set()
+
+def _build_columns_list(datapoints: Iterable[Datapoint]) -> list[str]:
+    """Value columns in first-seen order, so the output is deterministic."""
+    columns: dict[str, None] = {}
     for dp in datapoints:
-        columns = columns.union(dp.values.keys())
-    for reserved_col in ["uid", "from_uid"]:
-        try:
-            columns.remove(reserved_col)
-        except KeyError:
-            pass
-    return list(columns)
+        columns.update(dict.fromkeys(dp.values))
+    return [column for column in columns if column not in RESERVED_COLUMNS]
 
 
-def compress(datapoints: tp.List[Datapoint]) -> tp.Dict[str, tp.Any]:
+def compress(datapoints: list[Datapoint]) -> dict[str, Any]:
     columns = _build_columns_list(datapoints)
-    rows: tp.List[tp.Any] = []
-    for dp in datapoints:
-        d: tp.List[tp.Any] = [dp.uid, dp.from_uid]
-        for c in columns:
-            d.append(dp.values.get(c))
-        rows.append(d)
+    rows = [[dp.uid, dp.from_uid, *(dp.values.get(c) for c in columns)] for dp in datapoints]
     return {"columns": columns, "rows": rows}

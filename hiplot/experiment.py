@@ -2,25 +2,24 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import csv
-import uuid
-import json
 import codecs
-import warnings
-from abc import ABCMeta, abstractmethod
-from enum import Enum
-from collections import defaultdict
-from pathlib import Path
+import csv
 import typing as tp
+import uuid
+from abc import ABCMeta, abstractmethod
+from collections import defaultdict
+from enum import Enum
+from pathlib import Path
 
 if tp.TYPE_CHECKING:
-    import pandas as pd
-    from .streamlit_helpers import ExperimentStreamlitComponent
     import optuna
+    import pandas as pd
 
-TextWriterIO = tp.Union[tp.IO[str], codecs.StreamWriter]
+    from .streamlit_helpers import ExperimentStreamlitComponent
 
-DisplayableType = tp.Union[bool, int, float, str]
+type TextWriterIO = tp.IO[str] | codecs.StreamWriter
+
+type DisplayableType = bool | int | float | str
 
 
 class ExperimentValidationError(Exception):
@@ -40,7 +39,7 @@ class _DictSerializable:
     All classes that are transmitted to Javascript must subclass this
     """
 
-    def _asdict(self) -> tp.Dict[str, tp.Any]:
+    def _asdict(self) -> dict[str, tp.Any]:
         return self.__dict__
 
 
@@ -69,7 +68,7 @@ class Displays:
     DISTRIBUTION = "DISTRIBUTION"  #: Distribution plot data
 
 
-def validate_colormap(cm: tp.Optional[str]) -> None:
+def validate_colormap(cm: str | None) -> None:
     VALID_MODIFIERS = ["inverse"]
     if cm is None:
         return
@@ -78,7 +77,8 @@ def validate_colormap(cm: tp.Optional[str]) -> None:
     # We don't want `d3.interpolateTurbo` but just `interpolateTurbo`
     if cm is not None and not cm.startswith("interpolate") and not cm.startswith("scheme"):
         raise ExperimentValidationError(f"""Invalid colormap `{cm}`.
-Valid colormaps can be found in https://github.com/d3/d3-scale-chromatic. Their name starts with `interpolate` or `scheme`.
+Valid colormaps can be found in https://github.com/d3/d3-scale-chromatic.
+Their name starts with `interpolate` or `scheme`.
 Examples include `interpolateSpectral`, `interpolateViridis`, `interpolateSinebow`, `schemeYlOrRd`
 """)
     if len(cm_modifiers) > 1:
@@ -94,7 +94,8 @@ class ValueDef(_DictSerializable):
     Provides a custom type, color, etc.. for a column.
 
     :ivar type: See :attr:`hiplot.ValueType` for possible values
-    :ivar colors: Categorical scales only: mapping from value to HTML color (either :code:`rgb(R, G, B)` or :code:`#RRGGBB`)
+    :ivar colors: Categorical scales only: mapping from value to HTML color
+        (either :code:`rgb(R, G, B)` or :code:`#RRGGBB`)
     :ivar colormap: Numerical scales only: `D3 scale <https://github.com/d3/d3-scale-chromatic>`_ to use
         (default scale is `interpolateTurbo <https://d3js.org/d3-scale-chromatic/sequential#interpolateTurbo>`_).
         For example :code:`"interpolateSinebow"`.
@@ -107,18 +108,18 @@ class ValueDef(_DictSerializable):
 
     def __init__(
         self,
-        value_type: tp.Optional[ValueType] = None,
-        colors: tp.Optional[tp.Dict[tp.Any, str]] = None,
-        colormap: tp.Optional[str] = None,
-        label_css: tp.Optional[str] = None,
+        value_type: ValueType | None = None,
+        colors: dict[tp.Any, str] | None = None,
+        colormap: str | None = None,
+        label_css: str | None = None,
     ) -> None:
         self.type = value_type
         self.colors = colors
         self.colormap = colormap
         self.label_css = label_css
-        self.force_value_min: tp.Optional[float] = None
-        self.force_value_max: tp.Optional[float] = None
-        self.label_html: tp.Optional[str] = None
+        self.force_value_min: float | None = None
+        self.force_value_max: float | None = None
+        self.label_html: str | None = None
 
     def force_range(self, minimum: float, maximum: float) -> "ValueDef":
         """
@@ -137,7 +138,7 @@ class ValueDef(_DictSerializable):
                     )
         validate_colormap(self.colormap)
 
-    def _asdict(self) -> tp.Dict[str, tp.Any]:
+    def _asdict(self) -> dict[str, tp.Any]:
         return {
             "type": self.type.value if self.type is not None else None,
             "colors": self.colors,
@@ -173,7 +174,7 @@ class Datapoint(_DictSerializable):
     """
 
     def __init__(
-        self, values: tp.Dict[str, DisplayableType], *, uid: tp.Optional[str] = None, from_uid: tp.Optional[str] = None
+        self, values: dict[str, DisplayableType], *, uid: str | None = None, from_uid: str | None = None
     ) -> None:
         self.uid = uid if uid is not None else str(uuid.uuid4())
         self.values = values
@@ -190,7 +191,7 @@ class Datapoint(_DictSerializable):
 
 def _is_running_ipython() -> bool:
     try:
-        get_ipython()  # type: ignore
+        get_ipython()  # type: ignore[name-defined]
         return True
     except NameError:
         return False
@@ -199,11 +200,13 @@ def _is_running_ipython() -> bool:
 # pylint: disable=too-many-instance-attributes
 class Experiment(_DictSerializable):
     """
-    Object that can be rendered by HiPlot. It essential contains a list of metrics, but also some options on how to render it.
+    Object that can be rendered by HiPlot. It essentially contains a list of metrics,
+    but also some options on how to render it.
 
     See :meth:`Experiment.display` to display an :class:`Experiment` in an ipython notebook.
 
-    :ivar datapoints: All the measurements we have. One datapoint corresponds to one line in the parallel plot and to one line in the table.
+    :ivar datapoints: All the measurements we have.
+        One datapoint corresponds to one line in the parallel plot and to one line in the table.
     :ivar parameters_definition: Characteristics of the columns (ordering, type, etc...)
     :ivar colormap: Colormap to use
     :ivar colorby: Default column to color by
@@ -223,24 +226,24 @@ class Experiment(_DictSerializable):
 
     def __init__(
         self,
-        datapoints: tp.Optional[tp.List[Datapoint]] = None,
-        parameters_definition: tp.Optional[tp.Dict[str, ValueDef]] = None,
-        colormap: tp.Optional[str] = None,
+        datapoints: list[Datapoint] | None = None,
+        parameters_definition: dict[str, ValueDef] | None = None,
+        colormap: str | None = None,
     ) -> None:
         self.datapoints = datapoints if datapoints is not None else []
         self.parameters_definition = (
             parameters_definition if parameters_definition is not None else defaultdict(ValueDef)
         )
         self.colormap = colormap if colormap is not None else "interpolateTurbo"
-        self.colorby: tp.Optional[str] = None
-        self.weightcolumn: tp.Optional[str] = None
-        self.enabledDisplays: tp.List[str] = [
+        self.colorby: str | None = None
+        self.weightcolumn: str | None = None
+        self.enabledDisplays: list[str] = [
             Displays.PARALLEL_PLOT,
             Displays.XY,
             Displays.DISTRIBUTION,
             Displays.TABLE,
         ]
-        self._display_data: tp.Dict[str, tp.Dict[str, tp.Any]] = {}
+        self._display_data: dict[str, dict[str, tp.Any]] = {}
         self._compress: bool = False
 
     def validate(self) -> "Experiment":
@@ -248,11 +251,11 @@ class Experiment(_DictSerializable):
         Makes sure that this object is valid. Raises a :class:`hiplot.ExperimentValidationError` otherwise.
         Experiments with circular references, non-existent parents, or without datapoints are invalid.
         """
-        seen: tp.Set[str] = set()
-        dp_lookup: tp.Dict[str, Datapoint] = {dp.uid: dp for dp in self.datapoints}
+        seen: set[str] = set()
+        dp_lookup: dict[str, Datapoint] = {dp.uid: dp for dp in self.datapoints}
         for p in self.datapoints:
             if p.uid not in seen:
-                seen_now: tp.Set[str] = {p.uid}
+                seen_now: set[str] = {p.uid}
                 dp = p
                 while dp.from_uid is not None and dp.from_uid not in seen:
                     if dp.from_uid in seen_now:
@@ -273,7 +276,7 @@ class Experiment(_DictSerializable):
         return self
 
     def display(
-        self, force_full_width: bool = False, store_state_key: tp.Optional[str] = None, **kwargs: tp.Any
+        self, force_full_width: bool = False, store_state_key: str | None = None, **kwargs: tp.Any
     ) -> "ExperimentDisplayed":
         """
         Displays an experiment in an ipython notebook.
@@ -281,7 +284,8 @@ class Experiment(_DictSerializable):
         :param force_full_width: allows to force to have 100% width on Jupyter Notebooks only.
         :param store_state_key: a string identifier for the HiPlot instance.
             If not ``None``, HiPlot will store dynamic modifications (removing/reordering columns...)
-            in the URL, and restore them when calling ``display`` with the same value for ``store_state_key`` - see :ref:`tutoNotebookState`
+            in the URL, and restore them when calling ``display`` with the same value for ``store_state_key``
+            - see :ref:`tutoNotebookState`
         :returns: An :class:`ExperimentDisplayed` object that can be used to interact with the visualization
             - only implemented for Jupyter notebook.
             See :ref:`tutonotebookdisplayedexperiment`
@@ -302,18 +306,18 @@ It appears that you are trying to create a HiPlot visualization in Streamlit: yo
 
     # pylint: disable=function-redefined
     @tp.overload
-    def display_st(self, *, ret: str, key: tp.Optional[str] = None) -> tp.Any:
+    def display_st(self, *, ret: str, key: str | None = None) -> tp.Any:
         pass
 
     @tp.overload
-    def display_st(self, *, ret: tp.List[str], key: tp.Optional[str] = None) -> tp.List[tp.Any]:
+    def display_st(self, *, ret: list[str], key: str | None = None) -> list[tp.Any]:
         pass
 
     @tp.overload
-    def display_st(self, *, key: tp.Optional[str] = None) -> None:
+    def display_st(self, *, key: str | None = None) -> None:
         pass
 
-    def display_st(self, *, ret: tp.Union[str, tp.List[str], None] = None, key: tp.Optional[str] = None) -> tp.Any:
+    def display_st(self, *, ret: str | list[str] | None = None, key: str | None = None) -> tp.Any:
         """
         Displays an experiment in a Streamlit app - see :ref:`tutoStreamlit`
 
@@ -337,7 +341,7 @@ It appears that you are trying to create a HiPlot visualization in Streamlit: yo
     # pylint: enable=function-redefined
 
     def to_streamlit(
-        self, key: tp.Optional[str] = None, ret: tp.Union[str, tp.List[str], None] = None
+        self, key: str | None = None, ret: str | list[str] | None = None
     ) -> "ExperimentStreamlitComponent":
         """
         Streamlit only:
@@ -372,12 +376,13 @@ It appears that you are trying to create a HiPlot visualization in Streamlit: yo
         if not streamlit_helpers._StreamlitHelpers.is_running_within_streamlit():
             if _is_running_ipython():
                 raise RuntimeError(r"""`experiment.to_streamlit` can only be called in a streamlit script.
-It appears that you are trying to create a HiPlot visualization in ipython: you should use `display` instead of `to_streamlit`""")
+It appears that you are trying to create a HiPlot visualization in ipython:
+you should use `display` instead of `to_streamlit`""")
             raise RuntimeError(r"""`experiment.to_streamlit` can only be called in a streamlit script.
 To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_page = experiment.to_html()`""")
         return streamlit_helpers.ExperimentStreamlitComponent(self, key=key, ret=ret)
 
-    def to_html(self, file: tp.Optional[tp.Union[Path, str, TextWriterIO]] = None, **kwargs: tp.Any) -> str:
+    def to_html(self, file: Path | str | TextWriterIO | None = None, **kwargs: tp.Any) -> str:
         """
         Returns the content of a standalone .html file that displays this experiment
         without any dependency to HiPlot server or static files.
@@ -385,7 +390,7 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
         :param file: Path/handle to a file to write (optional)
         :returns: A standalone HTML code to display this Experiment.
         """
-        from .render import make_experiment_standalone_page, html_inlinize
+        from .render import html_inlinize, make_experiment_standalone_page
 
         self.validate()
         html = make_experiment_standalone_page(options={**kwargs, "experiment": self._asdict()})
@@ -397,7 +402,7 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
                 file.write(html)
         return html
 
-    def to_csv(self, file: tp.Union[Path, str, TextWriterIO]) -> None:
+    def to_csv(self, file: Path | str | TextWriterIO) -> None:
         """
         Dumps this Experiment as a .csv file.
         Information about display_data, parameters definition will be lost.
@@ -411,11 +416,8 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
             return self._to_csv(file)
 
     def _to_csv(self, fh: TextWriterIO) -> None:
-        fieldnames: tp.Set[str] = set()
-        for dp in self.datapoints:
-            for f in dp.values.keys():
-                fieldnames.add(f)
-        writer = csv.DictWriter(fh, fieldnames=["uid", "from_uid"] + sorted(list(fieldnames)))
+        fieldnames = {f for dp in self.datapoints for f in dp.values}
+        writer = csv.DictWriter(fh, fieldnames=["uid", "from_uid", *sorted(fieldnames)])
         writer.writeheader()
         for dp in self.datapoints:
             writer.writerow(
@@ -426,8 +428,8 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
                 }
             )
 
-    def _asdict(self) -> tp.Dict[str, tp.Any]:
-        data: tp.Dict[str, tp.Any] = {
+    def _asdict(self) -> dict[str, tp.Any]:
+        data: dict[str, tp.Any] = {
             "parameters_definition": {k: v._asdict() for k, v in self.parameters_definition.items()},
             "colormap": self.colormap,
             "colorby": self.colorby,
@@ -447,13 +449,13 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
         """
         Sets :attr:`hiplot.Datapoint.from_uid` to None when set to a non-existing Datapoint.
         """
-        existing_dp: tp.Set[str] = set((dp.uid for dp in self.datapoints))
+        existing_dp = {dp.uid for dp in self.datapoints}
         for dp in self.datapoints:
             if dp.from_uid not in existing_dp:
                 dp.from_uid = None
         return self
 
-    def display_data(self, plugin: str) -> tp.Dict[str, tp.Any]:
+    def display_data(self, plugin: str) -> dict[str, tp.Any]:
         """
         Retrieve data dictionary for a plugin, which can be modified.
 
@@ -472,7 +474,7 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
         return self._display_data.setdefault(plugin, {})
 
     @staticmethod
-    def from_iterable(it: tp.Iterable[tp.Dict[str, tp.Any]]) -> "Experiment":
+    def from_iterable(it: tp.Iterable[dict[str, tp.Any]]) -> "Experiment":
         """
         Creates a HiPlot experiment from an iterable/list of dictionnaries.
         This is the easiest way to generate an `hiplot.Experiment` object.
@@ -498,7 +500,7 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
         )
 
     @staticmethod
-    def from_csv(file: tp.Union[Path, str, tp.IO[str]]) -> "Experiment":
+    def from_csv(file: Path | str | tp.IO[str]) -> "Experiment":
         """
         Creates a HiPlot experiment from a CSV file.
 
@@ -520,17 +522,15 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
         :param dataframe: Pandas DataFrame
         """
         # Check if from_uid and uid is both in columns
-        if {"from_uid", "uid"}.issubset(dataframe.columns):
-            # Check if there are any NaN values to handle
-            if dataframe["from_uid"].isnull().values.any():
-                # NaN values forces integer columns to become float, if uid is integer and from_uid is float, it crashes.
-                # The line below changes uid to match from_uid type (either float or string), since NaN cannot be integer.
-                dataframe["uid"] = dataframe["uid"].astype(dataframe["from_uid"].dtypes)
-                dataframe = dataframe.fillna({"from_uid": "", "uid": ""})
+        if {"from_uid", "uid"}.issubset(dataframe.columns) and dataframe["from_uid"].isnull().values.any():
+            # NaN forces integer columns to float: if uid is an integer and from_uid a float, it crashes.
+            # Match uid to the from_uid dtype (float or string), since NaN cannot be an integer.
+            dataframe["uid"] = dataframe["uid"].astype(dataframe["from_uid"].dtypes)
+            dataframe = dataframe.fillna({"from_uid": "", "uid": ""})
 
-                # Replaces their dtypes accordingly to str, which is handled better with lesser errors with no change to functionality
-                dataframe["uid"] = dataframe["uid"].astype(str)
-                dataframe["from_uid"] = dataframe["from_uid"].astype(str)
+            # Strings round-trip both columns without changing behavior.
+            dataframe["uid"] = dataframe["uid"].astype(str)
+            dataframe["from_uid"] = dataframe["from_uid"].astype(str)
 
         experiment = Experiment.from_iterable(dataframe.to_dict(orient="records"))
 
@@ -574,12 +574,10 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
             trial_params["uid"] = each_trial.number
             trial_params.update(each_trial.params.copy())
             hyper_opt_data.append(trial_params)
-        experiment = Experiment.from_iterable(hyper_opt_data)
-
-        return experiment
+        return Experiment.from_iterable(hyper_opt_data)
 
     @staticmethod
-    def merge(xp_dict: tp.Dict[str, "Experiment"]) -> "Experiment":
+    def merge(xp_dict: dict[str, "Experiment"]) -> "Experiment":
         """
         Merge several experiments into a single one
         """
@@ -616,13 +614,13 @@ class ExperimentDisplayed(metaclass=ABCMeta):
     """
 
     @abstractmethod
-    def get_selected(self) -> tp.List[Datapoint]:
+    def get_selected(self) -> list[Datapoint]:
         """
         Returns a list of currently rendered datapoints in the parallel plot
         """
 
     @abstractmethod
-    def get_brush_extents(self) -> tp.Dict[str, tp.Dict[str, tp.Any]]:
+    def get_brush_extents(self) -> dict[str, dict[str, tp.Any]]:
         """
         Returns a dictionary, where keys corresponds to columns currently brushed in parallel plot,
         and values contain information about the current brush.

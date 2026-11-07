@@ -2,14 +2,14 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import sys
 import argparse
-import uuid
 import base64
-import json
-from typing import Any, Dict
-from pathlib import Path
 import codecs
+import json
+import sys
+import uuid
+from pathlib import Path
+from typing import Any
 
 from . import fetchers
 
@@ -39,7 +39,7 @@ def html_inlinize(html: str, replace_local: bool = True) -> str:
     soup = BeautifulSoup(html, "html.parser")
     for i in soup.find_all("link"):
         href = str(i["href"])
-        if href.startswith("http") or href.startswith("//"):
+        if href.startswith(("http", "//")):
             continue
         if not replace_local:
             continue
@@ -53,15 +53,14 @@ def html_inlinize(html: str, replace_local: bool = True) -> str:
             i.replace_with(new_tag)
         elif i["rel"][0] == "icon":  # Favicon
             file = Path(static_root, href)
-            i["href"] = (
-                f"data:{SUFFIX_TO_TYPE[file.suffix]};base64,{base64.b64encode(file.open('rb').read()).decode('ascii')}"
-            )
+            encoded = base64.b64encode(file.read_bytes()).decode("ascii")
+            i["href"] = f"data:{SUFFIX_TO_TYPE[file.suffix]};base64,{encoded}"
     for i in soup.find_all("script"):
         try:
             src = str(i["src"])
         except KeyError:
             continue
-        if src.startswith("http") or src.startswith("//"):
+        if src.startswith(("http", "//")):
             continue
         if not replace_local:
             continue
@@ -80,19 +79,18 @@ def get_index_html_template() -> str:
     return render_jinja_html(str(Path(__file__).parent / "templates"), "index.html")
 
 
-def make_experiment_standalone_page(options: Dict[str, Any]) -> str:
+def make_experiment_standalone_page(options: dict[str, Any]) -> str:
     hiplot_options = {"dataProviderName": "none"}
     hiplot_options.update(options)
 
     index_html = get_index_html_template()
     index_html = index_html.replace("hiplot_element_id", f"hiplot_{uuid.uuid4().hex}")
-    index_html = index_html.replace(
+    return index_html.replace(
         "/*ON_LOAD_SCRIPT_INJECT*/",
         f"""/*ON_LOAD_SCRIPT_INJECT*/
         Object.assign(options, eval('(' + {escapejs(json.dumps(hiplot_options))} + ')'));
         """,
     )
-    return index_html
 
 
 def hiplot_render_main() -> int:
@@ -107,10 +105,11 @@ def hiplot_render_main() -> int:
     exp = fetchers.load_xp_with_fetchers(fetchers.get_fetchers(args.fetchers), args.experiment_uri)
     exp.validate()
     stdout_writer = codecs.getwriter("utf-8")(sys.stdout.buffer)
-    if args.format == "csv":
-        exp.to_csv(stdout_writer)
-    elif args.format == "html":
-        exp.to_html(stdout_writer)
-    else:
-        assert False, args.format
+    match args.format:
+        case "csv":
+            exp.to_csv(stdout_writer)
+        case "html":
+            exp.to_html(stdout_writer)
+        case unknown:
+            raise ValueError(f"Unsupported format: {unknown}")
     return 0

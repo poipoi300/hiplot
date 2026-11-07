@@ -2,11 +2,11 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import uuid
-import random
 import math
+import random
 import time
 import typing as t
+import uuid
 
 from . import experiment as hip
 
@@ -49,20 +49,16 @@ def demo_line_xy() -> hip.Experiment:
         }
     )
     for i in range(200):
-        dp = hip.Datapoint(
-            uid=str(i),
-            values={
-                "generation": i,
-                "param": 10 ** random.uniform(-1, 1),
-                "loss": random.uniform(-5, 5),
-            },
-        )
+        param = 10 ** random.uniform(-1, 1)
+        loss = random.uniform(-5, 5)
+        from_uid = None
         if i > 10:
             from_parent = random.choice(exp.datapoints[-10:])
-            dp.from_uid = from_parent.uid  # <-- Connect the parent to the child
-            dp.values["loss"] += from_parent.values["loss"]
-            dp.values["param"] *= from_parent.values["param"]
-        exp.datapoints.append(dp)
+            from_uid = from_parent.uid  # <-- Connect the parent to the child
+            loss += float(from_parent.values["loss"])
+            param *= float(from_parent.values["param"])
+        values: dict[str, hip.DisplayableType] = {"generation": i, "param": param, "loss": loss}
+        exp.datapoints.append(hip.Datapoint(uid=str(i), from_uid=from_uid, values=values))
     # DEMO_LINE_XY_END
     return exp
 
@@ -81,9 +77,9 @@ def demo(n: int = 100) -> hip.Experiment:
     )
 
     # Some fake PBT-ish data
-    def fake_params() -> t.Dict[str, hip.DisplayableType]:
+    def fake_params() -> dict[str, hip.DisplayableType]:
         r = random.random()
-        p: t.Dict[str, hip.DisplayableType] = {
+        p: dict[str, hip.DisplayableType] = {
             "lr": 10 ** random.uniform(-5, 0),
             "seed": random.uniform(0, 10),
             "name": uuid.uuid4().hex[:6],
@@ -113,7 +109,7 @@ def demo(n: int = 100) -> hip.Experiment:
             p["special_values"] = random.choice([math.inf, -math.inf, math.nan])
         return p
 
-    def fake_metrics(tm: float) -> t.Dict[str, hip.DisplayableType]:
+    def fake_metrics(tm: float) -> dict[str, hip.DisplayableType]:
         return {
             "exp_metric": 10 ** random.uniform(-5, 0),
             "pct_success": random.uniform(10, 90),
@@ -124,8 +120,8 @@ def demo(n: int = 100) -> hip.Experiment:
             "timestamp": int(time.time() + (task_idx * 2000)),
         }
 
-    current_pop: t.List[t.Dict[str, t.Any]] = [
-        dict(uid=f"init{i}", params=fake_params(), last_ckpt_uid=None) for i in range(10)
+    current_pop: list[dict[str, t.Any]] = [
+        {"uid": f"init{i}", "params": fake_params(), "last_ckpt_uid": None} for i in range(10)
     ]
     continue_num = 0
     for task_idx in range(n):
@@ -146,7 +142,7 @@ def demo(n: int = 100) -> hip.Experiment:
         for _ in range(10 - len(current_pop)):
             continue_num += 1
             parent = random.choice(xp.datapoints[-10:])
-            current_pop.append(dict(uid=f"continue{continue_num}", params=fake_params(), last_ckpt_uid=parent.uid))
+            current_pop.append({"uid": f"continue{continue_num}", "params": fake_params(), "last_ckpt_uid": parent.uid})
     xp.parameters_definition["c"].colors = {"red": "rgb(255, 0, 0)", "green": "rgb(0, 255, 0)", "black": "rgb(0, 0, 0)"}
     xp.parameters_definition["force_numericlog"].type = hip.ValueType.NUMERIC_LOG
     xp.parameters_definition["pctile"].type = hip.ValueType.NUMERIC_PERCENTILE
@@ -279,15 +275,14 @@ def demo_color_interpolate_inverse() -> hip.Experiment:
 
 
 def demo_axis_style() -> hip.Experiment:
-    data: t.List[t.Dict[str, t.Any]] = []
-    for _ in range(100):
-        data.append(
-            {
-                **{f"param{i}": random.uniform(0, 1) for i in range(6)},
-                "loss": random.uniform(0, 100),
-                "metric": 10 ** random.uniform(0, 10),
-            }
-        )
+    data: list[dict[str, t.Any]] = [
+        {
+            **{f"param{i}": random.uniform(0, 1) for i in range(6)},
+            "loss": random.uniform(0, 100),
+            "metric": 10 ** random.uniform(0, 10),
+        }
+        for _ in range(100)
+    ]
     xp = hip.Experiment.from_iterable(data)
     for i in range(6):
         xp.parameters_definition[f"param{i}"].label_css = "badge badge-pill badge-secondary"
@@ -297,18 +292,17 @@ def demo_axis_style() -> hip.Experiment:
 
 
 def demo_categorical() -> hip.Experiment:
-    data: t.List[t.Dict[str, t.Any]] = []
-    for _ in range(100):
-        data.append(
-            {
-                "cat_num_05": random.randint(0, 5),
-                "cat_num_15": random.randint(0, 10),
-                "cat_num_25": random.randint(0, 25),
-                "cat_str_05": f"s{random.randint(0, 5)}",
-                "cat_str_15": f"s{random.randint(0, 15)}",
-                "cat_str_25": f"s{random.randint(0, 25)}",
-            }
-        )
+    data: list[dict[str, t.Any]] = [
+        {
+            "cat_num_05": random.randint(0, 5),
+            "cat_num_15": random.randint(0, 10),
+            "cat_num_25": random.randint(0, 25),
+            "cat_str_05": f"s{random.randint(0, 5)}",
+            "cat_str_15": f"s{random.randint(0, 15)}",
+            "cat_str_25": f"s{random.randint(0, 25)}",
+        }
+        for _ in range(100)
+    ]
     xp = hip.Experiment.from_iterable(data)
     for param in ["cat_num_05", "cat_num_15", "cat_num_25"]:
         xp.parameters_definition[param].type = hip.ValueType.CATEGORICAL
@@ -369,7 +363,7 @@ def demo_3xcols() -> hip.Experiment:
     xp = demo()
     for i in range(2):
         new_xp = demo()
-        for dp, new_dp in zip(xp.datapoints, new_xp.datapoints):
+        for dp, new_dp in zip(xp.datapoints, new_xp.datapoints, strict=True):
             dp.values.update({f"{k}{i}": v for k, v in new_dp.values.items()})
     return xp
 
@@ -409,7 +403,7 @@ def demo_decay() -> hip.Experiment:
     useful for testing log-scale tick labels alongside plain numeric columns.
     """
     rng = random.Random(42)
-    data: t.List[t.Dict[str, t.Any]] = []
+    data: list[dict[str, t.Any]] = []
     for _ in range(500):
         initial_mass = rng.uniform(50, 500)
         half_life = rng.uniform(1, 30)
@@ -428,7 +422,7 @@ def demo_decay() -> hip.Experiment:
     return xp
 
 
-README_DEMOS: t.Dict[str, t.Callable[[], hip.Experiment]] = {
+README_DEMOS: dict[str, t.Callable[[], hip.Experiment]] = {
     "demo": demo,
     "demo_3xcols": demo_3xcols,
     "demo_big": lambda: demo(1000),

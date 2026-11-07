@@ -2,13 +2,16 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from pathlib import Path
 import json
-import tempfile
 import shutil
+import tempfile
+from collections import Counter
+from pathlib import Path
+
 import pytest
+
 from .. import experiment as exp
-from ..fetchers import load_demo, load_csv, load_json, MultipleFetcher, get_fetchers, load_xps_with_fetchers
+from ..fetchers import MultipleFetcher, get_fetchers, load_csv, load_demo, load_json, load_xps_with_fetchers
 from ..fetchers_demo import README_DEMOS
 
 
@@ -21,12 +24,8 @@ def test_fetcher_demo() -> None:
 
 
 def test_fetcher_demo_is_deterministic() -> None:
-    def counts_by_color(xp: exp.Experiment) -> dict:
-        counts = {}
-        for dp in xp.datapoints:
-            c = dp.values.get("c")
-            counts[c] = counts.get(c, 0) + 1
-        return counts
+    def counts_by_color(xp: exp.Experiment) -> Counter[exp.DisplayableType | None]:
+        return Counter(dp.values.get("c") for dp in xp.datapoints)
 
     xp1 = load_demo("demo")
     xp2 = load_demo("demo")
