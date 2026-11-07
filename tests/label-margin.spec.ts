@@ -23,16 +23,22 @@ test.describe("Label Margin Tests", () => {
     console.log(`Found ${labelCount} pplot-label elements`);
     expect(labelCount).toBeGreaterThan(0);
 
-    // Get the SVG bounding box and the first label's position
-    const svg = page.locator("svg").first();
+    // Every axis title must lie entirely inside the plot's SVG: none is cut off
+    // by the top margin or by the right edge.
+    const svg = page.locator("svg[aria-label='Parallel coordinates axes']");
     const svgBox = await svg.boundingBox();
-    console.log("SVG bounding box:", svgBox);
-
-    // Check that labels have proper positioning (x=10 offset should be visible)
-    const firstLabel = labels.first();
-    const labelX = await firstLabel.getAttribute("x");
-    console.log("First label x attribute:", labelX);
-    expect(labelX).toBe("10");
+    expect(svgBox).not.toBeNull();
+    const boxes = await labels.evaluateAll((elements) =>
+      elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+      }),
+    );
+    for (const box of boxes) {
+      expect(box.top).toBeGreaterThanOrEqual((svgBox?.y ?? 0) - 1);
+      expect(box.left).toBeGreaterThanOrEqual((svgBox?.x ?? 0) - 1);
+      expect(box.right).toBeLessThanOrEqual((svgBox?.x ?? 0) + (svgBox?.width ?? 0) + 1);
+    }
 
     // Take a focused screenshot on the top area where labels are
     if (svgBox) {

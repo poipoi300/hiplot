@@ -27,14 +27,24 @@ export interface LineFrame {
   /** Pixel size of the plot area. */
   width: number;
   height: number;
-  alpha: number;
   /** Bezier curves between axes, or straight segments. */
   curved: boolean;
+  /** Selected and deselected line counts, which set the density scale. */
+  selectedCount: number;
+  contextCount: number;
+  /** Color and peak opacity of the deselected lines. */
+  contextColor: RGB;
+  contextAlpha: number;
 }
 
 /** Vertices of one segment: a strip along the Bezier curve, or a straight line. */
 const CURVE_VERTICES = 9;
 const STRAIGHT_VERTICES = 2;
+
+/** Which lines a draw call keeps. */
+const DRAW_SELECTED = 0;
+const DRAW_CONTEXT = 1;
+const DRAW_ALL = 2;
 
 const VERTEX_SHADER = `#version 300 es
 precision highp float;
@@ -51,10 +61,11 @@ uniform int u_axisCount;
 uniform int u_textureWidth;
 uniform int u_rowsPerColumn;
 uniform int u_vertexCount;
+uniform int u_keep;
 uniform vec2 u_canvasSize;
-uniform float u_alpha;
 
-out vec4 v_color;
+out vec3 v_rgb;
+out float v_selected;
 
 ivec2 at(int index) {
   return ivec2(index % u_textureWidth, index / u_textureWidth);
@@ -76,14 +87,16 @@ void main() {
   int segment = gl_InstanceID - line * segments;
   int row = int(texelFetch(u_order, at(line), 0).r);
   bool selected = texelFetch(u_selected, at(row), 0).r > 0u;
+  bool kept = u_keep == ${DRAW_ALL} || (u_keep == ${DRAW_SELECTED}) == selected;
 
   float yLeft = segment >= 1 ? pixelY(segment - 1, row) : ${MISSING_THRESHOLD * 10};
   float yRight = segment < u_axisCount ? pixelY(segment, row) : ${MISSING_THRESHOLD * 10};
   bool hasLeft = yLeft > ${MISSING_THRESHOLD};
   bool hasRight = yRight > ${MISSING_THRESHOLD};
-  if (!selected || (!hasLeft && !hasRight)) {
+  if (!kept || (!hasLeft && !hasRight)) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-    v_color = vec4(0.0);
+    v_rgb = vec3(0.0);
+    v_selected = 0.0;
     return;
   }
   float xLeft;
@@ -122,38 +135,78 @@ void main() {
     1.0
   );
   uint bin = texelFetch(u_bins, at(row), 0).r;
-  vec3 rgb = texelFetch(u_palette, at(int(bin)), 0).rgb;
-  v_color = vec4(rgb * u_alpha, u_alpha);
+  v_rgb = texelFetch(u_palette, at(int(bin)), 0).rgb;
+  v_selected = selected ? 1.0 : 0.0;
 }
 `;
 
-const FRAGMENT_SHADER = `#version 300 es
+/** Accumulates line density: selected colors in target 0, deselected counts in target 1. */
+const DENSITY_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
-in vec4 v_color;
+in vec3 v_rgb;
+in float v_selected;
+layout(location = 0) out vec4 selected;
+layout(location = 1) out vec4 context;
+void main() {
+  selected = vec4(v_rgb, 1.0) * v_selected;
+  context = vec4(1.0 - v_selected);
+}
+`;
+
+/** Without float render targets: plain alpha blending, deselected lines first. */
+const DIRECT_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+uniform float u_alpha;
+uniform vec3 u_contextColor;
+uniform float u_contextAlpha;
+in vec3 v_rgb;
+in float v_selected;
 out vec4 color;
 void main() {
-  color = v_color;
+  color = v_selected > 0.5
+    ? vec4(v_rgb * u_alpha, u_alpha)
+    : vec4(u_contextColor * u_contextAlpha, u_contextAlpha);
 }
 `;
 
-const UNIFORMS = [
-  "u_pixels",
-  "u_axes",
-  "u_order",
-  "u_selected",
-  "u_bins",
-  "u_palette",
-  "u_axisCount",
-  "u_textureWidth",
-  "u_rowsPerColumn",
-  "u_vertexCount",
-  "u_canvasSize",
-  "u_alpha",
-] as const;
-type UniformName = (typeof UNIFORMS)[number];
+const COMPOSITE_VERTEX_SHADER = `#version 300 es
+void main() {
+  vec2 corner = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  gl_Position = vec4(corner * 2.0 - 1.0, 0.0, 1.0);
+}
+`;
 
-/** Texture unit of each sampler. */
-const UNITS = {
+/**
+ * Log tone mapping of the accumulated densities: opacity grows with the log of
+ * how many lines cross a pixel, relative to a reference density, and the color
+ * is the average color of those lines. The selection is composited over the
+ * faint deselected layer.
+ */
+const COMPOSITE_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+uniform sampler2D u_selectedDensity;
+uniform sampler2D u_contextDensity;
+uniform float u_selectedReference;
+uniform float u_contextReference;
+uniform vec3 u_contextColor;
+uniform float u_contextAlpha;
+out vec4 color;
+void main() {
+  ivec2 pixel = ivec2(gl_FragCoord.xy);
+  vec4 selected = texelFetch(u_selectedDensity, pixel, 0);
+  float context = texelFetch(u_contextDensity, pixel, 0).r;
+  float selectedAlpha = clamp(log(1.0 + selected.a) / log(1.0 + u_selectedReference), 0.0, 1.0);
+  float contextAlpha =
+    u_contextAlpha * clamp(log(1.0 + context) / log(1.0 + u_contextReference), 0.0, 1.0);
+  vec3 selectedColor = selected.a > 0.0 ? selected.rgb / selected.a : vec3(0.0);
+  color = vec4(
+    selectedColor * selectedAlpha + u_contextColor * contextAlpha * (1.0 - selectedAlpha),
+    selectedAlpha + contextAlpha * (1.0 - selectedAlpha)
+  );
+}
+`;
+
+const LINE_SAMPLERS = {
   u_pixels: 0,
   u_axes: 1,
   u_order: 2,
@@ -161,7 +214,20 @@ const UNITS = {
   u_bins: 4,
   u_palette: 5,
 } as const;
-type SamplerName = keyof typeof UNITS;
+type SamplerName = keyof typeof LINE_SAMPLERS;
+const UNITS = LINE_SAMPLERS;
+/** Texture units of the density targets, read by the composite pass. */
+const SELECTED_DENSITY_UNIT = 6;
+const CONTEXT_DENSITY_UNIT = 7;
+
+/**
+ * Lines crossing a pixel at which the density reaches full opacity. Densities
+ * scale with the line count per pixel of plot height, so the reference does
+ * too; a single line always stays visible.
+ */
+export function densityReference(lineCount: number, plotHeight: number): number {
+  return Math.max(2, (12 * lineCount) / Math.max(1, plotHeight));
+}
 
 function compile(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
   const shader = gl.createShader(type);
@@ -176,18 +242,44 @@ function compile(gl: WebGL2RenderingContext, type: number, source: string): WebG
   return shader;
 }
 
-function link(gl: WebGL2RenderingContext): WebGLProgram {
-  const program = gl.createProgram();
-  if (program === null) {
-    throw new Error("Could not create a WebGL program");
+/** A linked program and its uniform locations, looked up by name once. */
+class Program {
+  readonly program: WebGLProgram;
+  private readonly locations = new Map<string, WebGLUniformLocation | null>();
+
+  constructor(
+    private readonly gl: WebGL2RenderingContext,
+    vertexSource: string,
+    fragmentSource: string,
+  ) {
+    const program = gl.createProgram();
+    if (program === null) {
+      throw new Error("Could not create a WebGL program");
+    }
+    gl.attachShader(program, compile(gl, gl.VERTEX_SHADER, vertexSource));
+    gl.attachShader(program, compile(gl, gl.FRAGMENT_SHADER, fragmentSource));
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      throw new Error(`WebGL program failed to link: ${gl.getProgramInfoLog(program)}`);
+    }
+    this.program = program;
   }
-  gl.attachShader(program, compile(gl, gl.VERTEX_SHADER, VERTEX_SHADER));
-  gl.attachShader(program, compile(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER));
-  gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    throw new Error(`WebGL program failed to link: ${gl.getProgramInfoLog(program)}`);
+
+  uniform(name: string): WebGLUniformLocation | null {
+    if (!this.locations.has(name)) {
+      this.locations.set(name, this.gl.getUniformLocation(this.program, name));
+    }
+    return this.locations.get(name) ?? null;
   }
-  return program;
+}
+
+/** Float render targets the line pass accumulates densities into. */
+interface DensityTargets {
+  framebuffer: WebGLFramebuffer;
+  selected: WebGLTexture;
+  context: WebGLTexture;
+  width: number;
+  height: number;
 }
 
 /**
@@ -199,8 +291,11 @@ function link(gl: WebGL2RenderingContext): WebGLProgram {
  */
 export class WebGLLineRenderer {
   private readonly gl: WebGL2RenderingContext;
-  private readonly program: WebGLProgram;
-  private readonly uniforms: Record<UniformName, WebGLUniformLocation | null>;
+  /** Density accumulation then tone mapping, when float render targets exist. */
+  private readonly densityPrograms: { lines: Program; composite: Program } | null;
+  /** Alpha-blended lines, the fallback without float render targets. */
+  private readonly directProgram: Program;
+  private density: DensityTargets | null = null;
   private readonly textures: Record<SamplerName, WebGLTexture>;
   private readonly vertexArray: WebGLVertexArrayObject;
   private readonly maxTextureSize: number;
@@ -226,12 +321,14 @@ export class WebGLLineRenderer {
 
   private constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
-    this.program = link(gl);
-    const uniforms: Partial<Record<UniformName, WebGLUniformLocation | null>> = {};
-    for (const name of UNIFORMS) {
-      uniforms[name] = gl.getUniformLocation(this.program, name);
-    }
-    this.uniforms = uniforms as Record<UniformName, WebGLUniformLocation | null>;
+    this.directProgram = new Program(gl, VERTEX_SHADER, DIRECT_FRAGMENT_SHADER);
+    this.densityPrograms =
+      gl.getExtension("EXT_color_buffer_float") === null
+        ? null
+        : {
+            lines: new Program(gl, VERTEX_SHADER, DENSITY_FRAGMENT_SHADER),
+            composite: new Program(gl, COMPOSITE_VERTEX_SHADER, COMPOSITE_FRAGMENT_SHADER),
+          };
     const textures: Partial<Record<SamplerName, WebGLTexture>> = {};
     for (const name of Object.keys(UNITS) as SamplerName[]) {
       const texture = gl.createTexture();
@@ -406,6 +503,78 @@ export class WebGLLineRenderer {
     this.gl.getExtension("WEBGL_lose_context")?.loseContext();
   }
 
+  /** Whether lines are tone-mapped from their density (float render targets available). */
+  get densityRendering(): boolean {
+    return this.densityPrograms !== null;
+  }
+
+  private densityTargets(width: number, height: number): DensityTargets {
+    if (this.density !== null && this.density.width === width && this.density.height === height) {
+      return this.density;
+    }
+    const gl = this.gl;
+    if (this.density !== null) {
+      gl.deleteFramebuffer(this.density.framebuffer);
+      gl.deleteTexture(this.density.selected);
+      gl.deleteTexture(this.density.context);
+    }
+    const target = (): WebGLTexture => {
+      const texture = gl.createTexture();
+      if (texture === null) {
+        throw new Error("Could not create a WebGL texture");
+      }
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA16F, width, height);
+      return texture;
+    };
+    const selected = target();
+    const context = target();
+    const framebuffer = gl.createFramebuffer();
+    if (framebuffer === null) {
+      throw new Error("Could not create a WebGL framebuffer");
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, selected, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, context, 0);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.density = { framebuffer, selected, context, width, height };
+    return this.density;
+  }
+
+  /** Binds the line data and uniforms shared by every line pass. */
+  private prepareLines(program: Program, frame: LineFrame): number {
+    const gl = this.gl;
+    // biome-ignore lint/correctness/useHookAtTopLevel: WebGL2RenderingContext.useProgram, not a React hook.
+    gl.useProgram(program.program);
+    for (const [name, unit] of Object.entries(UNITS)) {
+      gl.uniform1i(program.uniform(name), unit);
+      // Rebound every pass: creating the density targets may have replaced a binding.
+      this.bind(name as SamplerName);
+    }
+    const vertexCount = frame.curved ? CURVE_VERTICES : STRAIGHT_VERTICES;
+    gl.uniform1i(program.uniform("u_axisCount"), frame.axes.length);
+    gl.uniform1i(program.uniform("u_textureWidth"), this.layout.width);
+    gl.uniform1i(program.uniform("u_rowsPerColumn"), this.layout.rowsPerColumn);
+    gl.uniform1i(program.uniform("u_vertexCount"), vertexCount);
+    gl.uniform2f(program.uniform("u_canvasSize"), frame.width, frame.height);
+    return vertexCount;
+  }
+
+  private drawLines(frame: LineFrame, vertexCount: number): void {
+    const gl = this.gl;
+    gl.bindVertexArray(this.vertexArray);
+    gl.drawArraysInstanced(
+      frame.curved ? gl.LINE_STRIP : gl.LINES,
+      0,
+      vertexCount,
+      this.rowCount * segmentsPerLine(frame.axes.length),
+    );
+    gl.bindVertexArray(null);
+  }
+
   draw(frame: LineFrame): void {
     const gl = this.gl;
     const slots = this.slotsFor(frame.axes.map((axis) => axis.pixels));
@@ -426,33 +595,83 @@ export class WebGLLineRenderer {
       axesTexels,
     );
 
-    // biome-ignore lint/correctness/useHookAtTopLevel: WebGL2RenderingContext.useProgram, not a React hook.
-    gl.useProgram(this.program);
-    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    const width = gl.drawingBufferWidth;
+    const height = gl.drawingBufferHeight;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, width, height);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     if (this.rowCount === 0 || frame.axes.length === 0) {
       return;
     }
-    for (const [name, unit] of Object.entries(UNITS)) {
-      gl.uniform1i(this.uniforms[name as SamplerName], unit);
-    }
-    const vertexCount = frame.curved ? CURVE_VERTICES : STRAIGHT_VERTICES;
-    gl.uniform1i(this.uniforms.u_axisCount, frame.axes.length);
-    gl.uniform1i(this.uniforms.u_textureWidth, this.layout.width);
-    gl.uniform1i(this.uniforms.u_rowsPerColumn, this.layout.rowsPerColumn);
-    gl.uniform1i(this.uniforms.u_vertexCount, vertexCount);
-    gl.uniform2f(this.uniforms.u_canvasSize, frame.width, frame.height);
-    gl.uniform1f(this.uniforms.u_alpha, frame.alpha);
+    const contextColor = [
+      frame.contextColor.r / 255,
+      frame.contextColor.g / 255,
+      frame.contextColor.b / 255,
+    ] as const;
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-    gl.bindVertexArray(this.vertexArray);
-    gl.drawArraysInstanced(
-      frame.curved ? gl.LINE_STRIP : gl.LINES,
-      0,
-      vertexCount,
-      this.rowCount * segmentsPerLine(frame.axes.length),
+
+    if (this.densityPrograms === null) {
+      // Deselected lines first, then the selection over them.
+      const program = this.directProgram;
+      const vertexCount = this.prepareLines(program, frame);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.uniform1f(
+        program.uniform("u_alpha"),
+        Math.min(2 / Math.max(1, frame.selectedCount) ** 0.3, 1),
+      );
+      gl.uniform3f(program.uniform("u_contextColor"), ...contextColor);
+      gl.uniform1f(
+        program.uniform("u_contextAlpha"),
+        frame.contextAlpha * Math.min(1 / Math.max(1, frame.contextCount) ** 0.3, 1),
+      );
+      gl.uniform1i(program.uniform("u_keep"), DRAW_CONTEXT);
+      this.drawLines(frame, vertexCount);
+      gl.uniform1i(program.uniform("u_keep"), DRAW_SELECTED);
+      this.drawLines(frame, vertexCount);
+      return;
+    }
+
+    // One pass accumulates both layers; a second tone-maps them onto the canvas.
+    const targets = this.densityTargets(width, height);
+    const { lines, composite } = this.densityPrograms;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targets.framebuffer);
+    gl.viewport(0, 0, width, height);
+    gl.clearBufferfv(gl.COLOR, 0, [0, 0, 0, 0]);
+    gl.clearBufferfv(gl.COLOR, 1, [0, 0, 0, 0]);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    const vertexCount = this.prepareLines(lines, frame);
+    gl.uniform1i(lines.uniform("u_keep"), DRAW_ALL);
+    this.drawLines(frame, vertexCount);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, width, height);
+    gl.disable(gl.BLEND);
+    // biome-ignore lint/correctness/useHookAtTopLevel: WebGL2RenderingContext.useProgram, not a React hook.
+    gl.useProgram(composite.program);
+    gl.activeTexture(gl.TEXTURE0 + SELECTED_DENSITY_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, targets.selected);
+    gl.activeTexture(gl.TEXTURE0 + CONTEXT_DENSITY_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, targets.context);
+    gl.uniform1i(composite.uniform("u_selectedDensity"), SELECTED_DENSITY_UNIT);
+    gl.uniform1i(composite.uniform("u_contextDensity"), CONTEXT_DENSITY_UNIT);
+    gl.uniform1f(
+      composite.uniform("u_selectedReference"),
+      densityReference(frame.selectedCount, frame.height),
     );
+    gl.uniform1f(
+      composite.uniform("u_contextReference"),
+      densityReference(frame.contextCount, frame.height),
+    );
+    gl.uniform3f(composite.uniform("u_contextColor"), ...contextColor);
+    gl.uniform1f(composite.uniform("u_contextAlpha"), frame.contextAlpha);
+    gl.bindVertexArray(this.vertexArray);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindVertexArray(null);
+    // Unbound so the next line pass, which renders into them, has no feedback loop.
+    gl.activeTexture(gl.TEXTURE0 + SELECTED_DENSITY_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE0 + CONTEXT_DENSITY_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, null);
   }
 }

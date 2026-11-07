@@ -24,14 +24,9 @@ async function findDimIndex(page: Page, labelName: string): Promise<number> {
   return page.evaluate((name: string) => {
     const dims = document.querySelectorAll("svg g.dimension");
     for (let i = 0; i < dims.length; i++) {
+      // Titles may be truncated to fit; the column name is kept in data-dimension.
       const label = dims[i].querySelector(".pplot-label");
-      if (!label) continue;
-      // Extract only direct text nodes, ignoring <title> children
-      const text = Array.from(label.childNodes)
-        .filter((n) => n.nodeType === Node.TEXT_NODE)
-        .map((n) => (n.textContent || "").trim())
-        .join("");
-      if (text === name) return i;
+      if (label?.getAttribute("data-dimension") === name) return i;
     }
     return -1;
   }, labelName);
@@ -87,15 +82,15 @@ function overlapFraction(bboxes: { top: number; bottom: number }[]): number {
 }
 
 test.describe("parallel plot log-scale tick labels", () => {
-  test("log-scale column uses scientific notation tick labels", async ({ page }) => {
+  test("log-scale column labels its ticks as compact powers of ten", async ({ page }) => {
     await loadDemo(page);
     const dimIndex = await findDimIndex(page, "remaining_grams");
     expect(dimIndex).toBeGreaterThanOrEqual(0);
     const labels = await getTickLabels(page, dimIndex);
     expect(labels.length).toBeGreaterThan(0);
-    // All labels should be in scientific notation (e.g. "1.0e-5")
+    // Powers of ten, written out from 0.01 to 1000 and as 1eN beyond (e.g. "1e-5")
     for (const label of labels) {
-      expect(label).toMatch(/e[+-]?\d+/i);
+      expect(label).toMatch(/^(1e-?\d+|0\.0?1|10{0,3})$/);
     }
   });
 

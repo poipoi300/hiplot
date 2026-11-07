@@ -22,13 +22,20 @@ import {
   scale_pixels_range,
 } from "../infertypes";
 import { IS_MOBILE } from "../lib/browsercompat";
-import { getLogScaleTickValues } from "../lib/d3_scales";
+import type { RGB } from "../lib/colors";
 import { labelTextFromHtml } from "../lib/escape";
 import { mounted } from "../lib/refs";
 import { ResizableH } from "../lib/resizable";
 import { isNumber, isStringArray, readState } from "../lib/savedstate";
 import type { HiPlotPluginData } from "../plugin";
 import { type Datapoint, ParamType } from "../types";
+import {
+  type AxisValue,
+  columnAxis,
+  formatTimestamp,
+  tickCountFor,
+  valueFormatter,
+} from "./axisformat";
 import { LineGeometry } from "./geometry";
 import pstyle from "./parallel.module.css";
 import { type AxisSelection, BrushMasks } from "./selection";
@@ -41,6 +48,11 @@ interface ParallelPlotState {
   hide: Set<string>;
   invert: Set<string>;
   dimensions: Array<string>;
+  lineShape: LineShape;
+  /** Whether any axis is brushed, which enables "Reset brushes". */
+  brushed: boolean;
+  /** The line under the pointer and where its tooltip goes. */
+  hover: { x: number; y: number; text: string } | null;
 
   dragging: { col: string; pos: number; origin: number; dragging: boolean } | null;
 }
@@ -76,8 +88,6 @@ export interface ParallelPlotData extends HiPlotPluginData, ParallelPlotDisplayD
   onHiddenColumnsChange?: (count: number) => void;
 }
 
-/** A tick value on a column axis: a number, or a category. */
-type AxisValue = number | string;
 type BrushExtents = { [dimension: string]: [number, number] | null };
 /** An axis title being long-pressed on a touch screen. */
 interface LongPress {
@@ -121,6 +131,7 @@ function traceRow(
   ctx: CanvasRenderingContext2D,
   axes: ReadonlyArray<AxisPixels>,
   row: number,
+  curved: boolean,
 ): void {
   let has_started = false;
   let x0 = 0;
@@ -141,7 +152,11 @@ function traceRow(
       ctx.moveTo(x0, y0);
       has_started = true;
     }
-    ctx.bezierCurveTo(x - 0.88 * (x - x0), y0, x - 0.12 * (x - x0), y, x, y);
+    if (curved) {
+      ctx.bezierCurveTo(x - 0.88 * (x - x0), y0, x - 0.12 * (x - x0), y, x, y);
+    } else {
+      ctx.lineTo(x, y);
+    }
     x0 = x;
     y0 = y;
   }
@@ -149,6 +164,62 @@ function traceRow(
     ctx.lineTo(x0 + 15, y0); // right edge
   }
 }
+
+/** Axis titles: angle, start offset from the axis top, and longest drawn length. */
+const TITLE_ANGLE_DEGREES = 35;
+const TITLE_START_X = 4;
+const TITLE_START_Y = -18;
+const TITLE_MAX_PIXELS = 150;
+/** The drag grip sits between the axis top and its title. */
+const GRIP_OFFSET_Y = -9;
+/** Brush range labels sit right of the brush band. */
+const BRUSH_LABEL_X = 18;
+
+/** Widths of a highlighted line and of the halo around it. */
+const HIGHLIGHT_WIDTH = 2.5;
+const HALO_WIDTH = 7;
+/** How far the pointer may be from a line to pick it. */
+const HOVER_DISTANCE_PIXELS = 5;
+
+/**
+ * How far between its two axes a line is at fraction `s` of the gap: the line
+ * is at yLeft + (yRight - yLeft) * weight. For the Bezier curves (control points
+ * at 12% and 88% of the gap, level with each end) x(t) is solved by bisection.
+ */
+export function segmentWeight(s: number, curved: boolean): number {
+  const clamped = Math.max(0, Math.min(1, s));
+  if (!curved) {
+    return clamped;
+  }
+  const xAt = (t: number): number => {
+    const u = 1 - t;
+    return 3 * u * u * t * 0.12 + 3 * u * t * t * 0.88 + t * t * t;
+  };
+  let low = 0;
+  let high = 1;
+  for (let i = 0; i < 24; ++i) {
+    const mid = (low + high) / 2;
+    if (xAt(mid) < clamped) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+  const t = (low + high) / 2;
+  return 3 * (1 - t) * t * t + t * t * t;
+}
+
+/** Bin key of the deselected rows in the Canvas 2D fallback. */
+const CONTEXT_BIN = -1;
+/** "auto" switches to straight segments above this many rows, where curves blur into mush. */
+const STRAIGHT_LINES_ABOVE_ROWS = 10_000;
+/** Peak opacity of the deselected-rows layer per theme. */
+const CONTEXT_ALPHA_LIGHT = 0.28;
+const CONTEXT_ALPHA_DARK = 0.34;
+
+export type LineShape = "auto" | "curved" | "straight";
+const isLineShape = (value: unknown): value is LineShape =>
+  value === "auto" || value === "curved" || value === "straight";
 
 /** Target frame interval while lines draw progressively (60 Hz). */
 const FRAME_BUDGET_MS = 16;
@@ -291,6 +362,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         readState(props.persistentState, "invert", isStringArray, props.invert ?? []),
       ),
       dimensions: [],
+      lineShape: readState(props.persistentState, "lineShape", isLineShape, "auto"),
+      brushed: false,
+      hover: null,
       dragging: null,
     };
   }
@@ -316,6 +390,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (prevState.hide !== this.state.hide) {
       this.props.persistentState.set("hide", Array.from(this.state.hide));
       this.props.onHiddenColumnsChange?.(this.getRestorableColumnsCount());
+    }
+    if (prevState.lineShape !== this.state.lineShape) {
+      this.props.persistentState.set("lineShape", this.state.lineShape);
     }
     if (prevState.order !== this.state.order) {
       this.props.persistentState.set("order", this.state.order);
@@ -346,8 +423,15 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       if (this.props.rows_highlighted.length === 0) {
         d3.select(this.foreground_ref.current).style("opacity", null);
       } else {
-        d3.select(this.foreground_ref.current).style("opacity", "0.25");
+        d3.select(this.foreground_ref.current).style("opacity", "0.45");
+        const halo = getComputedStyle(mounted(this.root_ref)).getPropertyValue("--hip-halo");
+        highlighted.lineJoin = "round";
+        highlighted.lineCap = "round";
         this.props.rows_highlighted.forEach((dp: Datapoint) => {
+          // A halo in the background color lifts the line off the density beneath it.
+          highlighted.lineWidth = HALO_WIDTH;
+          this.path(dp, highlighted, halo);
+          highlighted.lineWidth = HIGHLIGHT_WIDTH;
           this.path(dp, highlighted, this.props.get_color_for_row(dp, 1));
         });
       }
@@ -393,6 +477,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (
       selectionChanged ||
       prevProps.color_binning !== this.props.color_binning ||
+      prevProps.dark !== this.props.dark ||
+      prevState.lineShape !== this.state.lineShape ||
       prevProps.colorby !== this.props.colorby ||
       prevState.height !== this.state.height ||
       prevState.width !== this.state.width
@@ -430,43 +516,158 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   };
 
   get_axis(d: string): d3.Axis<AxisValue> {
-    const pd = this.props.params_def[d];
-    const scale = this.yscale[d];
-    const tickCount = 1 + this.state.height / 50;
-    const axis = d3.axisLeft<AxisValue>(scale).ticks(tickCount, pd.ticks_format);
-    if (pd.type !== ParamType.NUMERICLOG || scale.kind !== "continuous") {
-      return axis;
-    }
-    const tickValues = getLogScaleTickValues(scale.domain(), tickCount);
-    if (tickValues === null) {
-      return axis;
-    }
-    // Keep the NaN tick of the inf/NaN band
-    return axis.tickValues(scale.hasOutlierBand ? [...tickValues, NaN] : tickValues);
+    return columnAxis(this.yscale[d], this.h);
   }
 
   render() {
+    const shapes: { shape: LineShape; label: string; title: string }[] = [
+      {
+        shape: "auto",
+        label: "Auto",
+        title: `Curves up to ${STRAIGHT_LINES_ABOVE_ROWS.toLocaleString("en-US")} rows, straight beyond`,
+      },
+      { shape: "curved", label: "Curved", title: "Smooth curves between axes" },
+      { shape: "straight", label: "Straight", title: "Straight segments between axes" },
+    ];
     return (
-      <ResizableH initialHeight={this.state.height} onResize={this.onResize}>
-        <div
-          ref={this.root_ref}
-          className={`${pstyle["parallel-plot-chart"]} pplot-root`}
-          style={{ height: this.state.height }}
-        >
-          <canvas ref={this.foreground_ref}></canvas>
-          <canvas ref={this.highlighted_ref}></canvas>
-          <svg
-            ref={this.svg_ref}
-            width={this.state.width}
-            height={this.state.height}
-            role="img"
-            aria-label="Parallel coordinates axes"
+      <>
+        <div className={pstyle.toolbar}>
+          <span>Lines</span>
+          <fieldset className={pstyle.segmented} aria-label="Line shape">
+            {shapes.map(({ shape, label, title }) => (
+              <button
+                key={shape}
+                type="button"
+                title={title}
+                aria-pressed={this.state.lineShape === shape}
+                onClick={() => this.setState({ lineShape: shape })}
+              >
+                {label}
+              </button>
+            ))}
+          </fieldset>
+          <button
+            type="button"
+            className={pstyle.toolbarButton}
+            disabled={!this.state.brushed}
+            title="Clear every brush and select all rows"
+            onClick={() => this.brush_clear_all()}
           >
-            <g ref={this.svgg_ref} transform={`translate(${this.m[3]}, ${this.m[0]})`}></g>
-          </svg>
+            Reset brushes
+          </button>
         </div>
-      </ResizableH>
+        <ResizableH initialHeight={this.state.height} onResize={this.onResize}>
+          <div
+            ref={this.root_ref}
+            className={`${pstyle["parallel-plot-chart"]} pplot-root`}
+            style={{ height: this.state.height }}
+          >
+            <canvas ref={this.foreground_ref}></canvas>
+            <canvas ref={this.highlighted_ref}></canvas>
+            <svg
+              ref={this.svg_ref}
+              width={this.state.width}
+              height={this.state.height}
+              role="img"
+              aria-label="Parallel coordinates axes"
+              onMouseMove={this.onPointerMove}
+              onMouseLeave={this.clearHover}
+            >
+              <g ref={this.svgg_ref} transform={`translate(${this.m[3]}, ${this.m[0]})`}></g>
+            </svg>
+            {this.state.hover !== null && (
+              <div
+                className={pstyle.tooltip}
+                style={{ left: this.state.hover.x, top: this.state.hover.y }}
+                data-testid="line-tooltip"
+              >
+                {this.state.hover.text}
+              </div>
+            )}
+          </div>
+        </ResizableH>
+      </>
     );
+  }
+
+  /** The row under the pointer is found every frame at most, from the cached pixels. */
+  private hoverFrame: number | null = null;
+  onPointerMove = (event: React.MouseEvent<SVGSVGElement>): void => {
+    if (event.buttons !== 0) {
+      return;
+    }
+    const [x, y] = d3.pointer(event.nativeEvent, mounted(this.svgg_ref));
+    if (this.hoverFrame !== null) {
+      cancelAnimationFrame(this.hoverFrame);
+    }
+    this.hoverFrame = requestAnimationFrame(() => {
+      this.hoverFrame = null;
+      this.hoverAt(x, y);
+    });
+  };
+  clearHover = (): void => {
+    if (this.hoverFrame !== null) {
+      cancelAnimationFrame(this.hoverFrame);
+      this.hoverFrame = null;
+    }
+    if (this.hoveredRow !== null) {
+      this.hoveredRow = null;
+      this.setState({ hover: null });
+      this.props.setHighlighted([]);
+    }
+  };
+  private hoveredRow: Datapoint | null = null;
+
+  /** Highlights the selected line nearest to plot coordinates (x, y), if one is close. */
+  hoverAt(x: number, y: number): void {
+    const geometry = this.geometry();
+    const axes = this.state.dimensions
+      .map((dimension) => ({ dimension, x: this.position(dimension) }))
+      .sort((a, b) => a.x - b.x);
+    const right = axes.findIndex((axis) => axis.x > x);
+    if (right <= 0) {
+      this.clearHover();
+      return;
+    }
+    const left = axes[right - 1];
+    const leftPixels = geometry.pixels(
+      left.dimension,
+      this.yscale[left.dimension],
+      this.props.params_def[left.dimension].numeric,
+    );
+    const rightPixels = geometry.pixels(
+      axes[right].dimension,
+      this.yscale[axes[right].dimension],
+      this.props.params_def[axes[right].dimension].numeric,
+    );
+    const weight = segmentWeight((x - left.x) / (axes[right].x - left.x), this.curvedLines());
+    const mask = this.selectionMask(geometry);
+    let nearest = -1;
+    let nearestDistance = HOVER_DISTANCE_PIXELS;
+    for (let row = 0; row < mask.length; ++row) {
+      if (mask[row] === 0) {
+        continue;
+      }
+      const yLeft = leftPixels[row];
+      const yRight = rightPixels[row];
+      const distance = Math.abs(yLeft + (yRight - yLeft) * weight - y);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = row;
+      }
+    }
+    if (nearest === -1) {
+      this.clearHover();
+      return;
+    }
+    const row = geometry.rows[nearest];
+    const value = row[this.props.colorby];
+    const text = `${this.props.render_row_text(row)} · ${this.props.colorby} ${value === undefined ? "missing" : String(value)}`;
+    this.setState({ hover: { x: x + this.m[3], y: y + this.m[0], text } });
+    if (row !== this.hoveredRow) {
+      this.hoveredRow = row;
+      this.props.setHighlighted([row]);
+    }
   }
   sendBrushExtents = _.debounce((): void => {
     this.props.sendMessage("brush_extents", () => {
@@ -580,9 +781,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       me.xscale.domain(me.state.dimensions);
 
       // Add a group element for each dimension.
-      function create_drag_beh(): d3.DragBehavior<SVGTextElement, string, unknown> {
+      function create_drag_beh(): d3.DragBehavior<SVGElement, string, unknown> {
         return d3
-          .drag<SVGTextElement, string>()
+          .drag<SVGElement, string>()
           .container(() => mounted(me.svgg_ref))
           .on("start", (_event, d: string) => {
             me.setState({
@@ -595,7 +796,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             });
             d3.select(me.foreground_ref.current).style("opacity", "0.35");
           })
-          .on("drag", function (this: SVGTextElement, event: { dx: number }, d: string) {
+          .on("drag", function (this: SVGElement, event: { dx: number }, d: string) {
             const eventdx = event.dx;
             const brushEl = d3.select(this).select(`.${pstyle.brush}`);
             me.setState(
@@ -632,7 +833,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             }
             me.dimensions_dom?.attr("transform", (dim) => `translate(${me.position(dim)})`);
           })
-          .on("end", function (this: SVGTextElement, _event, d: string) {
+          .on("end", function (this: SVGElement, _event, d: string) {
             if (!me.state.dragging) {
               d3.select(me.foreground_ref.current).style("opacity", null);
               return;
@@ -687,16 +888,19 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
           const pd = me.props.params_def[dim];
           return labelTextFromHtml(pd.label_html, pd.name);
         })
-        .attr("text-anchor", "left")
+        .attr("data-dimension", (dim) => dim)
         .classed("pplot-label", true)
         .classed("label-name", true)
-        .classed(pstyle.pplotLabel, true)
         .classed(style.axisLabelText, true)
         .classed(pstyle.pplotLabel, true)
-        .each(function (this: SVGTextElement) {
+        .each(function (this: SVGTextElement, dim) {
+          const pd = me.props.params_def[dim];
+          const hint = IS_MOBILE
+            ? "long-press for options"
+            : "click to invert, drag to move, right-click for options";
           d3.select(this)
             .append("title")
-            .text(IS_MOBILE ? "Long-press for options" : "Right click for options");
+            .text(`${labelTextFromHtml(pd.label_html, pd.name)} (${hint})`);
         })
         .on("contextmenu", (event: MouseEvent, dim: string) => {
           if (me.showContextMenu(event.pageX, event.pageY, dim)) {
@@ -746,7 +950,23 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
           },
         );
       me.updateAxisTitlesAnglesAndFontSize();
-      dimensions_dom.selectAll<SVGTextElement, string>(".pplot-label").call(create_drag_beh());
+      dimensions_dom.selectAll<SVGElement, string>(".pplot-label").call(create_drag_beh());
+
+      // A grip above each axis: a second, more visible handle to drag it by.
+      const grips = dimensions_dom
+        .append<SVGElement>("svg:g")
+        .classed(pstyle.grip, true)
+        .attr("transform", `translate(0, ${GRIP_OFFSET_Y})`);
+      grips
+        .append("title")
+        .text("Drag to move this axis, or out of the plot to hide it; click to invert it");
+      grips.append("rect").attr("x", -7).attr("y", -6).attr("width", 14).attr("height", 12);
+      for (const cx of [-2.5, 2.5]) {
+        for (const cy of [-3.5, 0, 3.5]) {
+          grips.append("circle").attr("cx", cx).attr("cy", cy).attr("r", 1.1);
+        }
+      }
+      grips.call(create_drag_beh());
 
       // Add and store a brush for each axis.
       dimensions_dom
@@ -779,7 +999,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       // hack to hide ticks beyond extent
       me.dimensions_dom?.each(function (this: SVGGElement, dimension) {
         const extent = extents[dimension];
-        const texts = d3.select(this).selectAll<SVGTextElement, AxisValue>("text");
+        const texts = d3.select(this).selectAll<SVGTextElement, AxisValue>(".tick text");
         if (extent !== null && extent !== undefined && _.include(actives, dimension)) {
           const scale = me.yscale[dimension];
           texts
@@ -796,6 +1016,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         }
         d3.select(this).selectAll(`.${pstyle.pplotLabel}`).style("display", null);
       });
+
+      me.updateBrushRangeLabels(extents);
+      if (me.state.brushed !== actives.length > 0) {
+        me.setState({ brushed: actives.length > 0 });
+      }
 
       // bold dimensions with label
       div
@@ -938,18 +1163,105 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return scale;
   }
 
+  /**
+   * Axis titles run up and to the right at a fixed angle from the top of each
+   * axis, truncated with an ellipsis to what fits above the plot and inside its
+   * right edge; the full name is in the tooltip.
+   */
   updateAxisTitlesAnglesAndFontSize() {
-    const FONT_SIZE = 12;
+    const svgWidth = this.state.width;
+    const leftMargin = this.m[3];
+    const angle = (TITLE_ANGLE_DEGREES * Math.PI) / 180;
+    const me = this;
     this.dimensions_dom?.selectAll<SVGTextElement, string>(".pplot-label").each(function (
       this: SVGTextElement,
+      dim,
     ) {
-      this.style.fontSize = `${FONT_SIZE}px`;
-      this.style.writingMode = "";
-      this.style.textOrientation = "";
-      this.setAttribute("x", "10");
+      const pd = me.props.params_def[dim];
+      const fullText = labelTextFromHtml(pd.label_html, pd.name);
+      const axisX = leftMargin + me.position(dim);
+      const roomRight = (svgWidth - axisX - TITLE_START_X - 4) / Math.cos(angle);
+      const maxLength = Math.max(24, Math.min(TITLE_MAX_PIXELS, roomRight));
+      this.setAttribute("x", "0");
       this.setAttribute("y", "0");
       this.setAttribute("text-anchor", "start");
-      this.setAttribute("transform", "rotate(-90)");
+      this.setAttribute(
+        "transform",
+        `translate(${TITLE_START_X}, ${TITLE_START_Y}) rotate(${-TITLE_ANGLE_DEGREES})`,
+      );
+      const textNode = this.firstChild;
+      if (textNode === null || textNode.nodeType !== Node.TEXT_NODE) {
+        throw new Error("Axis title lost its text node");
+      }
+      textNode.textContent = fullText;
+      if (this.getComputedTextLength() <= maxLength) {
+        return;
+      }
+      let low = 0;
+      let high = fullText.length;
+      while (low < high) {
+        const mid = Math.ceil((low + high) / 2);
+        textNode.textContent = `${fullText.slice(0, mid)}…`;
+        if (this.getComputedTextLength() <= maxLength) {
+          low = mid;
+        } else {
+          high = mid - 1;
+        }
+      }
+      textNode.textContent = `${fullText.slice(0, low)}…`;
+    });
+  }
+
+  /** Value labels at both ends of each brush. */
+  private updateBrushRangeLabels(extents: BrushExtents): void {
+    this.dimensions_dom?.each((dimension, index, nodes) => {
+      const extent = extents[dimension];
+      const scale = this.yscale[dimension];
+      const labels: { y: number; text: string; baseline: string }[] = [];
+      if (extent !== null && extent !== undefined && scale !== undefined) {
+        const [top, bottom] = extent;
+        const valueAt = (pixel: number): string => {
+          if (scale.kind === "continuous") {
+            if (scale.paramType === ParamType.TIMESTAMP) {
+              return formatTimestamp(scale.invert(pixel));
+            }
+            const format = valueFormatter(scale, tickCountFor(this.h));
+            return format(scale.invert(pixel));
+          }
+          const range = scale_pixels_range(scale, [pixel, pixel]);
+          return range.type === ParamType.CATEGORICAL && range.values.length > 0
+            ? range.values[0]
+            : "";
+        };
+        const range = scale_pixels_range(scale, extent);
+        if (range.type === ParamType.CATEGORICAL) {
+          labels.push(
+            { y: top - 4, text: range.values[0] ?? "", baseline: "auto" },
+            {
+              y: bottom + 4,
+              text: range.values[range.values.length - 1] ?? "",
+              baseline: "hanging",
+            },
+          );
+        } else {
+          labels.push(
+            { y: top - 4, text: valueAt(top), baseline: "auto" },
+            { y: bottom + 4, text: valueAt(bottom), baseline: "hanging" },
+          );
+        }
+      }
+      d3.select(nodes[index])
+        .selectAll<SVGTextElement, { y: number; text: string; baseline: string }>(
+          `.${pstyle.brushRange}`,
+        )
+        .data(labels)
+        .join("text")
+        .classed(pstyle.brushRange, true)
+        .classed("pplot-brush-range", true)
+        .attr("x", BRUSH_LABEL_X)
+        .attr("y", (label) => label.y)
+        .attr("dominant-baseline", (label) => label.baseline)
+        .text((label) => label.text);
     });
   }
 
@@ -979,7 +1291,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.state.dimensions.forEach((d: string) => {
       this.setScaleRange(d);
     });
-    this.highlightContext().lineWidth = 4;
+    this.highlightContext().lineWidth = HIGHLIGHT_WIDTH;
   }
 
   // transition ticks for reordering, rescaling and inverting
@@ -1042,7 +1354,25 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return mask;
   }
 
-  /** Draws every selected line in one WebGL pass. */
+  /** The theme's color for deselected lines, read from the --hip-context-line token. */
+  private contextColor(): RGB {
+    const token = getComputedStyle(mounted(this.root_ref)).getPropertyValue("--hip-context-line");
+    const parsed = d3.color(token.trim())?.rgb();
+    if (!parsed) {
+      throw new Error(`--hip-context-line is not a color: "${token}"`);
+    }
+    return { r: parsed.r, g: parsed.g, b: parsed.b };
+  }
+
+  /** Curves between axes unless the user chose straight lines, or "auto" meets many rows. */
+  curvedLines(): boolean {
+    if (this.state.lineShape === "auto") {
+      return this.props.rows_filtered.length <= STRAIGHT_LINES_ABOVE_ROWS;
+    }
+    return this.state.lineShape === "curved";
+  }
+
+  /** Draws every line in one WebGL pass: the selection over the faint deselected rows. */
   private drawWithWebGL(webgl: WebGLLineRenderer): void {
     const geometry = this.geometry();
     const binning = this.props.color_binning;
@@ -1065,9 +1395,24 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       })),
       width: this.w,
       height: this.h,
-      alpha: Math.min(2 / Math.max(1, selectedCount) ** 0.3, 1),
-      curved: true,
+      curved: this.curvedLines(),
+      selectedCount,
+      contextCount: mask.length - selectedCount,
+      contextColor: this.contextColor(),
+      contextAlpha: this.props.dark ? CONTEXT_ALPHA_DARK : CONTEXT_ALPHA_LIGHT,
     });
+  }
+
+  /** Indices of the deselected rows, in draw order. */
+  contextRows(geometry: LineGeometry, selectedRows: Uint32Array): Uint32Array {
+    if (selectedRows === geometry.order) {
+      return new Uint32Array(0);
+    }
+    const isSelected = new Uint8Array(geometry.rows.length);
+    selectedRows.forEach((row) => {
+      isSelected[row] = 1;
+    });
+    return geometry.order.filter((row) => isSelected[row] === 0);
   }
 
   /** Indices of the selected rows, in draw order. */
@@ -1120,8 +1465,20 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   paths(selected: ReadonlyArray<Datapoint>, ctx: CanvasRenderingContext2D, count: number): void {
     const opacity = Math.min(2 / selected.length ** 0.3, 1);
     const geometry = this.geometry();
-    const rows = this.drawnRows(geometry, selected);
+    const selectedRows = this.drawnRows(geometry, selected);
+    const contextRows = this.contextRows(geometry, selectedRows);
+    // Composited "destination-over": the selection is drawn first and stays on top.
+    const rows = new Uint32Array(selectedRows.length + contextRows.length);
+    rows.set(selectedRows);
+    rows.set(contextRows, selectedRows.length);
+    const selectedCount = selectedRows.length;
+    const { r, g, b } = this.contextColor();
+    const contextAlpha =
+      (this.props.dark ? CONTEXT_ALPHA_DARK : CONTEXT_ALPHA_LIGHT) *
+      Math.min(1 / Math.max(1, contextRows.length) ** 0.3, 1);
+    const contextCss = `rgba(${r}, ${g}, ${b}, ${contextAlpha})`;
     const n = rows.length;
+    const curved = this.curvedLines();
     const binning = this.props.color_binning;
     const bins = geometry.colorBins(binning, this.props.colorby);
     const axes = this.state.dimensions.map((dimension) => ({
@@ -1158,7 +1515,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       const rowsByBin = new Map<number, number[]>();
       for (; i < end; ++i) {
         const row = rows[i];
-        const bin = bins[row];
+        const bin = i < selectedCount ? bins[row] : CONTEXT_BIN;
         const binRows = rowsByBin.get(bin);
         if (binRows === undefined) {
           rowsByBin.set(bin, [row]);
@@ -1167,10 +1524,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         }
       }
       rowsByBin.forEach((binRows, bin) => {
-        ctx.strokeStyle = binning.css(bin, opacity);
+        ctx.strokeStyle = bin === CONTEXT_BIN ? contextCss : binning.css(bin, opacity);
         ctx.beginPath();
         binRows.forEach((row) => {
-          traceRow(ctx, axes, row);
+          traceRow(ctx, axes, row, curved);
         });
         ctx.stroke();
       });
@@ -1267,6 +1624,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
    * short horizontal stub at each end, and a break around missing values.
    */
   tracePath(d: Datapoint, ctx: CanvasRenderingContext2D): void {
+    const curved = this.curvedLines();
     let has_started = false;
     let x0 = 0;
     let y0 = 0;
@@ -1294,11 +1652,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         ctx.moveTo(x0, y0);
         has_started = true;
       }
-      const cp1x = x - 0.88 * (x - x0);
-      const cp1y = y0;
-      const cp2x = x - 0.12 * (x - x0);
-      const cp2y = y;
-      ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x, y);
+      if (curved) {
+        ctx.bezierCurveTo(x - 0.88 * (x - x0), y0, x - 0.12 * (x - x0), y, x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
       x0 = x;
       y0 = y;
     });
