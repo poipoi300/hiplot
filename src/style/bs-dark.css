@@ -196,5 +196,6 @@
 }
 
 .text-muted {
+  /* biome-ignore lint/complexity/noImportantStyles: Bootstrap's own .text-muted is !important. */
   color: #888 !important;
 }

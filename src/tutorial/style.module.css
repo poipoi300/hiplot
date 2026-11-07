@@ -23,11 +23,12 @@
   }
 }
 
-.highlightText {
+/* Outranks the axis title styles of the parallel plot without !important. */
+:global(svg) text.highlightText:global(.pplot-label) {
   animation-duration: 1s;
   animation-name: highlightTextAnimation;
   animation-iteration-count: infinite;
-  font-size: 18px !important;
+  font-size: 18px;
 }
 
 @keyframes highlightTextAnimation {

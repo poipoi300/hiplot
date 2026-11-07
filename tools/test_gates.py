@@ -42,7 +42,7 @@ def test_ci_enforced_gates_appear_in_workflow() -> None:
         "ruff-format": "ruff format --check",
         "ruff-check": "ruff check",
         "mypy": "mypy .",
-        "biome": "biome check .",
+        "biome": "biome check --error-on-warnings .",
         "tsc": "bun run typecheck",
         "tests-and-diff-coverage": "stack_coverage_gate.sh",
     }

@@ -49,7 +49,6 @@ import {
   PSTATE_COLOR_BY,
   PSTATE_FILTERS,
   PSTATE_PARAMS,
-  type RawDatapoint,
 } from "./types";
 
 // Exported from HiPlot

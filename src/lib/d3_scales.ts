@@ -261,8 +261,8 @@ export function d3_scale_percentile_values_sorted(
       domain_idx[0] -= 1;
       domain_idx[1] += 1;
     }
-    domain_idx[0] = domain_idx[0] < 0 ? 0 : domain_idx[0];
-    domain_idx[1] = domain_idx[1] >= values.length ? values.length - 1 : domain_idx[1];
+    domain_idx[0] = Math.max(domain_idx[0], 0);
+    domain_idx[1] = Math.min(domain_idx[1], values.length - 1);
   }
   function ticks(count = 10): number[] {
     if (count >= domain_idx[1] - domain_idx[0] + 1) {

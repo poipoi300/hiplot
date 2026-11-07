@@ -115,7 +115,7 @@ repos:
     hooks:
       - id: biome
         name: biome check
-        entry: bun run biome check --write .
+        entry: bun run biome check --write --error-on-warnings .
         language: system
         files: '\.(ts|tsx|mts|json|css)$'
         pass_filenames: false

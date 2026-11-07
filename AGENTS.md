@@ -109,7 +109,7 @@ Python runs through `uv`, the frontend through Bun. Never invoke `pip`, bare
 | Frontend unit tests | `bun test` |
 | End-to-end tests (Playwright) | `bun run test:js` |
 | Format | `uv run ruff format .` · `bun run biome check --write .` |
-| Lint | `uv run ruff check .` · `bun run biome check .` |
+| Lint | `uv run ruff check .` · `bun run biome check --error-on-warnings .` |
 | Types | `uv run mypy .` · `bun run typecheck` |
 | All commit-stage gates | `uv run pre-commit run --all-files` |
 | Push-stage gate | `bash tools/stack_coverage_gate.sh` (needs `origin/main`; override with `DIFF_COVER_COMPARE_BRANCH=main`) |

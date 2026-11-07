@@ -91,6 +91,21 @@
   text-decoration: none;
 }
 
+.hip_thm--dark table,
+.hip_thm--dark td,
+.hip_thm--dark label,
+.hip_thm--dark select,
+.hip_thm--dark input,
+.hip_thm--light table,
+.hip_thm--light td,
+.hip_thm--light label,
+.hip_thm--light select,
+.hip_thm--light input {
+  color: unset;
+  table-layout: auto;
+  font-size: unset;
+}
+
 /* DataTables styling for both themes */
 .hip_thm--dark .dataTables_wrapper,
 .hip_thm--light .dataTables_wrapper {
@@ -108,9 +123,9 @@
 
 .hip_thm--dark .dataTables_wrapper > .row:first-child > div,
 .hip_thm--light .dataTables_wrapper > .row:first-child > div {
-  flex: 0 0 auto !important;
-  max-width: none !important;
-  width: auto !important;
+  flex: 0 0 auto;
+  max-width: none;
+  width: auto;
 }
 
 @media (max-width: 576px) {
@@ -202,19 +217,4 @@
 
 .hip_thm--light .table-striped > tbody > tr:nth-of-type(odd) > * {
   background-color: rgba(0, 0, 0, 0.05);
-}
-
-.hip_thm--dark table,
-.hip_thm--dark td,
-.hip_thm--dark label,
-.hip_thm--dark select,
-.hip_thm--dark input,
-.hip_thm--light table,
-.hip_thm--light td,
-.hip_thm--light label,
-.hip_thm--light select,
-.hip_thm--light input {
-  color: unset;
-  table-layout: auto;
-  font-size: unset;
 }
