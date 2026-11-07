@@ -2,12 +2,14 @@
 
 import builtins
 import typing as t
+from pathlib import Path
 
+import IPython.display
 import pytest
 
 from .. import experiment as exp
 from ..fetchers_demo import README_DEMOS
-from ..ipython import IPythonExperimentDisplayed, NotebookJSBundleInjector
+from ..ipython import GetSelectedFailure, IPythonExperimentDisplayed, NotebookJSBundleInjector
 from ..streamlit_helpers import ExperimentStreamlitComponent
 
 
@@ -41,9 +43,9 @@ def test_selection_and_brushes_sent_by_the_front_end_are_returned(monkeypatch: p
     monkeypatch.setattr(builtins, "get_ipython", lambda: ipython, raising=False)
     xp = README_DEMOS["demo"]()
     displayed = IPythonExperimentDisplayed(xp, "comm_test")
-    with pytest.raises(type(displayed.no_data_received_error)):
+    with pytest.raises(GetSelectedFailure, match="No data received from the front-end"):
         displayed.get_selected()
-    with pytest.raises(type(displayed.no_data_received_error)):
+    with pytest.raises(GetSelectedFailure, match="No data received from the front-end"):
         displayed.get_brush_extents()
 
     comm = FakeComm()
@@ -56,9 +58,15 @@ def test_selection_and_brushes_sent_by_the_front_end_are_returned(monkeypatch: p
     assert displayed.get_brush_extents() == {"lr": {"range": [0, 1]}}
 
 
-def test_the_bundle_is_injected_as_javascript(capsys: pytest.CaptureFixture[str]) -> None:
+def test_the_bundle_is_injected_as_javascript_exposing_a_global(monkeypatch: pytest.MonkeyPatch) -> None:
+    displayed: list[t.Any] = []
+    monkeypatch.setattr(IPython.display, "display", displayed.append)
     NotebookJSBundleInjector.ensure_injected()
-    assert "Javascript" in capsys.readouterr().out
+    [injected] = displayed
+    assert isinstance(injected, IPython.display.Javascript)
+    bundle = (Path(exp.__file__).parent / "static" / "built" / "hiplot.bundle.js").read_text("utf-8")
+    assert injected.data.lstrip().startswith(bundle.strip())
+    assert injected.data.rstrip().endswith("Object.assign(window, {'hiplot': hiplot});")
 
 
 def test_streamlit_defaults_select_every_row_until_the_front_end_answers() -> None:

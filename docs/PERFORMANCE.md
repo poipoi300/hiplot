@@ -144,8 +144,8 @@ What the steps show:
   (steps 1 and 5) trades the baseline's slow-but-smooth progressive drawing
   for visible stalls. It stays as the fallback for browsers without WebGL2.
 - WebGL2 removes that bottleneck: a full 50k × 50 redraw takes 6 to 11 ms,
-  brushing holds the 120 Hz frame clock with no stall, and lines are complete
-  within 2 ms of releasing the mouse.
+  brush drag frames stay at 8 ms median with a p95 and max of 8 to 9 ms and no
+  stall, and lines are complete within 2 ms of releasing the mouse.
 - Publishing the selection once per gesture took the table from 273 ms to
   about 100 ms after brush end at 50k rows. DataTables, with deferred
   rendering, then rebuilds its row list in that time, so a virtualized grid
@@ -169,7 +169,14 @@ context layer of deselected lines. Medians of three page loads.
 | 50k × 50, final | 27.2 | 74 | 1429 | 1686 | 7 | 8 / 9 / 9 | 0/120 | 2 | 88 | 277 |
 
 At 50k × 50 the page is 2.6x smaller, the first complete picture arrives 3.5x
-sooner, a full redraw is about 400x faster, brushing holds the 120 Hz frame
-clock, and the lines are final 2 ms after the mouse is released instead of
-2.7 s. The density pass costs nothing measurable against step 7: the GPU
-time of both passes is well inside one frame.
+sooner, a full redraw is about 400x faster, brush drag frames measure 8 ms
+median, 9 ms p95 and 9 ms max (17 / 25 / 25 ms before), and the lines are
+final 2 ms after the mouse is released instead of 2.7 s. The density pass
+costs nothing measurable against step 7: the GPU time of both passes is well
+inside one frame.
+
+One number regressed: decoding the embedded 50k × 50 experiment takes 74 ms
+instead of 64 ms. The compact payload is parsed by `JSON.parse` from a JSON
+script block where the baseline evaluated a JavaScript string literal; the
+page is 2.6x smaller and DOM ready comes 1.3 s sooner, so the 10 ms are
+accepted, but they are a regression.
