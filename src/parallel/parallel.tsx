@@ -82,6 +82,12 @@ interface LongPress {
   fired: boolean;
 }
 
+/** Target frame interval while lines draw progressively (60 Hz). */
+const FRAME_BUDGET_MS = 16;
+const INITIAL_MS_PER_LINE = 0.05;
+const MIN_LINES_PER_FRAME = 100;
+const MAX_LINES_PER_FRAME = 50_000;
+
 const TOP_MARGIN_PIXELS = 120;
 const H_MARGIN_PIXELS = 20;
 export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlotState> {
@@ -99,8 +105,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   pplot: PPlotInternal | null = null;
 
   dimensions_dom: d3.Selection<SVGGElement, string, SVGGElement, unknown> | null = null;
-  render_speed = 10;
-  animloop: d3.Timer | null = null;
+  /** The pending animation frame of a progressive draw, if one is in flight. */
+  drawingFrame: number | null = null;
+  /** Smoothed cost of one line, from measured frame intervals (see `paths`). */
+  msPerLine = INITIAL_MS_PER_LINE;
 
   xscale: d3.ScalePoint<string> = d3.scalePoint<string>();
 
@@ -206,7 +214,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   };
   componentWillUnmount() {
     d3.select(this.svgg_ref.current).selectAll("*").remove();
-    this.animloop?.stop();
+    this.cancelDrawing();
     this.props.context_menu_ref?.current?.removeCallbacks(this);
     this.onBrushChange.cancel();
     this.sendBrushExtents.cancel();
@@ -285,7 +293,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (this.pplot && prevProps.params_def !== this.props.params_def) {
       this.brush_clear_all();
       this.update_ticks();
-      this.animloop?.stop();
+      this.cancelDrawing();
     }
     // When we need to redraw lines
     if (
@@ -876,41 +884,56 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.setState((prevState) => ({ brush_count: prevState.brush_count + 1 }));
   }
 
-  // render a set of polylines on a canvas
+  cancelDrawing(): void {
+    if (this.drawingFrame !== null) {
+      cancelAnimationFrame(this.drawingFrame);
+      this.drawingFrame = null;
+    }
+  }
+
+  /**
+   * Draws polylines progressively within a frame-time budget. Canvas rasterizes
+   * after the script yields, so the budget is enforced on measured frame
+   * intervals: the number of lines per frame grows while frames stay under
+   * budget and shrinks when they overrun. Everything is drawn in one pass when
+   * it fits. A newer draw (higher `count`) supersedes this one.
+   */
   paths(selected: Array<Datapoint>, ctx: CanvasRenderingContext2D, count: number): void {
     const n = selected.length;
     const opacity = Math.min(2 / n ** 0.3, 1);
-    let i = 0;
-    let timer = Date.now();
-
     const shuffled_data: Array<Datapoint> = _.shuffle(selected);
+    let i = 0;
+    let previousFrame: number | null = null;
+    let drawnLastFrame = 0;
 
+    this.cancelDrawing();
     ctx.clearRect(0, 0, this.w + 1, this.h + 1);
 
-    // Adjusts rendering speed
-    const optimize = (start: number): number => {
-      const delta = Date.now() - start;
-      this.render_speed = Math.max(Math.ceil((this.render_speed * 30) / delta), 8);
-      this.render_speed = Math.min(this.render_speed, 300);
-      return Date.now();
-    };
-
-    // render all lines until finished or a new brush event
-    const animloop = (): void => {
-      if (i >= n || count < this.state.brush_count) {
+    const drawFrame = (now: number): void => {
+      this.drawingFrame = null;
+      if (count < this.state.brush_count) {
         return;
       }
-      const max = Math.min(i + this.render_speed, n);
-      shuffled_data.slice(i, max).forEach((d) => {
+      if (previousFrame !== null && drawnLastFrame > 0) {
+        const measured = (now - previousFrame) / drawnLastFrame;
+        this.msPerLine = (this.msPerLine + measured) / 2;
+      }
+      previousFrame = now;
+      const linesPerFrame = Math.min(
+        MAX_LINES_PER_FRAME,
+        Math.max(MIN_LINES_PER_FRAME, Math.round(FRAME_BUDGET_MS / this.msPerLine)),
+      );
+      const end = Math.min(i + linesPerFrame, n);
+      drawnLastFrame = end - i;
+      for (; i < end; ++i) {
+        const d = shuffled_data[i];
         this.path(d, ctx, this.props.get_color_for_row(d, opacity));
-      });
-      i = max;
-      timer = optimize(timer); // adjusts render_speed
+      }
+      if (i < n) {
+        this.drawingFrame = requestAnimationFrame(drawFrame);
+      }
     };
-    this.animloop?.stop();
-    if (n > 0) {
-      this.animloop = d3.timer(animloop);
-    }
+    drawFrame(performance.now());
   }
 
   brush_clear_all(): void {
