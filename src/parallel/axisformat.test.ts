@@ -10,8 +10,7 @@ import {
   tickCountFor,
   valueFormatter,
 } from "./axisformat";
-import { segmentWeight } from "./parallel";
-import { densityReference } from "./webgl";
+import { densityReference, segmentSamples } from "./webgl";
 
 function scaleOf(values: DatapointValue[], type?: ParamType) {
   const rows: Datapoint[] = values.map((value, i) => ({ uid: `${i}`, from_uid: null, x: value }));
@@ -75,21 +74,21 @@ describe("column axes", () => {
   });
 });
 
-describe("line geometry", () => {
-  test("straight lines move linearly between axes", () => {
-    expect(segmentWeight(0.25, false)).toBe(0.25);
-    expect(segmentWeight(-1, false)).toBe(0);
-  });
-
-  test("curves stay level near each axis and cross halfway at the middle", () => {
-    expect(segmentWeight(0, true)).toBeCloseTo(0);
-    expect(segmentWeight(0.5, true)).toBeCloseTo(0.5);
-    expect(segmentWeight(1, true)).toBeCloseTo(1);
-    expect(segmentWeight(0.1, true)).toBeLessThan(0.1);
-  });
-
+describe("line density", () => {
   test("the density reference grows with lines per pixel of height", () => {
     expect(densityReference(10, 400)).toBe(2);
     expect(densityReference(50_000, 500)).toBe(1200);
+  });
+});
+
+describe("curve sampling", () => {
+  test("straight segments need their two ends only", () => {
+    expect(segmentSamples([{ x: 0 }, { x: 600 }], false)).toBe(2);
+  });
+
+  test("curves get a point every few pixels of the widest gap, within bounds", () => {
+    expect(segmentSamples([{ x: 0 }, { x: 10 }], true)).toBe(8);
+    expect(segmentSamples([{ x: 0 }, { x: 60 }, { x: 180 }], true)).toBe(21);
+    expect(segmentSamples([{ x: 0 }, { x: 2000 }], true)).toBe(40);
   });
 });

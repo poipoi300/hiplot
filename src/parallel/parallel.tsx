@@ -39,6 +39,7 @@ import {
 import { LineGeometry } from "./geometry";
 import pstyle from "./parallel.module.css";
 import { type AxisSelection, BrushMasks } from "./selection";
+import { monotoneSlope, SPLINE_HANDLE, splineParameter, splineY } from "./spline";
 import { WebGLLineRenderer } from "./webgl";
 
 interface ParallelPlotState {
@@ -95,6 +96,15 @@ interface LongPress {
   fired: boolean;
 }
 
+/** Whether an element is a brush overlay or resize handle, where brushes are drawn or resized. */
+function onBrushControl(target: EventTarget): boolean {
+  return (
+    target instanceof Element &&
+    target.closest(".pplot-brush") !== null &&
+    !target.classList.contains("selection")
+  );
+}
+
 /** What a brush selects on one axis, as a value range. */
 function axisSelection(dimension: string, range: ScaleDomainRange): AxisSelection {
   if (range.type === ParamType.CATEGORICAL) {
@@ -122,47 +132,75 @@ interface AxisPixels {
   pixels: Float32Array;
 }
 
+/** A line's position on one axis; y is NaN where the row has no value. */
+interface LinePoint {
+  x: number;
+  y: number;
+}
+
+/** Length of the horizontal stub at each end of a line, and around missing values. */
+const STUB_PIXELS = 15;
+
 /**
- * Adds one row's polyline to the current path, from cached pixels: Bezier
- * segments between axes, a short horizontal stub at each end, and a break
- * around missing values (NaN pixels).
+ * Adds one line to the current path: monotone spline or straight segments
+ * between axes, a horizontal stub at each end, and a break around missing
+ * values. The WebGL renderer draws the same shape.
  */
+function traceLine(
+  ctx: CanvasRenderingContext2D,
+  points: ReadonlyArray<LinePoint>,
+  curved: boolean,
+): void {
+  let previous: { x: number; y: number; slope: number } | null = null;
+  for (let index = 0; index < points.length; ++index) {
+    const point = points[index];
+    if (Number.isNaN(point.y)) {
+      if (previous !== null) {
+        ctx.lineTo(previous.x + STUB_PIXELS, previous.y);
+      }
+      previous = null;
+      continue;
+    }
+    const before = points[index - 1] ?? { x: Number.NaN, y: Number.NaN };
+    const after = points[index + 1] ?? { x: Number.NaN, y: Number.NaN };
+    const slope = curved
+      ? monotoneSlope(before.x, before.y, point.x, point.y, after.x, after.y)
+      : 0;
+    if (previous === null) {
+      ctx.moveTo(point.x - STUB_PIXELS, point.y);
+      ctx.lineTo(point.x, point.y);
+    } else if (curved) {
+      const handle = SPLINE_HANDLE * (point.x - previous.x);
+      ctx.bezierCurveTo(
+        previous.x + handle,
+        previous.y + handle * previous.slope,
+        point.x - handle,
+        point.y - handle * slope,
+        point.x,
+        point.y,
+      );
+    } else {
+      ctx.lineTo(point.x, point.y);
+    }
+    previous = { x: point.x, y: point.y, slope };
+  }
+  if (previous !== null) {
+    ctx.lineTo(previous.x + STUB_PIXELS, previous.y);
+  }
+}
+
+/** Adds one row's line to the current path, from cached pixels. */
 function traceRow(
   ctx: CanvasRenderingContext2D,
   axes: ReadonlyArray<AxisPixels>,
   row: number,
   curved: boolean,
 ): void {
-  let has_started = false;
-  let x0 = 0;
-  let y0 = 0;
-  for (const axis of axes) {
-    const x = axis.x;
-    const y = axis.pixels[row];
-    if (Number.isNaN(y)) {
-      if (has_started) {
-        ctx.lineTo(x0 + 15, y0); // right edge
-      }
-      has_started = false;
-      continue;
-    }
-    if (!has_started) {
-      x0 = x - 15;
-      y0 = y;
-      ctx.moveTo(x0, y0);
-      has_started = true;
-    }
-    if (curved) {
-      ctx.bezierCurveTo(x - 0.88 * (x - x0), y0, x - 0.12 * (x - x0), y, x, y);
-    } else {
-      ctx.lineTo(x, y);
-    }
-    x0 = x;
-    y0 = y;
-  }
-  if (has_started) {
-    ctx.lineTo(x0 + 15, y0); // right edge
-  }
+  traceLine(
+    ctx,
+    axes.map((axis) => ({ x: axis.x, y: axis.pixels[row] })),
+    curved,
+  );
 }
 
 /** Axis titles: angle, start offset from the axis top, and longest drawn length. */
@@ -175,39 +213,12 @@ const GRIP_OFFSET_Y = -9;
 /** Brush range labels sit right of the brush band. */
 const BRUSH_LABEL_X = 18;
 
-/** Widths of a highlighted line and of the halo around it. */
+/** Widths of a drawn line, of a highlighted line and of the halo around it, in CSS pixels. */
+const LINE_WIDTH = 1;
 const HIGHLIGHT_WIDTH = 2.5;
 const HALO_WIDTH = 7;
 /** How far the pointer may be from a line to pick it. */
 const HOVER_DISTANCE_PIXELS = 5;
-
-/**
- * How far between its two axes a line is at fraction `s` of the gap: the line
- * is at yLeft + (yRight - yLeft) * weight. For the Bezier curves (control points
- * at 12% and 88% of the gap, level with each end) x(t) is solved by bisection.
- */
-export function segmentWeight(s: number, curved: boolean): number {
-  const clamped = Math.max(0, Math.min(1, s));
-  if (!curved) {
-    return clamped;
-  }
-  const xAt = (t: number): number => {
-    const u = 1 - t;
-    return 3 * u * u * t * 0.12 + 3 * u * t * t * 0.88 + t * t * t;
-  };
-  let low = 0;
-  let high = 1;
-  for (let i = 0; i < 24; ++i) {
-    const mid = (low + high) / 2;
-    if (xAt(mid) < clamped) {
-      low = mid;
-    } else {
-      high = mid;
-    }
-  }
-  const t = (low + high) / 2;
-  return 3 * (1 - t) * t * t + t * t * t;
-}
 
 /** Bin key of the deselected rows in the Canvas 2D fallback. */
 const CONTEXT_BIN = -1;
@@ -227,6 +238,9 @@ const INITIAL_MS_PER_LINE = 0.05;
 const MIN_LINES_PER_FRAME = 100;
 const MAX_LINES_PER_FRAME = 50_000;
 
+/** Row counts in the toolbar. */
+const COUNT_FORMAT = new Intl.NumberFormat("en-US");
+
 const TOP_MARGIN_PIXELS = 120;
 const H_MARGIN_PIXELS = 20;
 export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlotState> {
@@ -240,6 +254,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   // Available space minus margins
   w = 0;
   h = 0;
+  /** Device pixels per CSS pixel the canvases were last sized for. */
+  pixelRatio = 1;
 
   pplot: PPlotInternal | null = null;
 
@@ -487,6 +503,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
     this.props.window_state.height = this.state.height;
   }
+  onBrushStart = (): void => {
+    this.clearHover();
+  };
   /** Brush moves are coalesced to one selection update per animation frame. */
   private brushMoveFrame: number | null = null;
   onBrushMove = (): void => {
@@ -520,15 +539,17 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   render() {
+    const limit = COUNT_FORMAT.format(STRAIGHT_LINES_ABOVE_ROWS);
     const shapes: { shape: LineShape; label: string; title: string }[] = [
       {
         shape: "auto",
         label: "Auto",
-        title: `Curves up to ${STRAIGHT_LINES_ABOVE_ROWS.toLocaleString("en-US")} rows, straight beyond`,
+        title: `Curves up to ${limit} rows; straight beyond, where curves blur into one mass`,
       },
-      { shape: "curved", label: "Curved", title: "Smooth curves between axes" },
+      { shape: "curved", label: "Curved", title: "Smooth monotone splines through the axes" },
       { shape: "straight", label: "Straight", title: "Straight segments between axes" },
     ];
+    const rows = COUNT_FORMAT.format(this.props.rows_filtered.length);
     return (
       <>
         <div className={pstyle.toolbar}>
@@ -546,6 +567,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
               </button>
             ))}
           </fieldset>
+          {this.state.lineShape === "auto" && (
+            <span className={pstyle.hint} data-testid="line-shape-hint">
+              {this.curvedLines()
+                ? `Curved for ${rows} rows (straight above ${limit})`
+                : `Straight for ${rows} rows (curved up to ${limit})`}
+            </span>
+          )}
           <button
             type="button"
             className={pstyle.toolbarButton}
@@ -593,7 +621,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** The row under the pointer is found every frame at most, from the cached pixels. */
   private hoverFrame: number | null = null;
   onPointerMove = (event: React.MouseEvent<SVGSVGElement>): void => {
-    if (event.buttons !== 0) {
+    // A highlight would hide the lines a brush is being drawn or resized over;
+    // a placed brush's band still highlights the line under the pointer.
+    if (event.buttons !== 0 || onBrushControl(event.target)) {
+      this.clearHover();
       return;
     }
     const [x, y] = d3.pointer(event.nativeEvent, mounted(this.svgg_ref));
@@ -640,7 +671,26 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.yscale[axes[right].dimension],
       this.props.params_def[axes[right].dimension].numeric,
     );
-    const weight = segmentWeight((x - left.x) / (axes[right].x - left.x), this.curvedLines());
+    const curved = this.curvedLines();
+    const gap = axes[right].x - left.x;
+    const fraction = Math.max(0, Math.min(1, (x - left.x) / gap));
+    const t = splineParameter(fraction);
+    // Neighbor axes set the spline's slopes; a missing neighbor flattens it.
+    const neighborPixels = (index: number): Float32Array | null => {
+      const neighbor = axes[index];
+      if (!curved || neighbor === undefined) {
+        return null;
+      }
+      return geometry.pixels(
+        neighbor.dimension,
+        this.yscale[neighbor.dimension],
+        this.props.params_def[neighbor.dimension].numeric,
+      );
+    };
+    const beforePixels = neighborPixels(right - 2);
+    const afterPixels = neighborPixels(right + 1);
+    const xBefore = axes[right - 2]?.x ?? Number.NaN;
+    const xAfter = axes[right + 1]?.x ?? Number.NaN;
     const mask = this.selectionMask(geometry);
     let nearest = -1;
     let nearestDistance = HOVER_DISTANCE_PIXELS;
@@ -650,7 +700,15 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       }
       const yLeft = leftPixels[row];
       const yRight = rightPixels[row];
-      const distance = Math.abs(yLeft + (yRight - yLeft) * weight - y);
+      let lineY = yLeft + (yRight - yLeft) * fraction;
+      if (curved) {
+        const yBefore = beforePixels === null ? Number.NaN : beforePixels[row];
+        const yAfter = afterPixels === null ? Number.NaN : afterPixels[row];
+        const slopeLeft = monotoneSlope(xBefore, yBefore, left.x, yLeft, axes[right].x, yRight);
+        const slopeRight = monotoneSlope(left.x, yLeft, axes[right].x, yRight, xAfter, yAfter);
+        lineY = splineY(t, gap, yLeft, slopeLeft, yRight, slopeRight);
+      }
+      const distance = Math.abs(lineY - y);
       if (distance < nearestDistance) {
         nearestDistance = distance;
         nearest = row;
@@ -1273,17 +1331,29 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         [-23, 0],
         [15, this.h],
       ])
+      .on("start", this.onBrushStart)
       .on("brush", this.onBrushMove)
       .on("end", this.onBrushEnd);
     // Scale chart and canvas height
     const div = d3.select(mounted(this.root_ref));
     div.style("height", `${this.state.height}px`);
 
+    // Canvases hold the plot at device resolution; drawing code works in CSS pixels.
+    this.pixelRatio = window.devicePixelRatio;
     div
       .selectAll("canvas")
-      .attr("width", this.w)
-      .attr("height", this.h)
+      .attr("width", Math.round(this.w * this.pixelRatio))
+      .attr("height", Math.round(this.h * this.pixelRatio))
+      .style("width", `${this.w}px`)
+      .style("height", `${this.h}px`)
       .style("padding", `${this.m.join("px ")}px`);
+    for (const context of [this.highlighted, this.foreground]) {
+      context?.setTransform(this.pixelRatio, 0, 0, this.pixelRatio, 0, 0);
+    }
+    if (this.foreground !== null) {
+      // Resizing a canvas resets its context: the selection stays above the context rows.
+      this.foreground.globalCompositeOperation = "destination-over";
+    }
     this.xscale = d3
       .scalePoint<string>()
       .range([40, this.w - 40])
@@ -1395,6 +1465,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       })),
       width: this.w,
       height: this.h,
+      lineWidth: LINE_WIDTH,
+      pixelRatio: this.pixelRatio,
       curved: this.curvedLines(),
       selectedCount,
       contextCount: mask.length - selectedCount,
@@ -1624,44 +1696,16 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
    * short horizontal stub at each end, and a break around missing values.
    */
   tracePath(d: Datapoint, ctx: CanvasRenderingContext2D): void {
-    const curved = this.curvedLines();
-    let has_started = false;
-    let x0 = 0;
-    let y0 = 0;
-    this.state.dimensions.forEach((p: string) => {
-      const value = d[p];
-      let err = value === undefined;
-      if (!err && (value === "inf" || value === "-inf") && this.props.params_def[p].numeric) {
-        err = true;
-      }
-      const x = this.xPosition(p);
-      const y = this.yscale[p](value);
-      if (Number.isNaN(y)) {
-        err = true;
-      }
-      if (err) {
-        if (has_started) {
-          ctx.lineTo(x0 + 15, y0); // right edge
-        }
-        has_started = false;
-        return;
-      }
-      if (!has_started) {
-        x0 = x - 15;
-        y0 = y;
-        ctx.moveTo(x0, y0);
-        has_started = true;
-      }
-      if (curved) {
-        ctx.bezierCurveTo(x - 0.88 * (x - x0), y0, x - 0.12 * (x - x0), y, x, y);
-      } else {
-        ctx.lineTo(x, y);
-      }
-      x0 = x;
-      y0 = y;
+    const points = this.state.dimensions.map((dimension): LinePoint => {
+      const value = d[dimension];
+      const missing =
+        value === undefined ||
+        ((value === "inf" || value === "-inf") && this.props.params_def[dimension].numeric);
+      return {
+        x: this.xPosition(dimension),
+        y: missing ? Number.NaN : this.yscale[dimension](value),
+      };
     });
-    if (has_started) {
-      ctx.lineTo(x0 + 15, y0); // right edge
-    }
+    traceLine(ctx, points, this.curvedLines());
   }
 }

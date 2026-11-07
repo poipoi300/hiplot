@@ -2,6 +2,9 @@
   font-family: var(--hip-font);
   font-variant-numeric: tabular-nums;
 }
+.parallel-plot-chart canvas {
+  box-sizing: content-box;
+}
 .parallel-plot-chart canvas,
 .parallel-plot-chart svg {
   position: absolute;
@@ -164,4 +167,10 @@
   white-space: nowrap;
   transform: translate(12px, -50%);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+
+/* Why "Auto" chose its line shape. */
+.hint {
+  color: var(--hip-muted);
+  font-size: 12px;
 }

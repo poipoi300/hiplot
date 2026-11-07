@@ -95,6 +95,75 @@ test("hovering a line highlights it and names it", async ({ page }) => {
   await expect(tooltip).toBeHidden();
 });
 
+const highlightedRows = (page: Page): Promise<number> =>
+  page.evaluate(
+    () =>
+      (window as unknown as { hiplot_last_instance: { state: { rows_highlighted: unknown[] } } })
+        .hiplot_last_instance.state.rows_highlighted.length,
+  );
+
+test.describe("line highlight around brushes", () => {
+  test("hovering where a brush is drawn or resized highlights nothing", async ({ page }) => {
+    await loadDemo(page);
+    const overlay = page.locator("svg g.dimension .pplot-brush rect.overlay").nth(3);
+    const box = await overlay.boundingBox();
+    if (box === null) {
+      throw new Error("No brush overlay");
+    }
+    for (let fraction = 0.1; fraction < 0.95; fraction += 0.05) {
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height * fraction);
+      await page.waitForTimeout(20);
+      expect(await highlightedRows(page)).toBe(0);
+    }
+    await expect(page.getByTestId("line-tooltip")).toBeHidden();
+  });
+
+  test("drawing a brush clears the highlight for the whole gesture", async ({ page }) => {
+    await loadDemo(page);
+    const overlay = page.locator("svg g.dimension .pplot-brush rect.overlay").nth(3);
+    const box = await overlay.boundingBox();
+    if (box === null) {
+      throw new Error("No brush overlay");
+    }
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.3);
+    await page.mouse.down();
+    for (let fraction = 0.32; fraction < 0.7; fraction += 0.04) {
+      await page.mouse.move(box.x + box.width * 1.5, box.y + box.height * fraction);
+      expect(await highlightedRows(page)).toBe(0);
+    }
+    await page.mouse.up();
+    await expect(page.getByTestId("line-tooltip")).toBeHidden();
+  });
+
+  test("hovering a placed brush highlights the line under the pointer", async ({ page }) => {
+    await loadDemo(page);
+    await brushAxis(page, 3);
+    const band = page.locator("svg g.dimension .pplot-brush rect.selection").nth(3);
+    const box = await band.boundingBox();
+    if (box === null) {
+      throw new Error("No placed brush");
+    }
+    const tooltip = page.getByTestId("line-tooltip");
+    for (let fraction = 0.02; fraction < 1 && !(await tooltip.isVisible()); fraction += 0.02) {
+      await page.mouse.move(box.x + box.width * 0.75, box.y + box.height * fraction);
+      await page.waitForTimeout(30);
+    }
+    await expect(tooltip).toBeVisible();
+    expect(await highlightedRows(page)).toBe(1);
+  });
+});
+
+test("Auto names the line shape it chose and why", async ({ page }) => {
+  await loadDemo(page);
+  const hint = page.getByTestId("line-shape-hint");
+  await expect(hint).toHaveText(/^Curved for [\d,]+ rows \(straight above 10,000\)$/);
+  await page
+    .getByRole("group", { name: "Line shape" })
+    .getByRole("button", { name: "Curved" })
+    .click();
+  await expect(hint).toBeHidden();
+});
+
 test("axis titles keep their full name in the tooltip", async ({ page }) => {
   await loadDemo(page);
   const title = page.locator(".pplot-label[data-dimension='force_numericlog'] title");

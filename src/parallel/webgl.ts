@@ -6,6 +6,7 @@
  */
 
 import type { RGB } from "../lib/colors";
+import { SPLINE_HANDLE } from "./spline";
 import {
   encodePixelColumn,
   MISSING_THRESHOLD,
@@ -24,10 +25,14 @@ export interface RenderAxis {
 
 export interface LineFrame {
   axes: ReadonlyArray<RenderAxis>;
-  /** Pixel size of the plot area. */
+  /** CSS pixel size of the plot area; the canvas holds it at device resolution. */
   width: number;
   height: number;
-  /** Bezier curves between axes, or straight segments. */
+  /** Line width in CSS pixels. */
+  lineWidth: number;
+  /** Device pixels per CSS pixel the canvas was sized for. */
+  pixelRatio: number;
+  /** Monotone splines through the axes, or straight segments. */
   curved: boolean;
   /** Selected and deselected line counts, which set the density scale. */
   selectedCount: number;
@@ -37,15 +42,41 @@ export interface LineFrame {
   contextAlpha: number;
 }
 
-/** Vertices of one segment: a strip along the Bezier curve, or a straight line. */
-const CURVE_VERTICES = 9;
-const STRAIGHT_VERTICES = 2;
+/**
+ * Points sampled along one curved segment: about one per `CURVE_SAMPLE_PIXELS`
+ * of the widest gap between axes, within bounds. Each point is two vertices of
+ * the triangle strip that covers the segment.
+ */
+const CURVE_SAMPLE_PIXELS = 6;
+const MIN_CURVE_SAMPLES = 8;
+const MAX_CURVE_SAMPLES = 40;
+
+/** Points sampled along every segment of a frame's lines. */
+export function segmentSamples(axes: ReadonlyArray<{ x: number }>, curved: boolean): number {
+  if (!curved) {
+    return 2;
+  }
+  let widestGap = 0;
+  for (let i = 1; i < axes.length; ++i) {
+    widestGap = Math.max(widestGap, Math.abs(axes[i].x - axes[i - 1].x));
+  }
+  return Math.max(
+    MIN_CURVE_SAMPLES,
+    Math.min(MAX_CURVE_SAMPLES, Math.ceil(widestGap / CURVE_SAMPLE_PIXELS) + 1),
+  );
+}
 
 /** Which lines a draw call keeps. */
 const DRAW_SELECTED = 0;
 const DRAW_CONTEXT = 1;
 const DRAW_ALL = 2;
 
+/**
+ * One instance per segment of a line. A segment is a triangle strip through
+ * `u_samples` points along it, widened on both sides by the half line width
+ * plus one device pixel; `v_across` is the signed distance from the center
+ * line in device pixels, from which fragments take their coverage.
+ */
 const VERTEX_SHADER = `#version 300 es
 precision highp float;
 precision highp int;
@@ -60,12 +91,16 @@ uniform sampler2D u_palette;
 uniform int u_axisCount;
 uniform int u_textureWidth;
 uniform int u_rowsPerColumn;
-uniform int u_vertexCount;
+uniform int u_samples;
 uniform int u_keep;
-uniform vec2 u_canvasSize;
+uniform bool u_curved;
+uniform vec2 u_deviceScale;
+uniform vec2 u_viewport;
+uniform float u_halfWidth;
 
 out vec3 v_rgb;
 out float v_selected;
+out float v_across;
 
 ivec2 at(int index) {
   return ivec2(index % u_textureWidth, index / u_textureWidth);
@@ -79,6 +114,28 @@ float pixelY(int axisIndex, int row) {
   int slot = int(axis(axisIndex).y);
   ivec2 texel = ivec2(row % u_textureWidth, slot * u_rowsPerColumn + row / u_textureWidth);
   return texelFetch(u_pixels, texel, 0).r;
+}
+
+/** Steffen's monotone slope at axis i, where the row is at height y (see spline.ts). */
+float slopeAt(int i, int row, float y) {
+  if (i <= 0 || i >= u_axisCount - 1) {
+    return 0.0;
+  }
+  float yBefore = pixelY(i - 1, row);
+  float yAfter = pixelY(i + 1, row);
+  if (yBefore < ${MISSING_THRESHOLD} || yAfter < ${MISSING_THRESHOLD}) {
+    return 0.0;
+  }
+  float before = axis(i).x - axis(i - 1).x;
+  float after = axis(i + 1).x - axis(i).x;
+  if (!(before > 0.0 && after > 0.0)) {
+    return 0.0;
+  }
+  float slopeBefore = (y - yBefore) / before;
+  float slopeAfter = (yAfter - y) / after;
+  float parabola = (slopeBefore * after + slopeAfter * before) / (before + after);
+  return (sign(slopeBefore) + sign(slopeAfter)) *
+    min(min(abs(slopeBefore), abs(slopeAfter)), 0.5 * abs(parabola));
 }
 
 void main() {
@@ -97,13 +154,20 @@ void main() {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     v_rgb = vec3(0.0);
     v_selected = 0.0;
+    v_across = 0.0;
     return;
   }
   float xLeft;
   float xRight;
+  float slopeLeft = 0.0;
+  float slopeRight = 0.0;
   if (hasLeft && hasRight) {
     xLeft = axis(segment - 1).x;
     xRight = axis(segment).x;
+    if (u_curved) {
+      slopeLeft = slopeAt(segment - 1, row, yLeft);
+      slopeRight = slopeAt(segment, row, yRight);
+    }
   } else if (hasRight) {
     // Stub leading into the first axis, or into an axis after a missing value.
     xRight = axis(segment).x;
@@ -116,46 +180,64 @@ void main() {
     yRight = yLeft;
   }
 
-  float t = float(gl_VertexID) / float(u_vertexCount - 1);
+  int point = gl_VertexID / 2;
+  float side = (gl_VertexID & 1) == 0 ? -1.0 : 1.0;
+  float t = float(point) / float(u_samples - 1);
+  float u = 1.0 - t;
+  float handle = ${SPLINE_HANDLE.toFixed(6)} * (xRight - xLeft);
   vec2 p0 = vec2(xLeft, yLeft);
+  vec2 p1 = vec2(xLeft + handle, yLeft + handle * slopeLeft);
+  vec2 p2 = vec2(xRight - handle, yRight - handle * slopeRight);
   vec2 p3 = vec2(xRight, yRight);
-  vec2 position;
-  if (u_vertexCount == 2) {
-    position = mix(p0, p3, t);
-  } else {
-    vec2 p1 = vec2(xRight - 0.88 * (xRight - xLeft), yLeft);
-    vec2 p2 = vec2(xRight - 0.12 * (xRight - xLeft), yRight);
-    float u = 1.0 - t;
-    position = u * u * u * p0 + 3.0 * u * u * t * p1 + 3.0 * u * t * t * p2 + t * t * t * p3;
-  }
+  vec2 position = u * u * u * p0 + 3.0 * u * u * t * p1 + 3.0 * u * t * t * p2 + t * t * t * p3;
+  vec2 tangent = 3.0 * u * u * (p1 - p0) + 6.0 * u * t * (p2 - p1) + 3.0 * t * t * (p3 - p2);
+  // Device pixels from here on, so the line width does not depend on the pixel ratio.
+  position *= u_deviceScale;
+  tangent *= u_deviceScale;
+  vec2 direction = dot(tangent, tangent) > 1e-12 ? normalize(tangent) : vec2(1.0, 0.0);
+  float extent = u_halfWidth + 1.0;
+  position += vec2(-direction.y, direction.x) * side * extent;
   gl_Position = vec4(
-    position.x / u_canvasSize.x * 2.0 - 1.0,
-    1.0 - position.y / u_canvasSize.y * 2.0,
+    position.x / u_viewport.x * 2.0 - 1.0,
+    1.0 - position.y / u_viewport.y * 2.0,
     0.0,
     1.0
   );
   uint bin = texelFetch(u_bins, at(row), 0).r;
   v_rgb = texelFetch(u_palette, at(int(bin)), 0).rgb;
   v_selected = selected ? 1.0 : 0.0;
+  v_across = side * extent;
+}
+`;
+
+/** Coverage of a device pixel `v_across` from the center of a line `2 * u_halfWidth` wide. */
+const COVERAGE = `
+uniform float u_halfWidth;
+in float v_across;
+float coverage() {
+  return clamp(u_halfWidth + 0.5 - abs(v_across), 0.0, 1.0);
 }
 `;
 
 /** Accumulates line density: selected colors in target 0, deselected counts in target 1. */
 const DENSITY_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
+${COVERAGE}
 in vec3 v_rgb;
 in float v_selected;
 layout(location = 0) out vec4 selected;
 layout(location = 1) out vec4 context;
 void main() {
-  selected = vec4(v_rgb, 1.0) * v_selected;
-  context = vec4(1.0 - v_selected);
+  float covered = coverage();
+  selected = vec4(v_rgb, 1.0) * v_selected * covered;
+  context = vec4(1.0 - v_selected) * covered;
 }
 `;
 
 /** Without float render targets: plain alpha blending, deselected lines first. */
 const DIRECT_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
+${COVERAGE}
 uniform float u_alpha;
 uniform vec3 u_contextColor;
 uniform float u_contextAlpha;
@@ -163,9 +245,10 @@ in vec3 v_rgb;
 in float v_selected;
 out vec4 color;
 void main() {
-  color = v_selected > 0.5
+  vec4 opaque = v_selected > 0.5
     ? vec4(v_rgb * u_alpha, u_alpha)
     : vec4(u_contextColor * u_contextAlpha, u_contextAlpha);
+  color = opaque * coverage();
 }
 `;
 
@@ -314,7 +397,7 @@ export class WebGLLineRenderer {
     const gl = canvas.getContext("webgl2", {
       alpha: true,
       premultipliedAlpha: true,
-      antialias: true,
+      antialias: false,
     });
     return gl === null ? null : new WebGLLineRenderer(gl);
   }
@@ -544,7 +627,7 @@ export class WebGLLineRenderer {
     return this.density;
   }
 
-  /** Binds the line data and uniforms shared by every line pass. */
+  /** Binds the line data and uniforms shared by every line pass; returns the points per segment. */
   private prepareLines(program: Program, frame: LineFrame): number {
     const gl = this.gl;
     // biome-ignore lint/correctness/useHookAtTopLevel: WebGL2RenderingContext.useProgram, not a React hook.
@@ -554,22 +637,29 @@ export class WebGLLineRenderer {
       // Rebound every pass: creating the density targets may have replaced a binding.
       this.bind(name as SamplerName);
     }
-    const vertexCount = frame.curved ? CURVE_VERTICES : STRAIGHT_VERTICES;
+    const samples = segmentSamples(frame.axes, frame.curved);
     gl.uniform1i(program.uniform("u_axisCount"), frame.axes.length);
     gl.uniform1i(program.uniform("u_textureWidth"), this.layout.width);
     gl.uniform1i(program.uniform("u_rowsPerColumn"), this.layout.rowsPerColumn);
-    gl.uniform1i(program.uniform("u_vertexCount"), vertexCount);
-    gl.uniform2f(program.uniform("u_canvasSize"), frame.width, frame.height);
-    return vertexCount;
+    gl.uniform1i(program.uniform("u_samples"), samples);
+    gl.uniform1i(program.uniform("u_curved"), frame.curved ? 1 : 0);
+    gl.uniform2f(
+      program.uniform("u_deviceScale"),
+      gl.drawingBufferWidth / Math.max(1, frame.width),
+      gl.drawingBufferHeight / Math.max(1, frame.height),
+    );
+    gl.uniform2f(program.uniform("u_viewport"), gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.uniform1f(program.uniform("u_halfWidth"), (frame.lineWidth * frame.pixelRatio) / 2);
+    return samples;
   }
 
-  private drawLines(frame: LineFrame, vertexCount: number): void {
+  private drawLines(frame: LineFrame, samples: number): void {
     const gl = this.gl;
     gl.bindVertexArray(this.vertexArray);
     gl.drawArraysInstanced(
-      frame.curved ? gl.LINE_STRIP : gl.LINES,
+      gl.TRIANGLE_STRIP,
       0,
-      vertexCount,
+      2 * samples,
       this.rowCount * segmentsPerLine(frame.axes.length),
     );
     gl.bindVertexArray(null);
@@ -614,7 +704,7 @@ export class WebGLLineRenderer {
     if (this.densityPrograms === null) {
       // Deselected lines first, then the selection over them.
       const program = this.directProgram;
-      const vertexCount = this.prepareLines(program, frame);
+      const samples = this.prepareLines(program, frame);
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       gl.uniform1f(
         program.uniform("u_alpha"),
@@ -626,9 +716,9 @@ export class WebGLLineRenderer {
         frame.contextAlpha * Math.min(1 / Math.max(1, frame.contextCount) ** 0.3, 1),
       );
       gl.uniform1i(program.uniform("u_keep"), DRAW_CONTEXT);
-      this.drawLines(frame, vertexCount);
+      this.drawLines(frame, samples);
       gl.uniform1i(program.uniform("u_keep"), DRAW_SELECTED);
-      this.drawLines(frame, vertexCount);
+      this.drawLines(frame, samples);
       return;
     }
 
@@ -640,9 +730,9 @@ export class WebGLLineRenderer {
     gl.clearBufferfv(gl.COLOR, 0, [0, 0, 0, 0]);
     gl.clearBufferfv(gl.COLOR, 1, [0, 0, 0, 0]);
     gl.blendFunc(gl.ONE, gl.ONE);
-    const vertexCount = this.prepareLines(lines, frame);
+    const samples = this.prepareLines(lines, frame);
     gl.uniform1i(lines.uniform("u_keep"), DRAW_ALL);
-    this.drawLines(frame, vertexCount);
+    this.drawLines(frame, samples);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, width, height);
