@@ -1,0 +1,53 @@
+/*
+ * The column context menu: Bootstrap's dropdown markup, on the raised surface
+ * of the popovers. The current choice of a group carries a check instead of
+ * reading as disabled.
+ */
+:is(.hip_thm--light, .hip_thm--dark) .dropdown-menu.context-menu {
+  --bs-dropdown-bg: var(--hip-surface);
+  --bs-dropdown-color: var(--hip-fg);
+  --bs-dropdown-border-color: var(--hip-rule);
+  --bs-dropdown-link-color: var(--hip-fg);
+  --bs-dropdown-link-hover-color: var(--hip-fg);
+  --bs-dropdown-link-hover-bg: var(--hip-brush-fill);
+  --bs-dropdown-link-active-bg: var(--hip-brush-fill);
+  --bs-dropdown-link-active-color: var(--hip-fg);
+  --bs-dropdown-header-color: var(--hip-muted);
+  --bs-dropdown-divider-bg: var(--hip-rule);
+  min-width: 220px;
+  padding: 6px;
+  border-radius: 8px;
+  font-size: 13px;
+  box-shadow: 0 8px 24px var(--hip-shadow);
+}
+:is(.hip_thm--light, .hip_thm--dark) .dropdown-menu.context-menu .dropdown-header {
+  padding: 6px 10px 2px;
+  font-size: 11px;
+  font-weight: 600;
+}
+:is(.hip_thm--light, .hip_thm--dark) .dropdown-menu.context-menu .dropdown-item {
+  position: relative;
+  padding: 4px 10px 4px 28px;
+  border-radius: 5px;
+  font-size: 13px;
+}
+:is(.hip_thm--light, .hip_thm--dark) .dropdown-menu.context-menu .dropdown-item.disabled {
+  color: var(--hip-fg);
+  font-weight: 600;
+}
+:is(.hip_thm--light, .hip_thm--dark) .dropdown-menu.context-menu .dropdown-item.disabled::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 9px;
+  width: 12px;
+  height: 12px;
+  transform: translateY(-50%);
+  background: var(--hip-accent);
+  mask:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2 5 8.5l4.5-5' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+:is(.hip_thm--light, .hip_thm--dark) .dropdown-menu.context-menu .dropdown-divider {
+  margin: 5px 4px;
+}

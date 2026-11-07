@@ -122,7 +122,6 @@ export class ContextMenu extends React.Component<ContextMenuProps, ContextMenuSt
       <div
         ref={this.context_menu_div}
         className="dropdown-menu dropdown-menu-sm context-menu"
-        style={{ fontSize: 16 }}
       ></div>
     );
   }

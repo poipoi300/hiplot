@@ -107,6 +107,9 @@
   --bs-btn-disabled-color: var(--hip-muted);
   --bs-btn-disabled-border-color: var(--hip-rule);
   --bs-btn-padding-x: 0.65rem;
+  --bs-btn-padding-y: 0;
+  --bs-btn-font-size: 13px;
+  --bs-btn-line-height: 26px;
   margin-right: 6px;
   border-radius: 6px;
   font-weight: 500;
