@@ -563,7 +563,9 @@ test("table keeps correct column-value mapping after column reorder and brush up
 test("plotxy timestamp axis labels are not scientific notation", async ({ page }) => {
   await loadDemo(page);
   // The XY plot mounts once its container has been measured (debounced resize).
-  await page.waitForFunction(() => (window as any).hiplot_last_instance?.plugins_ref?.XY?.current?.plot);
+  await page.waitForFunction(
+    () => (window as any).hiplot_last_instance?.plugins_ref?.XY?.current?.plot,
+  );
   const result = await page.evaluate(async () => {
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     const hiplot = (window as any).hiplot_last_instance;

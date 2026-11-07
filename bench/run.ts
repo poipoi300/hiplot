@@ -314,8 +314,8 @@ async function runOnce(page: Page, url: string): Promise<RepResult> {
   const tableSettledAt = await waitForTableToSettle(page, mouseUpAt);
   const jsHeapMB = await page.evaluate(
     () =>
-      ((performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
-        ?.usedJSHeapSize ?? 0) / 1e6,
+      ((performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ??
+        0) / 1e6,
   );
   return {
     decodeMs,
@@ -332,9 +332,7 @@ async function runOnce(page: Page, url: string): Promise<RepResult> {
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1
-    ? sorted[middle]!
-    : (sorted[middle - 1]! + sorted[middle]!) / 2;
+  return sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
 }
 
 function medianResult(reps: RepResult[]): RepResult {
