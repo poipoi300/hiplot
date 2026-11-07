@@ -155,3 +155,22 @@ test("brush tags sit centered on the axis at the top and bottom edges", async ({
     expect(Math.abs(tag.x + tag.width / 2 - (axis.x + axis.width / 2))).toBeLessThan(1.5);
   }
 });
+
+test("a brush between two categories is tagged as selecting none", async ({ page }) => {
+  await loadDemo(page);
+  const dimension = page
+    .locator("svg g.dimension")
+    .filter({ has: page.locator(".pplot-label[data-dimension='c']") });
+  const overlay = dimension.locator(".pplot-brush rect.overlay");
+  await overlay.scrollIntoViewIfNeeded();
+  const box = await overlay.boundingBox();
+  if (box === null) {
+    throw new Error("No brush overlay");
+  }
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.12);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.38, { steps: 6 });
+  await page.mouse.up();
+  await expect(dimension.locator("text.pplot-brush-range")).toHaveText(["none", "none"]);
+  await expect(page.getByTestId("selection-count")).toHaveText(/^0 of/);
+});

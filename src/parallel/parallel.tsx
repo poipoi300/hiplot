@@ -241,10 +241,12 @@ const LAST_TITLE_ROOM =
  * `maxLength` pixels long, and returns the length it ends up with.
  */
 function fitText(element: SVGTextElement, fullText: string, maxLength: number): number {
-  const textNode = element.firstChild;
-  if (textNode === null || textNode.nodeType !== Node.TEXT_NODE) {
-    throw new Error("Text element lost its text node");
-  }
+  // An empty text leaves no text node; a title child may follow the text.
+  const first = element.firstChild;
+  const textNode =
+    first !== null && first.nodeType === Node.TEXT_NODE
+      ? first
+      : element.insertBefore(document.createTextNode(""), first);
   textNode.textContent = fullText;
   const fullLength = element.getComputedTextLength();
   if (fullLength <= maxLength) {
@@ -1404,7 +1406,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         const range = scale_pixels_range(scale, extent);
         const [topText, bottomText] =
           range.type === ParamType.CATEGORICAL
-            ? [range.values[0] ?? "", range.values[range.values.length - 1] ?? ""]
+            ? [range.values[0] ?? "none", range.values[range.values.length - 1] ?? "none"]
             : [valueAt(top), valueAt(bottom)];
         labels.push(
           { edge: "top", y: tagCenter("top", top), text: topText },

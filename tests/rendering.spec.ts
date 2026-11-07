@@ -81,6 +81,8 @@ test("parallel lines fall back to Canvas 2D without WebGL2", async ({ page }) =>
   const countLine = page.getByTestId("selection-count");
   const before = await countLine.textContent();
   const overlay = page.locator("svg g.dimension .pplot-brush rect.overlay").first();
+  // Many axes scroll sideways: bring this one into view before pointing at it.
+  await overlay.scrollIntoViewIfNeeded();
   const box = await overlay.boundingBox();
   if (box === null) {
     throw new Error("No brush overlay");
