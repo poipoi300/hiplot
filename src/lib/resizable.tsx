@@ -5,10 +5,10 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import style from "./resizable.module.css";
 import $ from "jquery";
 import React from "react";
 import _ from "underscore";
+import style from "./resizable.module.css";
 
 interface ResizableHProps {
   initialHeight: number;
@@ -45,7 +45,7 @@ export class ResizableH extends React.Component<ResizableHProps, ResizableHState
     minHeight: 100,
   };
   componentDidMount() {
-    var div = $(this.div_ref.current);
+    const div = $(this.div_ref.current);
     div.on(
       "mousedown",
       function (e: MouseEvent) {
@@ -61,7 +61,7 @@ export class ResizableH extends React.Component<ResizableHProps, ResizableHState
     this.setState({ width: this.div_ref.current.parentElement.offsetWidth });
   }
   componentDidUpdate(prevProps, prevState) {
-    if (prevState.height != this.state.height || prevState.width != this.state.width) {
+    if (prevState.height !== this.state.height || prevState.width !== this.state.width) {
       this.props.onResize(this.state.height, this.state.width);
     }
   }
@@ -85,8 +85,8 @@ export class ResizableH extends React.Component<ResizableHProps, ResizableHState
   onMouseMove = function (e: MouseEvent) {
     const dy = e.clientY - this.m_pos;
     this.m_pos = e.clientY;
-    if (dy != 0) {
-      var internalHeight = this.state.internalHeight + dy;
+    if (dy !== 0) {
+      const internalHeight = this.state.internalHeight + dy;
       this.setState({
         height: Math.max(this.props.minHeight, internalHeight),
         internalHeight: internalHeight,

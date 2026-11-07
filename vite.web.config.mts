@@ -1,10 +1,10 @@
-import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
-import path from "path";
 import fs from "fs";
-import cssInjectedByJsPlugin from "vite-plugin-css-injected-by-js";
+import path from "path";
 import postcss from "postcss";
 import prefixSelector from "postcss-prefix-selector";
+import { defineConfig, type Plugin } from "vite";
+import cssInjectedByJsPlugin from "vite-plugin-css-injected-by-js";
 
 // Vite plugin that scopes vendor CSS (Bootstrap, DataTables) under hiplot theme classes
 // so styles don't leak into parent applications
@@ -14,7 +14,7 @@ function scopeVendorCssVitePlugin(): Plugin {
   const processor = postcss([
     prefixSelector({
       prefix: ":is(.hip_thm--dark, .hip_thm--light)",
-      transform: function (prefix, selector, prefixedSelector) {
+      transform: (prefix, selector, prefixedSelector) => {
         // Replace root-level selectors with our theme prefix
         if (selector === ":root" || selector === "html" || selector === "body") {
           return prefix;

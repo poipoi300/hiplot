@@ -20,8 +20,9 @@
  *   bun bench/run.ts --dir <html dir> [--reps 3] [--out results.json] [--label name]
  */
 
-import { statSync, readdirSync, writeFileSync } from "node:fs";
+import { readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { chromium, type Page } from "@playwright/test";
 
@@ -129,7 +130,7 @@ function installProbe(): void {
 
   const DECODE_MIN_CHARS = 1_000_000;
   const originalParse = JSON.parse;
-  JSON.parse = function (text: string, reviver?: (key: string, value: unknown) => unknown) {
+  JSON.parse = (text: string, reviver?: (key: string, value: unknown) => unknown) => {
     if (typeof text !== "string" || text.length < DECODE_MIN_CHARS) {
       return originalParse(text, reviver);
     }
@@ -138,8 +139,9 @@ function installProbe(): void {
     probe.decodeMs += performance.now() - start;
     return parsed;
   };
+  // biome-ignore lint/security/noGlobalEval: wraps the page's own eval to time payload decoding.
   const originalEval = window.eval;
-  window.eval = function (code: string): unknown {
+  window.eval = (code: string): unknown => {
     if (typeof code !== "string" || code.length < DECODE_MIN_CHARS) {
       return originalEval(code);
     }
@@ -419,7 +421,7 @@ async function main(): Promise<void> {
       return gl && info ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) : "no webgl";
     });
     for (const file of files) {
-      const url = `file:///${path.join(dir, file).replaceAll("\\", "/")}`;
+      const url = pathToFileURL(path.join(dir, file)).href;
       const runs: RepResult[] = [];
       for (let rep = 0; rep < reps; rep++) {
         runs.push(await runOnce(page, url));

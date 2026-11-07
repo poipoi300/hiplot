@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
 async function loadDemo(page, uri = "demo") {
   if (process.env.PW_LOG) {
@@ -369,7 +369,7 @@ test("inverted axis orientation is preserved across keep/restore on another axis
     if (!hiplot || !pplot) {
       return { error: "missing-hiplot-or-pplot" };
     }
-    const dims = Array.from(pplot.state.dimensions);
+    const dims = Array.from(pplot.state.dimensions) as string[];
     if (dims.length < 2) {
       return { error: "not-enough-dimensions" };
     }

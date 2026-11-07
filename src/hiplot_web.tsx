@@ -5,14 +5,14 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import ReactDOMClient from "react-dom/client";
-import { flushSync } from "react-dom";
-import { HiPlot, defaultPlugins, HiPlotProps, normalizeDarkModeSetting } from "./component";
 import React from "react";
-import { PersistentStateInURL } from "./lib/savedstate";
-import { WebserverDataProvider } from "./dataproviders/webserver";
+import { flushSync } from "react-dom";
+import ReactDOMClient from "react-dom/client";
+import { defaultPlugins, HiPlot, type HiPlotProps, normalizeDarkModeSetting } from "./component";
 import { StaticDataProvider } from "./dataproviders/static";
 import { UploadDataProvider } from "./dataproviders/upload";
+import { WebserverDataProvider } from "./dataproviders/webserver";
+import { PersistentStateInURL } from "./lib/savedstate";
 
 export function build_props(extra?: any): HiPlotProps {
   const searchParams = new URLSearchParams(location.search);
@@ -28,7 +28,7 @@ export function build_props(extra?: any): HiPlotProps {
   // compatibility fallback for existing links.
   const themeOrDarkParam = themeParam !== null ? themeParam : darkParam;
   const darkValue = normalizeDarkModeSetting(themeOrDarkParam, "auto");
-  var props = {
+  const props = {
     experiment: null,
     persistentState: new PersistentStateInURL("hip"),
     plugins: defaultPlugins,

@@ -7,7 +7,7 @@
 
 import $ from "jquery";
 import { convert_to_categorical_input } from "./lib/d3_scales";
-import { Datapoint, ParamType } from "./types";
+import { type Datapoint, ParamType } from "./types";
 
 export interface Filter {
   type: string;
@@ -27,9 +27,7 @@ const FILTERS = {
   [FilterType.Range]: filter_range,
   [FilterType.Not]: filter_not,
   [FilterType.Search]: filter_search,
-  [FilterType.None]: function () {
-    return (_dp) => false;
-  },
+  [FilterType.None]: () => (_dp) => false,
 };
 
 export interface FilterRange {
@@ -41,10 +39,10 @@ export interface FilterRange {
 }
 
 function filter_range(data: FilterRange): (dp: Datapoint) => boolean {
-  if (data.type == ParamType.CATEGORICAL) {
-    console.assert(typeof data.min == typeof data.max, data.min, data.max);
-    return function (dp: Datapoint) {
-      var value = dp[data.col];
+  if (data.type === ParamType.CATEGORICAL) {
+    console.assert(typeof data.min === typeof data.max, data.min, data.max);
+    return (dp: Datapoint) => {
+      let value = dp[data.col];
       if (value === undefined) {
         return false;
       }
@@ -52,8 +50,8 @@ function filter_range(data: FilterRange): (dp: Datapoint) => boolean {
       return data.min <= value && value <= data.max;
     };
   }
-  return function (dp: Datapoint) {
-    var value = dp[data.col];
+  return (dp: Datapoint) => {
+    let value = dp[data.col];
     if (value === undefined) {
       return false;
     }
@@ -76,19 +74,15 @@ function filter_search(data: string): (dp: Datapoint) => boolean {
   const pattern = escapeRegexp(data);
   const caseInsensitive = true;
   const regexp = new RegExp(pattern, caseInsensitive ? "i" : "");
-  return function (dp: Datapoint) {
+  return (dp: Datapoint) => {
     const sFilterRow = Object.values(dp).join("  ");
     return regexp.test(sFilterRow);
   };
 }
 
 function filter_all(data: Array<Filter>): (dp: Datapoint) => boolean {
-  const f = data.map(function (f) {
-    return FILTERS[f.type](f.data);
-  });
-  return function (dp: Datapoint) {
-    return f.every((fn) => fn(dp));
-  };
+  const f = data.map((f) => FILTERS[f.type](f.data));
+  return (dp: Datapoint) => f.every((fn) => fn(dp));
 }
 
 function filter_not(data: Filter): (dp: Datapoint) => boolean {
@@ -106,7 +100,7 @@ export function apply_filter(rows: Array<Datapoint>, filter: Filter): Array<Data
 }
 
 export function apply_filters(rows: Array<Datapoint>, filters: Array<Filter>): Array<Datapoint> {
-  filters.forEach(function (filter) {
+  filters.forEach((filter) => {
     rows = apply_filter(rows, filter);
   });
   return rows;

@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
 test.describe("HiPlot Mobile Tests", () => {
   test.beforeEach(async ({ page }) => {

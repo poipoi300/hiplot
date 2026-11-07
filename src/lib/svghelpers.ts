@@ -6,13 +6,13 @@
  */
 
 import * as d3 from "d3";
-import { ParamDef } from "../infertypes";
+import type { ContextMenu } from "../contextmenu";
 import style from "../hiplot.module.css";
-import { ContextMenu } from "../contextmenu";
+import type { ParamDef } from "../infertypes";
 import { IS_MOBILE } from "./browsercompat";
 
 function leftPos(anchor: string, w: number, minmax?: [number, number]): number {
-  var left = {
+  let left = {
     end: -w,
     start: 0,
     left: 0,
@@ -62,7 +62,7 @@ export function foCreateAxisLabel(
   cm?: React.RefObject<ContextMenu>,
   tooltip: string = "Right click for options",
 ): SVGForeignObjectElement {
-  var fo = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
+  const fo = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
   const span = d3
     .select(fo)
     .append("xhtml:div")
@@ -80,7 +80,7 @@ export function foCreateAxisLabel(
     .classed(style.axisLabelText, true)
     .classed("d-inline-block", true)
     .html(pd.label_html)
-    .on("contextmenu", function (event: any) {
+    .on("contextmenu", (event: any) => {
       if (cm) {
         cm.current.show(event.pageX, event.pageY, pd.name);
         event.preventDefault();
@@ -91,14 +91,14 @@ export function foCreateAxisLabel(
   // Add touch events for mobile long-press support
   if (cm) {
     labelSpan
-      .on("touchstart", function (event: TouchEvent) {
+      .on("touchstart", (event: TouchEvent) => {
         const touch = event.touches[0];
         longPressTimer = setTimeout(() => {
           cm.current.show(touch.pageX, touch.pageY, pd.name);
           longPressTimer = null;
         }, LONG_PRESS_DURATION);
       })
-      .on("touchend touchcancel touchmove", function () {
+      .on("touchend touchcancel touchmove", () => {
         if (longPressTimer) {
           clearTimeout(longPressTimer);
           longPressTimer = null;

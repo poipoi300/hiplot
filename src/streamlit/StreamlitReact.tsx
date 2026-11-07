@@ -17,8 +17,8 @@
  */
 
 import hoistNonReactStatics from "hoist-non-react-statics";
-import React, { ReactNode } from "react";
-import { RenderData, Streamlit } from "./streamlit";
+import React, { type ReactNode } from "react";
+import { type RenderData, Streamlit } from "./streamlit";
 
 /**
  * Props passed to custom Streamlit components.
@@ -67,7 +67,7 @@ export class StreamlitComponentBase<S = {}> extends React.PureComponent<Componen
 export function withStreamlitConnection(
   WrappedComponent: React.ComponentType<ComponentProps>,
 ): React.ComponentType {
-  interface WrapperProps {}
+  type WrapperProps = {};
 
   interface WrapperState {
     renderData?: RenderData;

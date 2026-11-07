@@ -4,22 +4,21 @@
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
-import $ from "jquery";
-import * as d3 from "d3";
 
 import color from "color";
-
-import { PersistentState } from "./lib/savedstate";
+import * as d3 from "d3";
+import $ from "jquery";
 import { categoricalColorScheme } from "./lib/categoricalcolors";
 import {
+  d3_scale_categorical,
   d3_scale_percentile,
   d3_scale_timestamp,
-  scale_add_outliers,
-  is_special_numeric,
-  d3_scale_categorical,
   get_numeric_values_sorted,
+  is_special_numeric,
+  scale_add_outliers,
 } from "./lib/d3_scales";
-import { Datapoint, ParamType, HiPlotValueDef } from "./types";
+import type { PersistentState } from "./lib/savedstate";
+import { type Datapoint, type HiPlotValueDef, ParamType } from "./types";
 
 export interface ParamDef extends HiPlotValueDef {
   name: string;
@@ -34,9 +33,9 @@ export interface ParamDef extends HiPlotValueDef {
 }
 
 function get_min_max_for_numeric_scale(pd: ParamDef): [number, number] {
-  var min = pd.force_value_min;
-  var max = pd.force_value_max;
-  pd.distinct_values.forEach(function (value: any) {
+  let min = pd.force_value_min;
+  let max = pd.force_value_max;
+  pd.distinct_values.forEach((value: any) => {
     const parsed = parseFloat(value);
     if (is_special_numeric(parsed)) {
       return;
@@ -52,7 +51,7 @@ function get_min_max_for_numeric_scale(pd: ParamDef): [number, number] {
 }
 
 function has_inf_or_nans(pd: ParamDef): boolean {
-  for (var i = 0; i < pd.distinct_values.length; ++i) {
+  for (let i = 0; i < pd.distinct_values.length; ++i) {
     const parsed = parseFloat(pd.distinct_values[i]);
     if (is_special_numeric(parsed)) {
       return true;
@@ -62,34 +61,34 @@ function has_inf_or_nans(pd: ParamDef): boolean {
 }
 
 export function create_d3_scale_without_outliers(pd: ParamDef): any {
-  var dv = pd.distinct_values;
-  if (pd.type == ParamType.CATEGORICAL) {
+  const dv = pd.distinct_values;
+  if (pd.type === ParamType.CATEGORICAL) {
     return d3_scale_categorical(dv);
   } else {
-    if (pd.type == ParamType.NUMERICPERCENTILE) {
+    if (pd.type === ParamType.NUMERICPERCENTILE) {
       return d3_scale_percentile(dv);
     }
     const [min, max] = get_min_max_for_numeric_scale(pd);
     console.assert(!isNaN(min));
     console.assert(!isNaN(max));
     console.assert(min <= max);
-    if (pd.type == ParamType.TIMESTAMP) {
+    if (pd.type === ParamType.TIMESTAMP) {
       return d3_scale_timestamp().domain([min, max]);
     }
-    if (pd.type == ParamType.NUMERICLOG) {
+    if (pd.type === ParamType.NUMERICLOG) {
       console.assert(
         min > 0,
         `Min value for "${pd.name}" is negative (${min}), can't use log-scale`,
       );
       return d3.scaleLog().domain([min, max]);
     }
-    console.assert(pd.type == ParamType.NUMERIC, "Unknown variable type " + pd.type);
+    console.assert(pd.type === ParamType.NUMERIC, "Unknown variable type " + pd.type);
     return d3.scaleLinear().domain([min, max]);
   }
 }
 
 export function create_d3_scale(pd: ParamDef): any {
-  var scale = create_d3_scale_without_outliers(pd);
+  let scale = create_d3_scale_without_outliers(pd);
   if (
     has_inf_or_nans(pd) &&
     [ParamType.NUMERIC, ParamType.NUMERICLOG, ParamType.NUMERICPERCENTILE].indexOf(pd.type) >= 0
@@ -113,12 +112,12 @@ export function scale_pixels_range(scale: any, extents: [number, number]): Scale
   /**
    * Converts scale range in pixels back to domain (aka inverts the scale)
    */
-  console.assert(scale, "No scale provided to `scale_pixels_range`");
-  console.assert(extents, "No extents provided to `scale_pixels_range`", extents);
+  console.assert(scale !== undefined, "No scale provided to `scale_pixels_range`");
+  console.assert(extents !== undefined, "No extents provided to `scale_pixels_range`", extents);
   const scaleToNorm = d3.scaleLinear().domain(scale.range()).range([0, 1]);
   const normalized = [scaleToNorm(extents[0]), scaleToNorm(extents[1])] as [number, number];
   switch (scale.hip_type as ParamType) {
-    case ParamType.CATEGORICAL:
+    case ParamType.CATEGORICAL: {
       const domain: Array<string> = scale.domain();
       const firstIdx = Math.ceil(Math.min(normalized[0], normalized[1]) * (domain.length - 1));
       const lastIdx = Math.floor(Math.max(normalized[0], normalized[1]) * (domain.length - 1) + 1);
@@ -127,18 +126,19 @@ export function scale_pixels_range(scale: any, extents: [number, number]): Scale
         brush_extents_normalized: normalized,
         values: domain.slice(firstIdx, lastIdx),
       };
+    }
     case ParamType.NUMERIC:
     case ParamType.NUMERICLOG:
     case ParamType.NUMERICPERCENTILE:
-    case ParamType.TIMESTAMP:
+    case ParamType.TIMESTAMP: {
       const pxlRange: Array<number> = scale.range();
       // Small hack to make sure we can always select the extrema
       // (considering loss of precision in computations, especially for logscale)
-      for (var i = 0; i < 2; ++i) {
-        if (extents[i] == Math.min(...pxlRange)) {
+      for (let i = 0; i < 2; ++i) {
+        if (extents[i] === Math.min(...pxlRange)) {
           --extents[i];
         }
-        if (extents[i] == Math.max(...pxlRange)) {
+        if (extents[i] === Math.max(...pxlRange)) {
           ++extents[i];
         }
       }
@@ -149,6 +149,7 @@ export function scale_pixels_range(scale: any, extents: [number, number]): Scale
         range: range,
         include_infnans: extents[0] <= scale(Infinity) && scale(Infinity) <= extents[1],
       };
+    }
   }
 }
 
@@ -157,7 +158,7 @@ function compute_val2color(pd: ParamDef) {
     return;
   }
   pd.__val2color = pd.colors !== null ? pd.colors : {};
-  for (var i = 0; i < pd.distinct_values.length; ++i) {
+  for (let i = 0; i < pd.distinct_values.length; ++i) {
     if (pd.__val2color[pd.distinct_values[i]]) {
       continue;
     }
@@ -184,7 +185,6 @@ function compute_val2color(pd: ParamDef) {
         "#9edae5",
         "#2ca02c",
       ];
-      // @ts-ignore
       pd.__val2color[pd.distinct_values[i]] = color(scheme[i]).rgb().string();
       continue;
     }
@@ -194,35 +194,31 @@ function compute_val2color(pd: ParamDef) {
 
 function parseColorMap(full_name: string, description: string) {
   if (!full_name) {
-    // @ts-ignore
     return d3.interpolateTurbo;
   }
   const parts = full_name.split("#");
   const name = parts[0];
-  var fn = d3[name];
+  let fn = d3[name];
   if (!fn) {
     throw new Error(`Invalid color map ${name} ${description}`);
   }
   // Assume this is a scheme (eg array of colors)
   if (!name.startsWith("interpolate")) {
-    if (typeof fn[0] != "string") {
+    if (typeof fn[0] !== "string") {
       fn = fn[fn.length - 1];
     }
     const array_of_colors = fn;
-    fn = function (colr: number) {
-      return array_of_colors[
+    fn = (colr: number) =>
+      array_of_colors[
         Math.max(0, Math.min(array_of_colors.length - 1, Math.floor(colr * array_of_colors.length)))
       ];
-    };
   }
   // Apply modifiers
   if (parts.length > 1) {
-    parts[1].split(",").forEach(function (modifier_name) {
-      if (modifier_name == "inverse") {
+    parts[1].split(",").forEach((modifier_name) => {
+      if (modifier_name === "inverse") {
         const orig_fn = fn;
-        fn = function (colr: number) {
-          return orig_fn(-colr);
-        };
+        fn = (colr: number) => orig_fn(-colr);
       }
     });
   }
@@ -246,9 +242,9 @@ export function colorScheme(
   alpha: number,
   defaultColorMap: string,
 ): string {
-  if (pd.type == ParamType.CATEGORICAL) {
+  if (pd.type === ParamType.CATEGORICAL) {
     compute_val2color(pd);
-    var c = pd.__val2color[value];
+    const c = pd.__val2color[value];
     if (c === undefined) {
       return `rgb(100,100,100,${alpha})`;
     }
@@ -267,7 +263,6 @@ export function colorScheme(
     const interpColFn = getColorMap(pd, defaultColorMap);
     try {
       const code = interpColFn(colr);
-      // @ts-ignore
       const rgb = color(code).rgb().object();
       return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
     } catch (err) {
@@ -298,20 +293,20 @@ export function infertypes(
   }
 
   function infertype(key: string, hint: HiPlotValueDef): ParamDef {
-    var url_state = url_states.children(key);
-    var optional = false;
-    var numeric = ["uid", "from_uid"].indexOf(key) == -1;
-    var can_be_timestamp = numeric;
-    var setVals = [];
-    var addValue = function (v) {
+    const url_state = url_states.children(key);
+    let optional = false;
+    let numeric = ["uid", "from_uid"].indexOf(key) === -1;
+    let can_be_timestamp = numeric;
+    const setVals = [];
+    const addValue = (v) => {
       if (v === undefined) {
         optional = true;
         return;
       }
-      var is_special_num = is_special_numeric(v);
+      const is_special_num = is_special_numeric(v);
       setVals.push(v);
       // Detect non-numeric column
-      if ((typeof v != "number" && !is_special_num && isNaN(v)) || v === true || v === false) {
+      if ((typeof v !== "number" && !is_special_num && isNaN(v)) || v === true || v === false) {
         numeric = false;
         can_be_timestamp = false;
       }
@@ -319,11 +314,11 @@ export function infertypes(
         can_be_timestamp = false;
       }
     };
-    table.forEach(function (row) {
+    table.forEach((row) => {
       addValue(row[key]);
     });
-    var values = setVals;
-    var distinct_values = Array.from(new Set(values));
+    const values = setVals;
+    const distinct_values = Array.from(new Set(values));
     const numericSorted = numeric ? get_numeric_values_sorted(distinct_values) : [];
     const forceValueMinNegative =
       hint !== undefined &&
@@ -331,17 +326,17 @@ export function infertypes(
       hint.force_value_min !== undefined &&
       hint.force_value_min <= 0;
     const canBeLogScale = numericSorted[0] > 0 && !forceValueMinNegative;
-    var spansMultipleOrdersOfMagnitude = false;
+    let spansMultipleOrdersOfMagnitude = false;
     if (numericSorted.length > 10 && numericSorted[0] > 0) {
-      var top5pct =
+      const top5pct =
         numericSorted[Math.min(numericSorted.length - 1, ~~((19 * numericSorted.length) / 20))];
-      var bot5pct = numericSorted[~~(numericSorted.length / 20)];
+      const bot5pct = numericSorted[~~(numericSorted.length / 20)];
       spansMultipleOrdersOfMagnitude = top5pct / bot5pct > 100;
     }
-    var categorical =
+    const categorical =
       !numeric ||
       (Math.max(values.length, 10) / distinct_values.length > 10 && distinct_values.length < 6);
-    var type = ParamType.CATEGORICAL;
+    let type = ParamType.CATEGORICAL;
     if (numeric && !categorical) {
       type = ParamType.NUMERIC;
       if (spansMultipleOrdersOfMagnitude) {
@@ -354,7 +349,7 @@ export function infertypes(
       type = url_state.get("type", type);
     }
 
-    var info = {
+    const info = {
       name: key,
       optional: optional,
       numeric: numeric,
@@ -386,20 +381,20 @@ export function infertypes(
         info.type_options.push(ParamType.TIMESTAMP);
       }
     }
-    if (info.type == ParamType.NUMERICLOG) {
+    if (info.type === ParamType.NUMERICLOG) {
       info.ticks_format = ".1e";
     }
     return info;
   }
   // First, get a set of all the types
-  var allKeys = new Set<string>();
-  table.forEach(function (row) {
-    Object.keys(row).forEach(function (k: string) {
+  const allKeys = new Set<string>();
+  table.forEach((row) => {
+    Object.keys(row).forEach((k: string) => {
       allKeys.add(k);
     });
   });
-  var ret = {};
-  allKeys.forEach(function (key) {
+  const ret = {};
+  allKeys.forEach((key) => {
     ret[key] = infertype(key, hints[key]);
   });
   return ret;

@@ -15,7 +15,7 @@
       "*.mts",
       "*.json",
       "!src/**/*.css.d.ts",
-      "!examples/**"
+      "!examples"
     ]
   },
   "formatter": {

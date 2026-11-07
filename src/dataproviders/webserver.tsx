@@ -6,12 +6,12 @@
  */
 
 import $ from "jquery";
-import { LoadURIPromise } from "../component";
-import { DataProviderProps } from "../plugin";
-import { HiPlotLoadStatus } from "../types";
-import React from "react";
-import style from "../hiplot.module.css";
 import JSON5 from "json5";
+import React from "react";
+import type { LoadURIPromise } from "../component";
+import style from "../hiplot.module.css";
+import type { DataProviderProps } from "../plugin";
+import { HiPlotLoadStatus } from "../types";
 
 export const PSTATE_LOAD_URI = "load_uri";
 
@@ -39,7 +39,7 @@ export class RunsSelectionTextArea extends React.Component<TextAreaProps, TextAr
     };
   }
   onInput() {
-    var elem = this.textarea.current;
+    const elem = this.textarea.current;
     if (this.props.hasFocus || !this.props.minimizeWhenOutOfFocus) {
       elem.style.height = "auto";
       elem.style.height = elem.scrollHeight + "px";
@@ -55,9 +55,9 @@ export class RunsSelectionTextArea extends React.Component<TextAreaProps, TextAr
     }
   }
   onFocusChange(evt: React.FocusEvent<HTMLTextAreaElement>) {
-    if (evt.type == "focus") {
+    if (evt.type === "focus") {
       this.props.onFocusChange(true);
-    } else if (evt.type == "blur") {
+    } else if (evt.type === "blur") {
       this.props.onFocusChange(false);
     }
   }
@@ -87,14 +87,14 @@ export class RunsSelectionTextArea extends React.Component<TextAreaProps, TextAr
 }
 
 export function loadURIFromWebServer(uri: string): LoadURIPromise {
-  return new Promise(function (resolve, reject) {
-    $.get("/data?uri=" + encodeURIComponent(uri), resolve, "json").fail(function (data) {
-      if (data.readyState == 4 && data.status == 200) {
+  return new Promise((resolve, reject) => {
+    $.get("/data?uri=" + encodeURIComponent(uri), resolve, "json").fail((data) => {
+      if (data.readyState === 4 && data.status === 200) {
         console.log(
           "Unable to parse JSON with JS default decoder (Maybe it contains NaNs?). Using JSON5.",
         );
         resolve(JSON5.parse(data.responseText));
-      } else if (data.status == 0) {
+      } else if (data.status === 0) {
         resolve({
           error: "Network error",
         });
@@ -118,7 +118,7 @@ export class WebserverDataProvider extends React.Component<DataProviderProps, St
     };
   }
   refresh(): Promise<any> | null {
-    console.assert(this.state.uri);
+    console.assert(this.state.uri !== "");
     return loadURIFromWebServer(this.state.uri);
   }
   componentDidMount() {
@@ -127,7 +127,7 @@ export class WebserverDataProvider extends React.Component<DataProviderProps, St
     }
   }
   componentDidUpdate(prevProps: DataProviderProps, prevState: State): void {
-    if (this.state.uri != prevState.uri) {
+    if (this.state.uri !== prevState.uri) {
       this.props.onLoadExperiment(loadURIFromWebServer(this.state.uri));
       this.props.persistentState.set(PSTATE_LOAD_URI, this.state.uri);
     }
@@ -141,8 +141,8 @@ export class WebserverDataProvider extends React.Component<DataProviderProps, St
     return (
       <RunsSelectionTextArea
         initialValue={this.state.uri}
-        enabled={this.props.loadStatus != HiPlotLoadStatus.Loading}
-        minimizeWhenOutOfFocus={this.props.loadStatus == HiPlotLoadStatus.Loaded}
+        enabled={this.props.loadStatus !== HiPlotLoadStatus.Loading}
+        minimizeWhenOutOfFocus={this.props.loadStatus === HiPlotLoadStatus.Loaded}
         onSubmit={this.loadExperiment.bind(this)}
         onFocusChange={this.props.onFocusChange}
         hasFocus={this.props.hasFocus}

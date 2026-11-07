@@ -5,25 +5,22 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import style from "./hiplot.module.css";
 import React from "react";
-import { Datapoint, HiPlotLoadStatus, IDatasets } from "./types";
+import IconSVG from "../hiplot/static/icon.svg";
+import IconSVGW from "../hiplot/static/icon-w.svg";
 import {
-  HiPlotDataControlProps,
-  RestoreDataBtn,
   ExcludeDataBtn,
   ExportDataCSVBtn,
+  type HiPlotDataControlProps,
   KeepDataBtn,
+  RestoreDataBtn,
 } from "./controls";
-import { DataProviderClass, DataProviderComponentClass, DataProviderProps } from "./plugin";
-
-//@ts-ignore
-import IconSVG from "../hiplot/static/icon.svg";
-//@ts-ignore
-import IconSVGW from "../hiplot/static/icon-w.svg";
+import style from "./hiplot.module.css";
+import type { PersistentState } from "./lib/savedstate";
+import type { DataProviderClass, DataProviderComponentClass, DataProviderProps } from "./plugin";
 
 import { HiPlotTutorial } from "./tutorial/tutorial";
-import { PersistentState } from "./lib/savedstate";
+import { type Datapoint, HiPlotLoadStatus, type IDatasets } from "./types";
 
 interface HeaderBarProps extends IDatasets, HiPlotDataControlProps {
   weightColumn?: string;
@@ -64,7 +61,7 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
       (100 * this.props.rows_selected.length) /
       this.props.rows_filtered.length
     ).toPrecision(3);
-    if (newSelectedPct != this.state.selectedPct) {
+    if (newSelectedPct !== this.state.selectedPct) {
       this.setState({
         selectedPct: (
           (100 * this.props.rows_selected.length) /
@@ -84,12 +81,12 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
       const w = parseFloat(dp[this.props.weightColumn]);
       return !isNaN(w) && isFinite(w) && w > 0.0 ? w : 1.0;
     }.bind(this);
-    var totalWeightFiltered = 0.0,
+    let totalWeightFiltered = 0.0,
       totalWeightSelected = 0.0;
-    this.props.rows_filtered.forEach(function (dp: Datapoint) {
+    this.props.rows_filtered.forEach((dp: Datapoint) => {
       totalWeightFiltered += getWeight(dp);
     });
-    this.props.rows_selected.forEach(function (dp: Datapoint) {
+    this.props.rows_selected.forEach((dp: Datapoint) => {
       totalWeightSelected += getWeight(dp);
     });
     const pctage = (100 * totalWeightSelected) / totalWeightFiltered;
@@ -109,19 +106,17 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
   componentDidUpdate(prevProps: HeaderBarProps, _prevState: HeaderBarState): void {
     this.recomputeMetrics();
     if (
-      prevProps.weightColumn != this.props.weightColumn ||
-      this.props.rows_selected != prevProps.rows_selected ||
-      this.props.rows_filtered != prevProps.rows_filtered
+      prevProps.weightColumn !== this.props.weightColumn ||
+      this.props.rows_selected !== prevProps.rows_selected ||
+      this.props.rows_filtered !== prevProps.rows_filtered
     ) {
       this.recomputeSelectedWeightedSum();
     }
   }
   onToggleTutorial() {
-    this.setState(function (prevState, _prevProps) {
-      return {
-        hasTutorial: !prevState.hasTutorial,
-      };
-    });
+    this.setState((prevState, _prevProps) => ({
+      hasTutorial: !prevState.hasTutorial,
+    }));
   }
   onRefresh() {
     const promise = this.dataProviderRef.current.refresh();
@@ -143,7 +138,7 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
       <React.Fragment>
         {React.createElement(this.props.dataProvider, dataProviderProps)}
 
-        {this.props.loadStatus == HiPlotLoadStatus.Loaded && !this.state.isTextareaFocused && (
+        {this.props.loadStatus === HiPlotLoadStatus.Loaded && !this.state.isTextareaFocused && (
           <React.Fragment>
             <div className={style.controlGroup}>
               <RestoreDataBtn {...this.props} />
@@ -151,6 +146,7 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
               <ExcludeDataBtn {...this.props} />
               {this.dataProviderRef.current && this.dataProviderRef.current.refresh && (
                 <button
+                  type="button"
                   title="Refresh"
                   className="btn btn-sm btn-light"
                   onClick={this.onRefresh.bind(this)}
@@ -160,6 +156,7 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
               )}
               <ExportDataCSVBtn {...this.props} />
               <button
+                type="button"
                 title="Start HiPlot tutorial"
                 className="btn btn-sm btn-light"
                 onClick={this.onToggleTutorial.bind(this)}
@@ -168,6 +165,7 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
               </button>
               {this.props.restorableColumnsCount > 0 && this.props.onRestoreColumns && (
                 <button
+                  type="button"
                   title="Restore hidden columns in parallel plot"
                   className="btn btn-sm btn-light"
                   onClick={this.props.onRestoreColumns}
@@ -218,7 +216,7 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
     return (
       <div ref={this.controls_root_ref} className={"container-fluid " + style.header}>
         <div className={"d-flex flex-wrap"}>
-          <img style={{ height: "55px" }} src={this.props.dark ? IconSVGW : IconSVG} />
+          <img style={{ height: "55px" }} src={this.props.dark ? IconSVGW : IconSVG} alt="HiPlot" />
           {this.renderControls()}
         </div>
         {this.state.hasTutorial && (

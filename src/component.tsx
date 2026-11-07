@@ -6,8 +6,8 @@
  */
 
 import $ from "jquery";
-import * as _ from "underscore";
 import React from "react";
+import * as _ from "underscore";
 
 // Vendor CSS imports - PostCSS will scope these under .hip_thm--dark/.hip_thm--light
 import "bootstrap/dist/css/bootstrap.min.css";
@@ -16,44 +16,40 @@ import "./style/bs-dark.css";
 import "./style/bs-light.css";
 import "./style/global.css";
 
-import {
-  Datapoint,
-  ParamType,
-  HiPlotExperiment,
-  HiPlotLoadStatus,
-  PSTATE_COLOR_BY,
-  PSTATE_PARAMS,
-  DatapointLookup,
-  IDatasets,
-  PSTATE_FILTERS,
-} from "./types";
-import { RowsDisplayTable } from "./rowsdisplaytable";
-import { infertypes, colorScheme, ParamDefMap } from "./infertypes";
-import { PersistentState, PersistentStateInMemory } from "./lib/savedstate";
+import LogoSVG from "../hiplot/static/logo.svg";
+import LogoSVGW from "../hiplot/static/logo-w.svg";
+import { ContextMenu } from "./contextmenu";
+import { type HiPlotDataControlProps, SelectedCountProgressBar } from "./controls";
+import { StaticDataProvider } from "./dataproviders/static";
+import { HiPlotDistributionPlugin } from "./distribution/plugin";
+import { apply_filter, apply_filters, type Filter, FilterType } from "./filters";
+import { ErrorDisplay, HeaderBar } from "./header";
+import style from "./hiplot.module.css";
+import { colorScheme, infertypes, type ParamDefMap } from "./infertypes";
+import { setupBrowserCompat } from "./lib/browsercompat";
+import { uncompress } from "./lib/compress";
+import { type PersistentState, PersistentStateInMemory } from "./lib/savedstate";
 import { ParallelPlot } from "./parallel/parallel";
 import { PlotXY } from "./plotxy";
-import { SelectedCountProgressBar, HiPlotDataControlProps } from "./controls";
-import { ErrorDisplay, HeaderBar } from "./header";
-import type { HiPlotPluginData, DataProviderClass } from "./plugin";
-import { StaticDataProvider } from "./dataproviders/static";
-import { uncompress } from "./lib/compress";
-import { setupBrowserCompat } from "./lib/browsercompat";
+import type { DataProviderClass, HiPlotPluginData } from "./plugin";
+import { RowsDisplayTable } from "./rowsdisplaytable";
+import {
+  type Datapoint,
+  type DatapointLookup,
+  type HiPlotExperiment,
+  HiPlotLoadStatus,
+  type IDatasets,
+  ParamType,
+  PSTATE_COLOR_BY,
+  PSTATE_FILTERS,
+  PSTATE_PARAMS,
+} from "./types";
 
-//@ts-ignore
-import LogoSVG from "../hiplot/static/logo.svg";
-//@ts-ignore
-import LogoSVGW from "../hiplot/static/logo-w.svg";
-//@ts-ignore
-import style from "./hiplot.module.css";
-import { ContextMenu } from "./contextmenu";
-import { HiPlotDistributionPlugin } from "./distribution/plugin";
-import { Filter, FilterType, apply_filters, apply_filter } from "./filters";
-
+export { ParallelPlot } from "./parallel/parallel";
 // Exported from HiPlot
 export { PlotXY } from "./plotxy";
-export { ParallelPlot } from "./parallel/parallel";
-export { RowsDisplayTable } from "./rowsdisplaytable";
 export type { HiPlotPluginData } from "./plugin";
+export { RowsDisplayTable } from "./rowsdisplaytable";
 export type { Datapoint, HiPlotExperiment, IDatasets } from "./types";
 export { HiPlotLoadStatus } from "./types";
 
@@ -152,7 +148,7 @@ function detectIsDarkTheme(): boolean {
   // Hack: detect dark/light theme in Jupyter Lab
   const jupyterLabAttrLightTheme = "data-jp-theme-light";
   if (typeof document !== "undefined" && document.body?.hasAttribute(jupyterLabAttrLightTheme)) {
-    return document.body.getAttribute(jupyterLabAttrLightTheme) == "false";
+    return document.body.getAttribute(jupyterLabAttrLightTheme) === "false";
   }
   if (typeof window !== "undefined" && window.matchMedia) {
     return window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -216,13 +212,13 @@ export enum DefaultPlugins {
 }
 
 export const defaultPlugins: PluginsMap = {
-  // @ts-ignore
+  // @ts-expect-error
   [DefaultPlugins.PARALLEL_PLOT]: ParallelPlot,
-  // @ts-ignore
+  // @ts-expect-error
   [DefaultPlugins.XY]: PlotXY,
-  // @ts-ignore
+  // @ts-expect-error
   [DefaultPlugins.DISTRIBUTION]: HiPlotDistributionPlugin,
-  // @ts-ignore
+  // @ts-expect-error
   [DefaultPlugins.TABLE]: RowsDisplayTable,
 };
 
@@ -383,8 +379,8 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     initial_filters: Array<Filter>,
   ): IDatasets {
     if (experiment) {
-      const rows_all_unfiltered = experiment.datapoints.map(function (t) {
-        var obj_with_uid = $.extend(
+      const rows_all_unfiltered = experiment.datapoints.map((t) => {
+        const obj_with_uid = $.extend(
           {
             uid: t.uid,
             from_uid: t.from_uid,
@@ -394,7 +390,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
         dp_lookup[t.uid] = obj_with_uid;
         return obj_with_uid;
       });
-      var rows_filtered = rows_all_unfiltered;
+      let rows_filtered = rows_all_unfiltered;
       try {
         rows_filtered = apply_filters(rows_all_unfiltered, initial_filters);
         if (!rows_filtered.length) {
@@ -453,10 +449,10 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     }
 
     // Generate dataset for Parallel Plot
-    var dp_lookup = {};
-    var initFilters = this.state.persistentState.get(PSTATE_FILTERS, []);
+    const dp_lookup = {};
+    let initFilters = this.state.persistentState.get(PSTATE_FILTERS, []);
     const datasets = this.makeDatasets(experiment, dp_lookup, initFilters);
-    if (datasets.rows_all_unfiltered == datasets.rows_filtered) {
+    if (datasets.rows_all_unfiltered === datasets.rows_filtered) {
       initFilters = [];
     }
     const params_def = infertypes(
@@ -476,12 +472,12 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
         return experiment.colorby;
       }
       function select_as_coloring_score(r) {
-        var pd = params_def[r];
-        var score = 0;
+        const pd = params_def[r];
+        let score = 0;
         if (pd.colors || pd.colormap) {
           score += 100;
         }
-        if (pd.type == ParamType.CATEGORICAL) {
+        if (pd.type === ParamType.CATEGORICAL) {
           score -= 20;
         }
         if (pd.optional) {
@@ -489,28 +485,26 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
         }
         return score;
       }
-      var possibles = Object.keys(params_def).sort(
+      const possibles = Object.keys(params_def).sort(
         (a, b) => select_as_coloring_score(b) - select_as_coloring_score(a),
       );
       return possibles[0];
     }
-    var colorby = this.state.persistentState.get(PSTATE_COLOR_BY, get_default_color());
+    let colorby = this.state.persistentState.get(PSTATE_COLOR_BY, get_default_color());
     if (params_def[colorby] === undefined) {
       colorby = get_default_color();
     }
-    this.setState(function (_state, _props) {
-      return {
-        experiment: experiment,
-        colormap: experiment.colormap,
-        loadStatus: HiPlotLoadStatus.Loaded,
-        dp_lookup: dp_lookup,
-        colorby: colorby,
-        params_def: params_def,
-        params_def_unfiltered: params_def_unfiltered,
-        rows_filtered_filters: initFilters,
-        ...datasets,
-      };
-    });
+    this.setState((_state, _props) => ({
+      experiment: experiment,
+      colormap: experiment.colormap,
+      loadStatus: HiPlotLoadStatus.Loaded,
+      dp_lookup: dp_lookup,
+      colorby: colorby,
+      params_def: params_def,
+      params_def_unfiltered: params_def_unfiltered,
+      rows_filtered_filters: initFilters,
+      ...datasets,
+    }));
   }
   getColorForRow(trial: Datapoint, alpha: number): string {
     return colorScheme(
@@ -562,18 +556,18 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     if (prevProps.dark !== this.props.dark) {
       this.applyDarkModeSetting(this.props.dark);
     }
-    if (prevState.rows_filtered_filters != this.state.rows_filtered_filters) {
+    if (prevState.rows_filtered_filters !== this.state.rows_filtered_filters) {
       this.state.persistentState.set(PSTATE_FILTERS, this.state.rows_filtered_filters);
     }
-    if (prevState.colorby != this.state.colorby && this.state.colorby) {
+    if (prevState.colorby !== this.state.colorby && this.state.colorby) {
       this.state.persistentState.set(PSTATE_COLOR_BY, this.state.colorby);
     }
-    if (this.state.loadStatus != HiPlotLoadStatus.Loading) {
+    if (this.state.loadStatus !== HiPlotLoadStatus.Loading) {
       if (
         this.props.experiment !== null &&
-        ((this.state.loadStatus == HiPlotLoadStatus.Error &&
+        ((this.state.loadStatus === HiPlotLoadStatus.Error &&
           this.props.experiment !== prevProps.experiment) ||
-          (this.state.loadStatus != HiPlotLoadStatus.Error &&
+          (this.state.loadStatus !== HiPlotLoadStatus.Error &&
             this.props.experiment !== this.state.experiment))
       ) {
         this.loadWithPromise(
@@ -584,17 +578,17 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
           ),
         );
       } else {
-        if (prevState.rows_selected != this.state.rows_selected) {
+        if (prevState.rows_selected !== this.state.rows_selected) {
           this.callSelectedUidsHooks();
         }
-        if (prevState.rows_filtered != this.state.rows_filtered) {
+        if (prevState.rows_filtered !== this.state.rows_filtered) {
           this.callFilteredUidsHooks();
         }
       }
     }
     if (
-      this.state.loadStatus == HiPlotLoadStatus.Loading &&
-      this.state.loadPromise != prevState.loadPromise
+      this.state.loadStatus === HiPlotLoadStatus.Loading &&
+      this.state.loadPromise !== prevState.loadPromise
     ) {
       const prom = this.state.loadPromise.promise;
       prom
@@ -633,28 +627,28 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       [ParamType.TIMESTAMP]: "Timestamp",
     };
 
-    var contextmenu = $(cm);
+    const contextmenu = $(cm);
     contextmenu.append($('<h6 class="dropdown-header">Data scaling</h6>'));
     this.state.params_def[column].type_options.forEach(
       function (this: HiPlot, possible_type) {
-        var option = $('<a class="dropdown-item" href="#">').text(VAR_TYPE_TO_NAME[possible_type]);
-        if (possible_type == this.state.params_def[column].type) {
+        const option = $('<a class="dropdown-item" href="#">').text(
+          VAR_TYPE_TO_NAME[possible_type],
+        );
+        if (possible_type === this.state.params_def[column].type) {
           option.addClass("disabled").css("pointer-events", "none");
         }
         option.click(
           function (this: HiPlot, event) {
             contextmenu.css("display", "none");
-            this.setState(function (state: Readonly<HiPlotState>, _props) {
-              return {
-                params_def: {
-                  ...state.params_def,
-                  [column]: {
-                    ...state.params_def[column],
-                    type: possible_type,
-                  },
+            this.setState((state: Readonly<HiPlotState>, _props) => ({
+              params_def: {
+                ...state.params_def,
+                [column]: {
+                  ...state.params_def[column],
+                  type: possible_type,
                 },
-              };
-            });
+              },
+            }));
             this.state.persistentState
               .children(PSTATE_PARAMS)
               .children(column)
@@ -670,7 +664,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     const ppRef = this.plugins_ref[DefaultPlugins.PARALLEL_PLOT];
     const pp = ppRef && ppRef.current ? (ppRef.current as unknown as ParallelPlot) : null;
     if (pp && pp.toggleInvertAxis) {
-      var invert_axis = $('<a class="dropdown-item" href="#">Invert axis</a>');
+      const invert_axis = $('<a class="dropdown-item" href="#">Invert axis</a>');
       invert_axis.click(
         function (this: HiPlot, event) {
           const extent = pp.toggleInvertAxis(column);
@@ -684,7 +678,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     }
 
     // Color by
-    var link_colorize = $('<a class="dropdown-item" href="#">Use for coloring</a>');
+    const link_colorize = $('<a class="dropdown-item" href="#">Use for coloring</a>');
     link_colorize.click(
       function (this: HiPlot, event) {
         this.setState({
@@ -693,19 +687,19 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
         event.preventDefault();
       }.bind(this),
     );
-    if (this.state.colorby == column) {
+    if (this.state.colorby === column) {
       link_colorize.addClass("disabled").css("pointer-events", "none");
     }
     contextmenu.append(link_colorize);
   }
   columnContextMenuFooter(column: string, cm: HTMLDivElement) {
-    var contextmenu = $(cm);
+    const contextmenu = $(cm);
     const ppRef = this.plugins_ref[DefaultPlugins.PARALLEL_PLOT];
     const pp = ppRef && ppRef.current ? (ppRef.current as unknown as ParallelPlot) : null;
     contextmenu.append($('<div class="dropdown-divider"></div>'));
 
     if (pp && pp.can_hide_axis && pp.can_hide_axis(column)) {
-      var hide_axis = $('<a class="dropdown-item" href="#">Hide axis</a>');
+      const hide_axis = $('<a class="dropdown-item" href="#">Hide axis</a>');
       hide_axis.click(
         function (this: HiPlot, event) {
           if (pp.remove_axis) {
@@ -717,7 +711,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       contextmenu.append(hide_axis);
     }
 
-    var close_menu = $('<a class="dropdown-item" href="#">Close menu</a>');
+    const close_menu = $('<a class="dropdown-item" href="#">Close menu</a>');
     close_menu.click(
       function (this: HiPlot, event) {
         this.contextMenuRef.current.hide();
@@ -727,7 +721,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     contextmenu.append(close_menu);
   }
   createNewParamsDef(rows_filtered: Array<Datapoint>): ParamDefMap {
-    var new_pd = Object.assign({}, this.state.params_def);
+    const new_pd = Object.assign({}, this.state.params_def);
     Object.assign(
       new_pd,
       infertypes(
@@ -765,7 +759,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
         const new_filtered = keep
           ? state.rows_selected
           : _.difference(state.rows_filtered, state.rows_selected);
-        var filter: Filter = state.rows_selected_filter;
+        let filter: Filter = state.rows_selected_filter;
         if (!keep) {
           filter = {
             type: FilterType.Not,
@@ -788,7 +782,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     }
     if (filter && this.props.asserts) {
       const new_rows = apply_filter(this.state.rows_filtered, filter);
-      if (new_rows.length != rows.length || _.difference(new_rows, rows).length) {
+      if (new_rows.length !== rows.length || _.difference(new_rows, rows).length) {
         console.error(
           "Warning! Filter ",
           filter,
@@ -870,14 +864,14 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
             onRestoreColumns={this.restoreAllColumns.bind(this)}
             {...controlProps}
           />
-          {this.state.loadStatus == HiPlotLoadStatus.Error && (
+          {this.state.loadStatus === HiPlotLoadStatus.Error && (
             <ErrorDisplay error={this.state.error} />
           )}
-          {this.state.loadStatus != HiPlotLoadStatus.Loaded && (
+          {this.state.loadStatus !== HiPlotLoadStatus.Loaded && (
             <DocAndCredits dark={this.state.dark} />
           )}
           <ContextMenu ref={this.contextMenuRef} />
-          {this.state.loadStatus == HiPlotLoadStatus.Loaded && (
+          {this.state.loadStatus === HiPlotLoadStatus.Loaded && (
             <div>
               {(this.state.experiment.enabled_displays !== undefined
                 ? this.state.experiment.enabled_displays
@@ -902,8 +896,8 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     cls: React.ClassType<P, T, React.ComponentClass<P>>,
   ): T {
     const entries = Object.entries(this.props.plugins);
-    for (var i = 0; i < entries.length; ++i) {
-      if (entries[i][1] == cls) {
+    for (let i = 0; i < entries.length; ++i) {
+      if (entries[i][1] === cls) {
         return this.plugins_ref[entries[i][0]].current as unknown as T;
       }
     }
@@ -946,7 +940,7 @@ class DocAndCredits extends React.Component<DocsCreditsProps> {
         <div className="row">
           <div className="col-md-3"></div>
           <div className="col-md-6">
-            <img src={this.props.dark ? LogoSVGW : LogoSVG} />
+            <img src={this.props.dark ? LogoSVGW : LogoSVG} alt="HiPlot" />
           </div>
           <div className="col-md-3"></div>
           <div className="col-md-6">

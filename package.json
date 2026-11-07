@@ -28,13 +28,15 @@
     "typecheck": "bun run tcm && tsc --noEmit -p .",
     "test:js": "playwright test",
     "prepublish": "bun run tcm && bun run prepublish-ts",
-    "prepublish-ts": "tsc --module es2020"
+    "prepublish-ts": "tsc -p tsconfig.lib.json"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.6",
     "@playwright/test": "1.63.0",
+    "@types/bun": "^1.4.4",
     "@types/d3": "^7.4.3",
     "@types/jquery": "^3.5.33",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.2.10",
     "@types/react-dom": "^19.2.3",
     "@types/underscore": "^1.13.0",

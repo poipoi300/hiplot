@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
 test.describe("Label Margin Tests", () => {
   test("labels should not be cut off with increased top margin", async ({ page }) => {

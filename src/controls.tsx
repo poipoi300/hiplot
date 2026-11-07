@@ -6,11 +6,10 @@
  */
 
 import * as d3 from "d3";
-import * as _ from "underscore";
 import React from "react";
-
-import { IDatasets } from "./types";
+import * as _ from "underscore";
 import style from "./hiplot.module.css";
+import type { IDatasets } from "./types";
 
 export interface HiPlotDataControlProps extends IDatasets {
   restoreAllRows: () => void;
@@ -43,7 +42,7 @@ export class KeepOrExcludeDataBtn extends React.Component<
     );
   }
   componentDidUpdate() {
-    if (this.state.btnEnabled != this.btnEnabled()) {
+    if (this.state.btnEnabled !== this.btnEnabled()) {
       this.setState({ btnEnabled: this.btnEnabled() });
     }
   }
@@ -53,6 +52,7 @@ export class KeepOrExcludeDataBtn extends React.Component<
   render() {
     return (
       <button
+        type="button"
         title={this.title}
         ref={this.btnRef}
         className={`btn btn-sm btn-${this.style}`}
@@ -80,7 +80,7 @@ export class ExcludeDataBtn extends KeepOrExcludeDataBtn {
 }
 
 function downloadURL(url: string, filename: string) {
-  var element = document.createElement("a");
+  const element = document.createElement("a");
   element.setAttribute("href", url);
   element.setAttribute("download", filename);
 
@@ -98,15 +98,16 @@ export class ExportDataCSVBtn extends React.Component<
 > {
   onClick() {
     const all_selected = this.props.rows_selected;
-    var csv: string = d3.csvFormat(all_selected);
-    var blob = new Blob([csv], { type: "text/csv" });
-    var url = window.URL.createObjectURL(blob);
+    const csv: string = d3.csvFormat(all_selected);
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = window.URL.createObjectURL(blob);
     downloadURL(url, `hiplot-selected-${all_selected.length}.csv`);
   }
 
   render() {
     return (
       <button
+        type="button"
         title="Export data as CSV"
         className="btn btn-sm btn-light"
         onClick={this.onClick.bind(this)}
@@ -128,11 +129,11 @@ export class RestoreDataBtn extends React.Component<
     };
   }
   btnEnabled(): boolean {
-    return this.props.rows_all_unfiltered.length != this.props.rows_filtered.length;
+    return this.props.rows_all_unfiltered.length !== this.props.rows_filtered.length;
   }
   componentDidUpdate() {
     const btnEnabled = this.btnEnabled();
-    if (btnEnabled != this.state.btnEnabled) {
+    if (btnEnabled !== this.state.btnEnabled) {
       this.setState({ btnEnabled: btnEnabled });
     }
   }
@@ -143,6 +144,7 @@ export class RestoreDataBtn extends React.Component<
   render() {
     return (
       <button
+        type="button"
         title="Remove all applied filters"
         className="btn btn-sm btn-sm btn-info"
         disabled={!this.state.btnEnabled}
@@ -168,7 +170,7 @@ export class SelectedCountProgressBar extends React.Component<
   updateBarWidth() {
     const selected = this.props.rows_selected.length;
     const filtered = this.props.rows_filtered.length;
-    var selectedBar = this.selectedBar.current;
+    const selectedBar = this.selectedBar.current;
     selectedBar.style.width = (100 * selected) / filtered + "%";
   }
 

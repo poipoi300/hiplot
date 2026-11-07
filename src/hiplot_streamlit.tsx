@@ -5,13 +5,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import React, { ReactNode } from "react";
-import { withStreamlitConnection, StreamlitComponentBase, Streamlit } from "./streamlit";
-import { HiPlot } from "./hiplot";
 import JSON5 from "json5";
-
+import React, { type ReactNode } from "react";
 import ReactDOMClient from "react-dom/client";
-import { ComponentProps } from "./streamlit/StreamlitReact";
+import { HiPlot } from "./hiplot";
+import { Streamlit, StreamlitComponentBase, withStreamlitConnection } from "./streamlit";
+import type { ComponentProps } from "./streamlit/StreamlitReact";
 
 interface State {
   selected_uids: Array<string>;
@@ -35,7 +34,7 @@ class ReactTemplate extends StreamlitComponentBase<State> {
   public render = (): ReactNode => {
     // Arguments that are passed to the plugin in Python are accessible
     // via `this.props.args`. Here, we access the "name" arg.
-    var onChangeHandlers = {
+    const onChangeHandlers = {
       selected_uids: this.onChange.bind(this),
       filtered_uids: this.onChange.bind(this),
       brush_extents: this.onChange.bind(this),
@@ -45,24 +44,24 @@ class ReactTemplate extends StreamlitComponentBase<State> {
   };
 
   public onChange = (type: string, data: any): void => {
-    // @ts-ignore
+    // @ts-expect-error
     this.setState({ [type]: data });
     Streamlit.setFrameHeight();
   };
 
   public componentDidUpdate(prevProps, prevState: State): void {
     const ret: Array<string> = this.props.args["ret"];
-    var changed = false;
+    let changed = false;
     const py_ret = ret.map(
       function (r) {
-        if (this.state[r] != prevState[r]) {
+        if (this.state[r] !== prevState[r]) {
           console.log(r, "changed");
           changed = true;
         }
         return this.state[r];
       }.bind(this),
     );
-    if (changed || JSON.stringify(this.props.args.ret) != JSON.stringify(prevProps.args.ret)) {
+    if (changed || JSON.stringify(this.props.args.ret) !== JSON.stringify(prevProps.args.ret)) {
       console.log("hiplot update return", py_ret, {
         "prevProps.args.ret": prevProps.args.ret,
         "this.props.args.ret": this.props.args.ret,
@@ -71,7 +70,7 @@ class ReactTemplate extends StreamlitComponentBase<State> {
       Streamlit.setComponentValue(py_ret);
     }
     const newExp = this.props.args["experiment"];
-    if (newExp != this.state.experimentJson) {
+    if (newExp !== this.state.experimentJson) {
       this.setState({
         experiment: JSON5.parse(newExp),
         experimentJson: newExp,

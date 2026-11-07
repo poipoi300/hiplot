@@ -7,10 +7,8 @@
 
 import $ from "jquery";
 import React from "react";
-import style from "./style.module.css";
-
-//@ts-ignore
 import LogoSVG from "../../hiplot/static/logo.svg";
+import style from "./style.module.css";
 
 interface TutorialStepProps {
   rootRef: React.RefObject<HTMLElement>;
@@ -18,7 +16,7 @@ interface TutorialStepProps {
 
 class _StepHiPlotInfo extends React.Component<TutorialStepProps, {}> {
   render() {
-    // @ts-ignore
+    // @ts-expect-error
     let pkgInfo = HIPLOT_PACKAGE_NAME_FULL;
     if (pkgInfo === undefined) {
       pkgInfo = "hiplot (no version information)";
@@ -31,7 +29,7 @@ class _StepHiPlotInfo extends React.Component<TutorialStepProps, {}> {
             Click the button "Next" to start
           </div>
           <div className="col-md-4">
-            <img style={{ height: "50px" }} src={LogoSVG} />
+            <img style={{ height: "50px" }} src={LogoSVG} alt="HiPlot" />
             <br />
             <span style={{ fontFamily: "monospace" }}>{pkgInfo}</span>
           </div>
@@ -230,7 +228,7 @@ export class HiPlotTutorial extends React.Component<Props, State> {
     };
   }
   onClickNextTutorial() {
-    if (this.state.stepNum == this.steps.length - 1) {
+    if (this.state.stepNum === this.steps.length - 1) {
       this.props.onTutorialDone();
       return;
     }
@@ -241,15 +239,13 @@ export class HiPlotTutorial extends React.Component<Props, State> {
     });
   }
   onClickPreviousTutorial() {
-    if (this.state.stepNum == 0) {
+    if (this.state.stepNum === 0) {
       this.props.onTutorialDone();
       return;
     }
-    this.setState(function (prevState, _prevProps) {
-      return {
-        stepNum: Math.max(prevState.stepNum - 1, 0),
-      };
-    });
+    this.setState((prevState, _prevProps) => ({
+      stepNum: Math.max(prevState.stepNum - 1, 0),
+    }));
   }
 
   render() {
@@ -262,6 +258,7 @@ export class HiPlotTutorial extends React.Component<Props, State> {
         </div>
         <div className="col-md-3">
           <button
+            type="button"
             className="btn btn-outline-secondary"
             style={{ width: "6em" }}
             onClick={this.onClickPreviousTutorial.bind(this)}
@@ -269,6 +266,7 @@ export class HiPlotTutorial extends React.Component<Props, State> {
             {this.state.stepNum > 0 ? "Previous" : "Close"}
           </button>
           <button
+            type="button"
             className="btn btn-outline-primary"
             style={{ width: "6em" }}
             onClick={this.onClickNextTutorial.bind(this)}

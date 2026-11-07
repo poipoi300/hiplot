@@ -60,7 +60,7 @@ export interface HiPlotExperiment {
 export class Experiment {
   static from_iterable(values: object[]): HiPlotExperiment {
     return {
-      datapoints: values.map(function (raw_row: object, index: number): Datapoint {
+      datapoints: values.map((raw_row: object, index: number): Datapoint => {
         const uid = raw_row["uid"] !== undefined ? raw_row["uid"] : `${index}`;
         const from_uid = raw_row["from_uid"] !== undefined ? raw_row["from_uid"] : null;
         const values = Object.assign({}, raw_row);

@@ -5,12 +5,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import { DataProviderProps } from "../plugin";
-import React from "react";
-import Dropzone, { FileRejection, DropEvent } from "react-dropzone";
-import style from "./upload.module.css";
 import * as d3 from "d3";
-import { HiPlotExperiment, Experiment } from "../types";
+import React from "react";
+import Dropzone, { type DropEvent, type FileRejection } from "react-dropzone";
+import type { DataProviderProps } from "../plugin";
+import { Experiment, type HiPlotExperiment } from "../types";
+import style from "./upload.module.css";
 
 export const PSTATE_LOAD_URI = "load_uri";
 
@@ -51,7 +51,7 @@ export class UploadDataProvider extends React.Component<DataProviderProps, State
           if (acceptedFiles.length > 1) {
             resolve({ error: `Uploading more than one file is not supported` });
           }
-          if (acceptedFiles.length == 0) {
+          if (acceptedFiles.length === 0) {
             resolve({ error: `No file uploaded?` });
           }
           const file = acceptedFiles[0];

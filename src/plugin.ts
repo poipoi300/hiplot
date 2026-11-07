@@ -5,12 +5,18 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import React from "react";
-import { ParamDefMap } from "./infertypes";
-import { IDatasets, DatapointLookup, Datapoint, HiPlotExperiment, HiPlotLoadStatus } from "./types";
-import { ContextMenu } from "./contextmenu";
-import { PersistentState } from "./lib/savedstate";
-import { Filter } from "./filters";
+import type React from "react";
+import type { ContextMenu } from "./contextmenu";
+import type { Filter } from "./filters";
+import type { ParamDefMap } from "./infertypes";
+import type { PersistentState } from "./lib/savedstate";
+import type {
+  Datapoint,
+  DatapointLookup,
+  HiPlotExperiment,
+  HiPlotLoadStatus,
+  IDatasets,
+} from "./types";
 
 export interface HiPlotPluginDataWithoutDatasets {
   experiment: HiPlotExperiment;

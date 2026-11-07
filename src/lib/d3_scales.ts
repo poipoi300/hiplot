@@ -25,10 +25,10 @@ interface d3ScalePercentile {
 function toPrecisionFloor(v: number, p: number): number {
   if (v < 0) {
     return -toPrecisionFloor(-v, p);
-  } else if (v == 0) {
+  } else if (v === 0) {
     return 0;
   }
-  var pow = 10 ** (p - 1 - Math.floor(Math.log10(v)));
+  const pow = 10 ** (p - 1 - Math.floor(Math.log10(v)));
   return Math.floor(v * pow) / pow;
 }
 
@@ -71,7 +71,7 @@ function naturalSortComparator(a: string, b: string): number {
 
 export function d3_scale_categorical(distinct_values: Array<any>): d3.ScalePoint<any> {
   const valuesSet = new Set();
-  for (var idx = 0; idx < distinct_values.length; ++idx) {
+  for (let idx = 0; idx < distinct_values.length; ++idx) {
     valuesSet.add(convert_to_categorical_input(distinct_values[idx]));
   }
   distinct_values = Array.from(valuesSet);
@@ -88,16 +88,14 @@ export function d3_scale_categorical(distinct_values: Array<any>): d3.ScalePoint
     round: scale.round,
     domain: scale.domain,
   });
-  // @ts-ignore
+  // @ts-expect-error
   return scale_fn;
 }
 
 export function get_numeric_values_sorted(values: Array<any>): Array<number> {
   values = values.map((x) => parseFloat(x)).filter((x) => Number.isFinite(x));
   values = Array.from(new Set(values));
-  values.sort(function (a, b) {
-    return parseFloat(a) - parseFloat(b);
-  });
+  values.sort((a, b) => parseFloat(a) - parseFloat(b));
   return values;
 }
 
@@ -112,10 +110,10 @@ export function d3_scale_percentile(values: Array<any>): d3ScalePercentile {
 
 export function d3_scale_percentile_values_sorted(values: Array<number>): d3ScalePercentile {
   console.assert(values.length >= 2);
-  var domain_idx = [0, values.length - 1];
-  var scaleOutput = d3.scaleLinear().domain([0, 1]);
-  var scale: any = function (x: number): number {
-    if (x == Infinity || x == -Infinity || isNaN(x)) {
+  let domain_idx = [0, values.length - 1];
+  const scaleOutput = d3.scaleLinear().domain([0, 1]);
+  const scale: any = (x: number): number => {
+    if (x === Infinity || x === -Infinity || isNaN(x)) {
       return scaleOutput(-1);
     }
     if (x > values[domain_idx[domain_idx.length - 1]]) {
@@ -124,13 +122,13 @@ export function d3_scale_percentile_values_sorted(values: Array<number>): d3Scal
       return scaleOutput(0.0);
     }
     const upper = d3.bisectLeft(values, x, domain_idx[0], domain_idx[1]);
-    var pctile = (upper - domain_idx[0]) / (domain_idx[1] - domain_idx[0]);
+    let pctile = (upper - domain_idx[0]) / (domain_idx[1] - domain_idx[0]);
     if (values[upper] !== x && upper > domain_idx[0]) {
       // For example when rendering axis ticks
       const lower = upper - 1;
       const lowerV = values[lower];
       const upperV = values[upper];
-      console.assert(lowerV != upperV, "values should be distinct", lowerV, upperV);
+      console.assert(lowerV !== upperV, "values should be distinct", lowerV, upperV);
       console.assert(
         lowerV <= x && x <= upperV,
         `percentile_scale(${x}): lowerV=${lowerV}, x=${x}, upperV=${upperV}`,
@@ -152,7 +150,7 @@ export function d3_scale_percentile_values_sorted(values: Array<number>): d3Scal
     y = Math.max(y, domain_idx[0]);
     const lower = Math.floor(y);
     const upper = Math.ceil(y);
-    if (lower == upper) {
+    if (lower === upper) {
       return values[lower];
     }
     const a = y - lower;
@@ -174,7 +172,7 @@ export function d3_scale_percentile_values_sorted(values: Array<number>): d3Scal
       return [values[domain_idx[0]], values[domain_idx[1]]];
     }
     domain_idx = [d3.bisect(values, d[0]), d3.bisect(values, d[1])];
-    if (domain_idx[0] == domain_idx[1]) {
+    if (domain_idx[0] === domain_idx[1]) {
       domain_idx[0] -= 1;
       domain_idx[1] += 1;
     }
@@ -183,7 +181,7 @@ export function d3_scale_percentile_values_sorted(values: Array<number>): d3Scal
     return scale;
   }
   function copy() {
-    var new_scale = d3_scale_percentile_values_sorted(values);
+    const new_scale = d3_scale_percentile_values_sorted(values);
     new_scale.domain_idx(domain_idx);
     new_scale.range(scaleOutput.range());
     return new_scale;
@@ -192,28 +190,28 @@ export function d3_scale_percentile_values_sorted(values: Array<number>): d3Scal
     if (n >= domain_idx[1] - domain_idx[0] + 1) {
       return values.slice(domain_idx[0], domain_idx[1] + 1);
     }
-    var t = [];
-    for (var i = 0; i < n; ++i) {
+    const t: number[] = [];
+    for (let i = 0; i < n; ++i) {
       // Find the roundest number in the intervalle
-      var start_idx = domain_idx[0] + Math.floor((i / n) * (domain_idx[1] - domain_idx[0]));
-      var end_dx = domain_idx[0] + Math.floor(((i + 1) / n) * (domain_idx[1] - domain_idx[0]));
-      var start = values[start_idx];
-      var end = end_dx > domain_idx[1] ? values[domain_idx[1]] : values[end_dx];
-      var val;
-      if (start == end) {
+      const start_idx = domain_idx[0] + Math.floor((i / n) * (domain_idx[1] - domain_idx[0]));
+      const end_dx = domain_idx[0] + Math.floor(((i + 1) / n) * (domain_idx[1] - domain_idx[0]));
+      const start = values[start_idx];
+      const end = end_dx > domain_idx[1] ? values[domain_idx[1]] : values[end_dx];
+      let val: number;
+      if (start === end) {
         val = start;
       } else {
-        var precision = 1;
-        var prev = i > 0 ? t[t.length - 1] : start;
+        let precision = 1;
+        const prev = i > 0 ? t[t.length - 1] : start;
         while (
           precision < 20 &&
-          toPrecisionFloor(prev, precision) == toPrecisionFloor(end, precision)
+          toPrecisionFloor(prev, precision) === toPrecisionFloor(end, precision)
         ) {
           ++precision;
         }
         val = parseFloat(((prev + end) / 2).toPrecision(precision));
       }
-      if (i > 0 && t[i - 1] == val) {
+      if (i > 0 && t[i - 1] === val) {
         continue;
       }
       t.push(val);
@@ -221,9 +219,9 @@ export function d3_scale_percentile_values_sorted(values: Array<number>): d3Scal
     return t;
   }
   function tickFormat() {
-    return function (val: number): string {
-      var precision = 1;
-      while (precision < 20 && parseFloat(val.toPrecision(precision)) != val) {
+    return (val: number): string => {
+      let precision = 1;
+      while (precision < 20 && parseFloat(val.toPrecision(precision)) !== val) {
         ++precision;
       }
       return val.toPrecision(precision);
@@ -261,7 +259,7 @@ export function getLogScaleTickValues(domain: number[], approxTickCount: number)
   const maxExp = Math.floor(Math.log10(dMax));
   const majorTicks: number[] = [];
   for (let exp = minExp; exp <= maxExp; exp++) {
-    majorTicks.push(Math.pow(10, exp));
+    majorTicks.push(10 ** exp);
   }
   if (majorTicks.length > approxTickCount && majorTicks.length > 2) {
     const step = Math.ceil(majorTicks.length / approxTickCount);
@@ -276,10 +274,8 @@ export function getLogScaleTickValues(domain: number[], approxTickCount: number)
 }
 
 function cpy_properties(from, to) {
-  for (var prop in from) {
-    if (from.hasOwnProperty(prop)) {
-      to[prop] = from[prop];
-    }
+  for (const prop of Object.keys(from)) {
+    to[prop] = from[prop];
   }
 }
 
@@ -303,25 +299,25 @@ export function scale_add_outliers(scale_orig) {
    *    range[1]  range[0]-origin_scale_size   range[0]
    */
   function compute_origin_scale_size() {
-    var h = Math.abs(scale_orig.range()[1] - scale_orig.range()[0]);
+    const h = Math.abs(scale_orig.range()[1] - scale_orig.range()[0]);
     return h - 30;
   }
-  var scale: any = function (x) {
-    var range = scale_orig.range();
-    var origin_scale_size = compute_origin_scale_size();
-    var ascending_order = range[0] < range[1];
+  const scale: any = (x) => {
+    const range = scale_orig.range();
+    const origin_scale_size = compute_origin_scale_size();
+    const ascending_order = range[0] < range[1];
     if (is_special_numeric(x)) {
       return range[1];
     }
-    var scale_orig_value_rel =
+    const scale_orig_value_rel =
       ((scale_orig(x) - range[0]) / (range[1] - range[0])) * origin_scale_size;
     return ascending_order ? range[0] + scale_orig_value_rel : range[0] - scale_orig_value_rel;
   };
   function invert(y) {
     const domain = scale_orig.domain();
     const range = scale_orig.range();
-    var origin_scale_size = compute_origin_scale_size();
-    var ascending_order = range[0] < range[1];
+    const origin_scale_size = compute_origin_scale_size();
+    const ascending_order = range[0] < range[1];
     if (ascending_order) {
       if (y > range[0] + origin_scale_size) {
         // Infinite domain
@@ -341,7 +337,7 @@ export function scale_add_outliers(scale_orig) {
   }
   cpy_properties(scale_orig, scale);
 
-  var new_ticks = {},
+  const new_ticks = {},
     new_tickFormat = {};
   Object.assign(scale, {
     invert: invert,
@@ -352,31 +348,29 @@ export function scale_add_outliers(scale_orig) {
 
   cpy_properties(scale_orig.ticks, new_ticks);
   cpy_properties(scale_orig.tickFormat, new_tickFormat);
-  scale.ticks.apply = function (scale, tickArguments_) {
-    var args = [tickArguments_[0] - 1];
-    var ret = scale_orig.ticks.apply(scale_orig, args);
+  scale.ticks.apply = (scale, tickArguments_) => {
+    const args = [tickArguments_[0] - 1];
+    const ret = scale_orig.ticks.apply(scale_orig, args);
     ret.push(NaN);
     return ret;
   };
-  scale.tickFormat.apply = function (scale, tickArguments_) {
-    var args = [tickArguments_[0]];
-    var fn = scale_orig.tickFormat.apply(scale_orig, args);
-    return function (x) {
+  scale.tickFormat.apply = (scale, tickArguments_) => {
+    const args = [tickArguments_[0]];
+    const fn = scale_orig.tickFormat.apply(scale_orig, args);
+    return (x) => {
       if (Number.isNaN(x)) {
         return "nan/inf/null";
       }
       return fn(x);
     };
   };
-  scale.range = function (new_range) {
+  scale.range = (new_range) => {
     if (new_range === undefined) {
       return scale_orig.range();
     }
     return scale_orig.range(new_range);
   };
-  scale.copy = function () {
-    return scale_add_outliers(scale_orig.copy());
-  };
+  scale.copy = () => scale_add_outliers(scale_orig.copy());
   return scale;
 }
 
@@ -385,9 +379,7 @@ function wrap_scale<T, V>(
   domain_to_scale: (x: T) => V,
   scale_to_domain: (x: V) => T,
 ): any {
-  var scale: any = function (x: T): number {
-    return scale_orig(domain_to_scale(x));
-  };
+  const scale: any = (x: T): number => scale_orig(domain_to_scale(x));
   function domain(new_domain?: [T, T]) {
     if (new_domain === undefined) {
       const scale_domain = scale_orig.domain();
@@ -404,10 +396,10 @@ function wrap_scale<T, V>(
   }
   function range() {
     const r = scale_orig.range.apply(scale_orig, arguments);
-    return r == scale_orig ? scale : r;
+    return r === scale_orig ? scale : r;
   }
 
-  var new_ticks = {},
+  const new_ticks = {},
     new_tickFormat = {};
   cpy_properties(scale_orig, scale);
   Object.assign(scale, {
@@ -421,17 +413,15 @@ function wrap_scale<T, V>(
   });
   cpy_properties(scale_orig.ticks, new_ticks);
   cpy_properties(scale_orig.tickFormat, new_tickFormat);
-  scale.ticks.apply = function (_, tickArguments_) {
-    var args = [tickArguments_[0]];
+  scale.ticks.apply = (_, tickArguments_) => {
+    const args = [tickArguments_[0]];
     const ta = scale_orig.ticks.apply(scale_orig, args);
     return ta.map(scale_to_domain);
   };
-  scale.tickFormat.apply = function (_, tickArguments_) {
-    var args = [tickArguments_[0]];
-    var fn = scale_orig.tickFormat.apply(scale_orig, args);
-    return function (x) {
-      return fn(domain_to_scale(x));
-    };
+  scale.tickFormat.apply = (_, tickArguments_) => {
+    const args = [tickArguments_[0]];
+    const fn = scale_orig.tickFormat.apply(scale_orig, args);
+    return (x) => fn(domain_to_scale(x));
   };
   return scale;
 }

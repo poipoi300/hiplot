@@ -5,12 +5,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import React from "react";
 import * as d3 from "d3";
+import React from "react";
 import style from "../hiplot.module.css";
-import { create_d3_scale_without_outliers, ParamDef } from "../infertypes";
+import { create_d3_scale_without_outliers, type ParamDef } from "../infertypes";
 import { convert_to_categorical_input, getLogScaleTickValues } from "../lib/d3_scales";
-import { ParamType, Datapoint } from "../types";
+import { type Datapoint, ParamType } from "../types";
 
 function labelTextFromHtml(html: string, fallback: string): string {
   const tmp = document.createElement("div");
@@ -75,7 +75,7 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
 
         */
     return (
-      this.props.param_def.type != ParamType.CATEGORICAL ||
+      this.props.param_def.type !== ParamType.CATEGORICAL ||
       this.props.param_def.distinct_values.length < 3
     );
   }
@@ -143,13 +143,13 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
   }
 
   createHistogram(): d3.HistogramGeneratorNumber<any, any> {
-    var thresholds = [];
-    var valueFn: (d: any) => number;
-    if (this.props.param_def.type == ParamType.CATEGORICAL) {
+    const thresholds = [];
+    let valueFn: (d: any) => number;
+    if (this.props.param_def.type === ParamType.CATEGORICAL) {
       const domain: string[] = this.dataScale.domain();
       const domainCount = domain.length;
       const indexByValue = new Map(domain.map((value, index) => [value, index]));
-      for (var i = 1; i < domainCount; ++i) {
+      for (let i = 1; i < domainCount; ++i) {
         thresholds.push(i / domainCount);
       }
       valueFn = (d) => {
@@ -164,19 +164,19 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
         return (idx + 0.5) / domainCount;
       };
     } else {
-      for (var i = 1; i < this.props.nbins; ++i) {
+      for (let i = 1; i < this.props.nbins; ++i) {
         thresholds.push(i / this.props.nbins);
       }
       const scaleCopy = this.dataScale.copy().range([0, 1]);
       valueFn = (d) => scaleCopy(d[this.props.axis]);
     }
-    var histogram = d3.histogram().value(valueFn).domain([0, 1]).thresholds(thresholds);
+    const histogram = d3.histogram().value(valueFn).domain([0, 1]).thresholds(thresholds);
     return histogram;
   }
 
   drawAllHistograms(animate: boolean) {
     const histogram = this.createHistogram();
-    var allHist: { selected: BinsDrawData; all: BinsDrawData } = {
+    const allHist: { selected: BinsDrawData; all: BinsDrawData } = {
       selected: {
         bins: histogram(this.props.histData.selected),
         g: this.histAll.current,
@@ -190,14 +190,14 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
     };
 
     // Density axis: set max based on maximum in histogram
-    const maxDensityHistogram = d3.max(Object.values(allHist), function (hist) {
+    const maxDensityHistogram = d3.max(Object.values(allHist), (hist) => {
       const total = d3.sum(hist.bins, (d) => d.length);
       if (!total) {
         return 0;
       }
       return d3.max(hist.bins, (d) => d.length / total);
     });
-    var densityScale = d3.scaleLinear().domain([0, maxDensityHistogram]);
+    let densityScale = d3.scaleLinear().domain([0, maxDensityHistogram]);
     // Map from original bin index -> displayed slot index.
     // In horizontal categorical mode we reorder categories by selected density.
     const displayIndexByOriginal = allHist.all.bins.map((_, i) => i);
@@ -220,26 +220,24 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
         .call(d3.axisBottom(densityScale).ticks(1 + this.props.width / 50));
       // Compute reordering of the bins - we want to display higher densities first.
       const ordered1 = Array.from(displayIndexByOriginal)
-        .map(function (value, index) {
-          return { index: value, count: allHist.selected.bins[value].length, original: index };
-        })
-        .sort(function (a, b) {
-          if (a.count != b.count) {
+        .map((value, index) => ({
+          index: value,
+          count: allHist.selected.bins[value].length,
+          original: index,
+        }))
+        .sort((a, b) => {
+          if (a.count !== b.count) {
             return a.count - b.count;
           }
           return a.original - b.original;
         })
-        .map(function (entry) {
-          return entry.index;
-        });
-      ordered1.forEach(function (value, idx) {
+        .map((entry) => entry.index);
+      ordered1.forEach((value, idx) => {
         displayIndexByOriginal[value] = idx;
       });
       // Update ticks/axis as well
-      var domain: string[] = this.dataScale.domain();
-      var domainsOrdered = domain.map(function (v, idx) {
-        return domain[ordered1[idx]];
-      });
+      const domain: string[] = this.dataScale.domain();
+      const domainsOrdered = domain.map((v, idx) => domain[ordered1[idx]]);
       this.createDataAxis(
         d3.scalePoint().domain(domainsOrdered).range(this.dataScale.range()),
         true,
@@ -248,9 +246,9 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
 
     // Draw all the histograms
     Object.values(allHist).forEach(
-      function (v) {
+      ((v) => {
         v.draw_fn(v, densityScale, animate, displayIndexByOriginal);
-      }.bind(this),
+      }).bind(this),
     );
   }
 
@@ -264,7 +262,7 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
     const densityScaleFromLength = (d) => densityScale(total ? d.length / total : 0);
     const dataScale = d3.scaleLinear().range(this.dataScale.range());
 
-    var u = d3.select(hist.g).selectAll<SVGLineElement, any>("line").data(hist.bins);
+    const u = d3.select(hist.g).selectAll<SVGLineElement, any>("line").data(hist.bins);
 
     const dataCoord = this.isVertical() ? "x" : "y";
     const densityCoord = this.isVertical() ? "y" : "x";
@@ -290,9 +288,9 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
     const total = d3.sum(hist.bins, (d) => d.length);
     const densityScaleFromLength = (d) => densityScale(total ? d.length / total : 0);
     const dataScale = d3.scaleLinear().range(this.dataScale.range());
-    var u = d3.select(hist.g).selectAll<SVGRectElement, any>("rect").data(hist.bins);
+    const u = d3.select(hist.g).selectAll<SVGRectElement, any>("rect").data(hist.bins);
 
-    var ut = u
+    const ut = u
       .enter()
       .append("rect") // Add a new rect for each new elements
       .merge(u) // get the already existing elements as well
@@ -313,12 +311,11 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
 
     if (this.isVertical()) {
       ut.attr("x", 1)
-        .attr("transform", function (d) {
-          return "translate(" + dataScale(d.x0) + "," + densityScaleFromLength(d) + ")";
-        })
-        .attr("width", function (d) {
-          return dataScale(d.x1) - dataScale(d.x0) - 1;
-        })
+        .attr(
+          "transform",
+          (d) => "translate(" + dataScale(d.x0) + "," + densityScaleFromLength(d) + ")",
+        )
+        .attr("width", (d) => dataScale(d.x1) - dataScale(d.x0) - 1)
         .attr(
           "height",
           function (d) {
@@ -328,21 +325,20 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
     } else {
       ut
         //.attr("y", 1)
-        .attr("transform", function (_d, i) {
-          return "translate(0," + dataScale(hist.bins[displayIndexByOriginal[i]].x1) + ")";
-        })
-        .attr("width", function (d) {
-          return densityScaleFromLength(d);
-        })
+        .attr(
+          "transform",
+          (_d, i) => "translate(0," + dataScale(hist.bins[displayIndexByOriginal[i]].x1) + ")",
+        )
+        .attr("width", (d) => densityScaleFromLength(d))
         .attr(
           "height",
-          function (_d, i) {
+          ((_d, i) => {
             const delta = Math.abs(
               dataScale(hist.bins[displayIndexByOriginal[i]].x1) -
                 dataScale(hist.bins[displayIndexByOriginal[i]].x0),
             );
             return delta > 2 ? delta - 1 : delta;
-          }.bind(this),
+          }).bind(this),
         );
     }
 
@@ -355,23 +351,23 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
 
   componentDidUpdate(prevProps: DistributionPlotData, _prevState: {}) {
     if (
-      prevProps.axis != this.props.axis ||
-      prevProps.param_def != this.props.param_def ||
-      prevProps.width != this.props.width ||
-      prevProps.height != this.props.height
+      prevProps.axis !== this.props.axis ||
+      prevProps.param_def !== this.props.param_def ||
+      prevProps.width !== this.props.width ||
+      prevProps.height !== this.props.height
     ) {
       this.createDataScaleAndAxis();
     }
     if (
-      prevProps.axis != this.props.axis ||
-      prevProps.param_def != this.props.param_def ||
-      prevProps.nbins != this.props.nbins ||
-      prevProps.histData != this.props.histData ||
-      prevProps.width != this.props.width ||
-      prevProps.height != this.props.height
+      prevProps.axis !== this.props.axis ||
+      prevProps.param_def !== this.props.param_def ||
+      prevProps.nbins !== this.props.nbins ||
+      prevProps.histData !== this.props.histData ||
+      prevProps.width !== this.props.width ||
+      prevProps.height !== this.props.height
     ) {
       const animate =
-        prevProps.nbins != this.props.nbins || prevProps.histData != this.props.histData;
+        prevProps.nbins !== this.props.nbins || prevProps.histData !== this.props.histData;
       this.drawAllHistograms(animate);
     }
   }
@@ -379,7 +375,12 @@ export class DistributionPlot extends React.Component<DistributionPlotData, {}> 
   render() {
     return (
       <div data-testid="distribution-plot" data-axis={this.props.axis}>
-        <svg width={this.props.width} height={this.props.height}>
+        <svg
+          width={this.props.width}
+          height={this.props.height}
+          role="img"
+          aria-label={`Distribution of ${this.props.axis}`}
+        >
           <text
             x={13}
             y={15}

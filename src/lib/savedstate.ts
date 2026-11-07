@@ -15,7 +15,7 @@ export class PersistentStateInURL {
   prefix: string;
   params = {}; // In case history doesnt work, like when we are embedded in an iframe
   constructor(name: string) {
-    this.prefix = name == "" ? "" : name + ".";
+    this.prefix = name === "" ? "" : name + ".";
   }
   get(name: string, def_value?: any): any {
     return this._get(this.prefix + name, def_value);
@@ -28,7 +28,7 @@ export class PersistentStateInURL {
       return this.params[name];
     }
     const searchParams = new URLSearchParams(location.search);
-    var value = searchParams.get(name);
+    const value = searchParams.get(name);
     if (value === null) {
       return default_value;
     }
@@ -56,11 +56,11 @@ export class PersistentStateInMemory {
   prefix: string;
   params = {};
   constructor(name: string, params: { [key: string]: any }) {
-    this.prefix = name == "" ? "" : name + ".";
+    this.prefix = name === "" ? "" : name + ".";
     this.params = params;
   }
   get(name: string, def_value?: any) {
-    var v = this.params[this.prefix + name];
+    const v = this.params[this.prefix + name];
     return v !== undefined ? v : def_value;
   }
   set(name: string, value: any) {
@@ -69,7 +69,9 @@ export class PersistentStateInMemory {
   clear() {
     Object.keys(this.params)
       .filter((key) => key.startsWith(this.prefix))
-      .forEach((key) => delete this.params[key]);
+      .forEach((key) => {
+        delete this.params[key];
+      });
   }
   children(name: string) {
     return new PersistentStateInMemory(this.prefix + name, this.params);

@@ -5,9 +5,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+import DataTable from "datatables.net";
 import $ from "jquery";
 import React from "react";
-import DataTable from "datatables.net";
 import "datatables.net-bs5";
 
 // Ensure jQuery is on window for DataTables modules
@@ -35,13 +35,13 @@ function ensureDataTablesExtensions(): Promise<void> {
   return dataTablesExtensionsPromise;
 }
 
-import { Datapoint } from "./types";
-import style from "./hiplot.module.css";
-import { HiPlotPluginData } from "./plugin";
 import _ from "underscore";
 import { FilterType } from "./filters";
+import style from "./hiplot.module.css";
+import type { HiPlotPluginData } from "./plugin";
+import type { Datapoint } from "./types";
 
-interface RowsDisplayTableState {}
+type RowsDisplayTableState = {};
 
 // DISPLAYS_DATA_DOC_BEGIN
 // Corresponds to values in the dict of `exp.display_data(hip.Displays.TABLE)`
@@ -108,21 +108,21 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
     this.ordered_cols = ["uid"];
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const me = this;
-    $.each(this.props.params_def, function (k: string, _def) {
-      if (k == "uid") {
+    $.each(this.props.params_def, (k: string, _def) => {
+      if (k === "uid") {
         return;
       }
       me.ordered_cols.push(k);
     });
     if (me.props.order) {
-      const columnOrderScore = function (col: string) {
+      const columnOrderScore = (col: string) => {
         const index = me.props.order.indexOf(col);
-        if (index == -1) {
+        if (index === -1) {
           return me.props.order.length;
         }
         return index;
       };
-      me.ordered_cols.sort(function (a, b) {
+      me.ordered_cols.sort((a, b) => {
         // Return negative if `a` comes first
         return columnOrderScore(a) - columnOrderScore(b);
       });
@@ -130,20 +130,20 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
     me.ordered_cols.unshift("");
 
     dom.empty();
-    var columns: Array<{ [k: string]: any }> = this.ordered_cols.map(function (x) {
+    const columns: Array<{ [k: string]: any }> = this.ordered_cols.map((x) => {
       const pd = me.props.params_def[x];
       return {
         title:
-          x == "" ? "" : $("<span />").attr("class", pd.label_css).html(pd.label_html)[0].outerHTML,
+          x === ""
+            ? ""
+            : $("<span />").attr("class", pd.label_css).html(pd.label_html)[0].outerHTML,
         defaultContent: "null",
-        type: x == "" ? "html" : pd.numeric ? "num" : "string",
+        type: x === "" ? "html" : pd.numeric ? "num" : "string",
         visible: !me.props.hide || !me.props.hide.includes(x),
-        orderable: x != "", // Don't allow to sort by color
+        orderable: x !== "", // Don't allow to sort by color
       };
     });
-    const order_by = this.props.order_by.map(function (
-      col_otype: [string, string],
-    ): [number, string] {
+    const order_by = this.props.order_by.map((col_otype: [string, string]): [number, string] => {
       const col_idx = me.ordered_cols.indexOf(col_otype[0]);
       console.assert(
         col_idx >= 0,
@@ -151,7 +151,7 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
       );
       return [col_idx, col_otype[1]];
     });
-    columns[0]["render"] = function (data, type, row, _meta) {
+    columns[0]["render"] = (data, type, row, _meta) => {
       if (!me.dt) {
         return "";
       }
@@ -171,9 +171,9 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
         _end: number,
         _display,
       ) {
-        Array.from(thead.cells).forEach(function (th: HTMLElement, _i) {
+        Array.from(thead.cells).forEach((th: HTMLElement, _i) => {
           const col = th.innerText;
-          if (col != "" && me.dt === null && me.props.context_menu_ref !== undefined) {
+          if (col !== "" && me.dt === null && me.props.context_menu_ref !== undefined) {
             th.addEventListener("contextmenu", (e) => {
               me.props.context_menu_ref.current.show(e.pageX, e.pageY, col);
               e.preventDefault();
@@ -182,7 +182,6 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
           }
         });
       },
-      //@ts-ignore
       buttons: [
         {
           text: "Select results",
@@ -190,7 +189,6 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
           action: this.setSelectedToSearchResult.bind(this),
         },
       ],
-      //@ts-ignore
       colReorder: true,
     });
     dom.wrap('<div class="hiplot-table-scroll"></div>');
@@ -208,7 +206,7 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
         node.classList.remove("d-none");
         node.classList.remove("btn-secondary");
         const searchResults = this.dt.rows({ filter: "applied" });
-        if (this.dt.search() == "" || searchResults.count() == 0) {
+        if (this.dt.search() === "" || searchResults.count() === 0) {
           node.classList.add("d-none");
         }
       }.bind(this),
@@ -252,19 +250,19 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
      * aka when changing `numeric` status of a column
      * or when we add/remove columns
      */
-    var shouldRemountTable = false;
-    if (prevProps.params_def != this.props.params_def) {
+    let shouldRemountTable = false;
+    if (prevProps.params_def !== this.props.params_def) {
       const k1: string[] = Object.keys(prevProps.params_def);
       const k2: string[] = Object.keys(this.props.params_def);
       k1.sort();
       k2.sort();
-      if (k1.length != k2.length) {
+      if (k1.length !== k2.length) {
         shouldRemountTable = true;
       } else {
-        for (var i = 0; i < k1.length; ++i) {
+        for (let i = 0; i < k1.length; ++i) {
           if (
-            k1[i] != k2[i] ||
-            prevProps.params_def[k1[i]].numeric != this.props.params_def[k2[i]].numeric
+            k1[i] !== k2[i] ||
+            prevProps.params_def[k1[i]].numeric !== this.props.params_def[k2[i]].numeric
           ) {
             shouldRemountTable = true;
             break;
@@ -277,11 +275,11 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
       this.mountDt();
     } else if (
       // Rows changed
-      prevProps.rows_selected != this.props.rows_selected ||
+      prevProps.rows_selected !== this.props.rows_selected ||
       // Color changed - need redraw with the correct color
-      prevProps.colorby != this.props.colorby ||
+      prevProps.colorby !== this.props.colorby ||
       // Color scale changed - need redraw with the correct color
-      prevProps.params_def != this.props.params_def
+      prevProps.params_def !== this.props.params_def
     ) {
       this.setSelected_debounced(this.props.rows_selected);
     }
@@ -293,14 +291,14 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
     }
     const searchResults = dt.rows({ filter: "applied" });
     const uidIdx = this.ordered_cols.indexOf("uid");
-    var searchResultsDatapoints = [];
+    const searchResultsDatapoints = [];
     $.each(
       searchResults.data(),
       function (index, value) {
         searchResultsDatapoints.push(this.props.dp_lookup[value[uidIdx]]);
       }.bind(this),
     );
-    var filter = {
+    let filter = {
       type: FilterType.Search,
       data: dt.search(),
     };
@@ -320,12 +318,8 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
     const ordered_cols = this.ordered_cols;
 
     dt.clear();
-    dt.rows.add(
-      selected.map(function (row) {
-        return ordered_cols.map((col) => (col == "" ? "" : row[col]));
-      }),
-    );
-    if (dt.search() == "") {
+    dt.rows.add(selected.map((row) => ordered_cols.map((col) => (col === "" ? "" : row[col]))));
+    if (dt.search() === "") {
       // Hack to redraw faster
       dt.settings()[0].oFeatures.bFilter = false;
       dt.draw();
@@ -333,7 +327,7 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
     } else {
       dt.draw();
     }
-    this.empty = selected.length == 0;
+    this.empty = selected.length === 0;
   }
   render() {
     return (

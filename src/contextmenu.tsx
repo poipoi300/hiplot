@@ -8,7 +8,7 @@
 import $ from "jquery";
 import React from "react";
 
-interface ContextMenuProps {}
+type ContextMenuProps = {};
 
 interface ContextMenuState {
   visible: boolean;
@@ -54,14 +54,14 @@ export class ContextMenu extends React.Component<ContextMenuProps, ContextMenuSt
     }
   }
   removeCallbacks(obj: any) {
-    this.trigger_callbacks = this.trigger_callbacks.filter((trigger) => trigger.obj != obj);
+    this.trigger_callbacks = this.trigger_callbacks.filter((trigger) => trigger.obj !== obj);
     this.trigger_callbacks_last = this.trigger_callbacks_last.filter(
-      (trigger) => trigger.obj != obj,
+      (trigger) => trigger.obj !== obj,
     );
   }
   show(pageX: number, pageY: number, column: string) {
     // This assumes parent has `relative` positioning
-    var parent = $(this.context_menu_div.current.parentElement).offset();
+    const parent = $(this.context_menu_div.current.parentElement).offset();
     this.setState({
       top: Math.max(0, pageY - 10 - parent.top),
       left: Math.max(0, pageX - 90 - parent.left),
@@ -78,13 +78,13 @@ export class ContextMenu extends React.Component<ContextMenuProps, ContextMenuSt
     $(window).off("click", this.hide);
   }
   componentDidUpdate(prevProps: Readonly<ContextMenuProps>, prevState: Readonly<ContextMenuState>) {
-    var cm = this.context_menu_div.current;
+    const cm = this.context_menu_div.current;
     cm.style.display = this.state.visible ? "block" : "none";
     cm.style.top = `${this.state.top}px`;
     cm.style.left = `${this.state.left}px`;
     cm.classList.toggle("show", this.state.visible);
     const needsUpdate =
-      (this.state.visible && !prevState.visible) || this.state.column != prevState.column;
+      (this.state.visible && !prevState.visible) || this.state.column !== prevState.column;
     if (needsUpdate) {
       cm.innerHTML = "";
       this.trigger_callbacks.forEach((trigger) => {

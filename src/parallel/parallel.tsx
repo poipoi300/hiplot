@@ -8,20 +8,19 @@
 // This file is largely inspired from the snippet by Kai Chang
 // available in http://bl.ocks.org/syntagmatic/3150059
 
+import * as d3 from "d3";
 import $ from "jquery";
 import React from "react";
-import * as d3 from "d3";
 import _ from "underscore";
-
-import { Datapoint, ParamType } from "../types";
-import { create_d3_scale, scale_pixels_range, ParamDef } from "../infertypes";
+import { apply_filters, type Filter, FilterType } from "../filters";
 import style from "../hiplot.module.css";
-import pstyle from "./parallel.module.css";
-import { HiPlotPluginData } from "../plugin";
-import { ResizableH } from "../lib/resizable";
-import { Filter, FilterType, apply_filters } from "../filters";
+import { create_d3_scale, type ParamDef, scale_pixels_range } from "../infertypes";
 import { IS_MOBILE } from "../lib/browsercompat";
 import { getLogScaleTickValues } from "../lib/d3_scales";
+import { ResizableH } from "../lib/resizable";
+import type { HiPlotPluginData } from "../plugin";
+import { type Datapoint, ParamType } from "../types";
+import pstyle from "./parallel.module.css";
 
 interface StringMapping<V> {
   [key: string]: V;
@@ -153,8 +152,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     const willBeInverted = !this.state.invert.has(d);
 
     if (!willBeInverted) {
-      this.setState(function (prevState) {
-        var newInvert = new Set(prevState.invert);
+      this.setState((prevState) => {
+        const newInvert = new Set(prevState.invert);
         newInvert.delete(d);
         return {
           invert: newInvert,
@@ -163,13 +162,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.setScaleRange(d, willBeInverted);
       div
         .selectAll("." + style.label)
-        .filter(function (p) {
-          return p == d;
-        })
+        .filter((p) => p === d)
         .style("text-decoration", null);
     } else {
-      this.setState(function (prevState) {
-        var newInvert = new Set(prevState.invert);
+      this.setState((prevState) => {
+        const newInvert = new Set(prevState.invert);
         newInvert.add(d);
         return {
           invert: newInvert,
@@ -178,9 +175,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.setScaleRange(d, willBeInverted);
       div
         .selectAll("." + style.label)
-        .filter(function (p) {
-          return p == d;
-        })
+        .filter((p) => p === d)
         .style("text-decoration", "underline");
     }
     return extent;
@@ -218,31 +213,31 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.sendBrushExtents.cancel();
   }
   componentDidUpdate(prevProps: ParallelPlotData, prevState: ParallelPlotState) {
-    if (prevState.height != this.state.height || prevState.width != this.state.width) {
+    if (prevState.height !== this.state.height || prevState.width !== this.state.width) {
       if (this.on_resize != null) {
         this.on_resize();
       }
     }
-    if (prevState.invert != this.state.invert) {
+    if (prevState.invert !== this.state.invert) {
       this.props.persistentState.set("invert", Array.from(this.state.invert));
     }
-    if (prevState.hide != this.state.hide) {
+    if (prevState.hide !== this.state.hide) {
       this.props.persistentState.set("hide", Array.from(this.state.hide));
       // Notify parent of hidden columns count change
       if (this.props.onHiddenColumnsChange) {
         this.props.onHiddenColumnsChange(this.getRestorableColumnsCount());
       }
     }
-    if (prevState.order != this.state.order) {
+    if (prevState.order !== this.state.order) {
       this.props.persistentState.set("order", this.state.order);
     }
-    if (prevState.dimensions != this.state.dimensions && this.xscale !== undefined) {
-      var g: any = d3.select(this.svgg_ref.current).selectAll(".dimension");
+    if (prevState.dimensions !== this.state.dimensions && this.xscale !== undefined) {
+      let g: any = d3.select(this.svgg_ref.current).selectAll(".dimension");
       this.xscale.domain(this.state.dimensions);
       this.dimensions_dom
         .filter(
           function (this: ParallelPlot, p) {
-            return this.state.dimensions.indexOf(p) == -1;
+            return this.state.dimensions.indexOf(p) === -1;
           }.bind(this),
         )
         .remove();
@@ -269,9 +264,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       }
     }
     // Highlight polylines
-    if (prevProps.rows_highlighted != this.props.rows_highlighted) {
+    if (prevProps.rows_highlighted !== this.props.rows_highlighted) {
       this.highlighted.clearRect(0, 0, this.w, this.h);
-      if (this.props.rows_highlighted.length == 0) {
+      if (this.props.rows_highlighted.length === 0) {
         d3.select(this.foreground_ref.current).style("opacity", null);
       } else {
         d3.select(this.foreground_ref.current).style("opacity", "0.25");
@@ -285,13 +280,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     // Recompute scales - when dimensions got removed, or scaling changed for one
     if (
       this.pplot &&
-      (this.state.dimensions != prevState.dimensions ||
-        prevProps.params_def != this.props.params_def)
+      (this.state.dimensions !== prevState.dimensions ||
+        prevProps.params_def !== this.props.params_def)
     ) {
-      var drop_scales = [];
+      const drop_scales = [];
       this.state.dimensions.forEach(
         function (this: ParallelPlot, d: string) {
-          var new_scale = this.createScale(d);
+          const new_scale = this.createScale(d);
           if (new_scale === null) {
             drop_scales.push(d);
             return;
@@ -311,7 +306,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.pplot.redraw_axis();
     }
     // Rescale to new dataset domain
-    if (this.pplot && prevProps.params_def != this.props.params_def) {
+    if (this.pplot && prevProps.params_def !== this.props.params_def) {
       this.brush_clear_all();
       this.update_ticks();
 
@@ -321,15 +316,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
     // When we need to redraw lines
     if (
-      prevProps.rows_selected != this.props.rows_selected ||
-      prevProps.colorby != this.props.colorby ||
-      prevState.height != this.state.height ||
-      prevState.width != this.state.width
+      prevProps.rows_selected !== this.props.rows_selected ||
+      prevProps.colorby !== this.props.colorby ||
+      prevState.height !== this.state.height ||
+      prevState.width !== this.state.width
     ) {
-      this.setState(function (prevState) {
-        return { brush_count: prevState.brush_count + 1 };
-      });
-    } else if (prevState.brush_count != this.state.brush_count) {
+      this.setState((prevState) => ({ brush_count: prevState.brush_count + 1 }));
+    } else if (prevState.brush_count !== this.state.brush_count) {
       this.paths(this.props.rows_selected, this.foreground, this.state.brush_count);
     }
     this.props.window_state.height = this.state.height;
@@ -342,7 +335,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     75,
   );
   onResize(height: number, width: number): void {
-    if (this.state.height != height || this.state.width != width) {
+    if (this.state.height !== height || this.state.width !== width) {
       this.setState({ height: height, width: width });
     }
   }
@@ -351,7 +344,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     const pd = this.props.params_def[d];
     const fmt = pd.ticks_format;
     const tickCount = 1 + this.state.height / 50;
-    var axis = this.axis.scale(this.yscale[d]).ticks(tickCount, fmt);
+    const axis = this.axis.scale(this.yscale[d]).ticks(tickCount, fmt);
     if (pd.type === ParamType.NUMERICLOG) {
       const scale = this.yscale[d];
       const domain = scale.domain();
@@ -383,7 +376,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         >
           <canvas ref={this.foreground_ref} className={style["background-canvas"]}></canvas>
           <canvas ref={this.highlighted_ref} className={style["highlight-canvas"]}></canvas>
-          <svg ref={this.svg_ref} width={this.state.width} height={this.state.height}>
+          <svg
+            ref={this.svg_ref}
+            width={this.state.width}
+            height={this.state.height}
+            role="img"
+            aria-label="Parallel coordinates axes"
+          >
             <g ref={this.svgg_ref} transform={`translate(${this.m[3]}, ${this.m[0]})`}></g>
           </svg>
         </div>
@@ -396,7 +395,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         "brush_extents",
         function (this: ParallelPlot) {
           const yscales = this.yscale;
-          var colToScale = {};
+          const colToScale = {};
           this.dimensions_dom.selectAll("." + pstyle.brush).each(function (
             this: SVGGElement,
             dim: string,
@@ -417,12 +416,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return (
       pd === undefined ||
       pd.distinct_values.length <= 1 ||
-      (pd.type == ParamType.CATEGORICAL &&
+      (pd.type === ParamType.CATEGORICAL &&
         pd.distinct_values.length > this.props.categoricalMaximumValues)
     );
   }.bind(this);
   componentDidMount() {
-    var dimensions = Object.keys(this.props.params_def)
+    const dimensions = Object.keys(this.props.params_def)
       .filter(
         function (this: ParallelPlot, k: string) {
           if (this.forceHideColumn(this.props.params_def_unfiltered[k]) || this.state.hide.has(k)) {
@@ -435,17 +434,17 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       .reverse()
       .sort(
         function (this: ParallelPlot, a: string, b: string) {
-          const pda = this.state.order.findIndex((e) => e == b);
-          const pdb = this.state.order.findIndex((e) => e == a);
+          const pda = this.state.order.findIndex((e) => e === b);
+          const pdb = this.state.order.findIndex((e) => e === a);
           return (
-            (pdb == -1 ? this.state.order.length : pdb) -
-            (pda == -1 ? this.state.order.length : pda)
+            (pdb === -1 ? this.state.order.length : pdb) -
+            (pda === -1 ? this.state.order.length : pda)
           );
         }.bind(this),
       );
     this.setState(
       {
-        width: this.state.width == 0 ? this.root_ref.current.offsetWidth : this.state.width,
+        width: this.state.width === 0 ? this.root_ref.current.offsetWidth : this.state.width,
         dimensions: dimensions,
         order: Array.from(dimensions),
       },
@@ -467,7 +466,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (!this.can_restore_axis(column)) {
       return;
     }
-    var restore_btn = $(`<a class="dropdown-item" href="#">Restore in Parallel Plot</a>`);
+    const restore_btn = $(`<a class="dropdown-item" href="#">Restore in Parallel Plot</a>`);
     restore_btn.on(
       "click",
       function (this: ParallelPlot, event) {
@@ -479,18 +478,18 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   position = function (this: ParallelPlot, d: string): number {
-    if (this.state.dragging && d == this.state.dragging.col) {
+    if (this.state.dragging && d === this.state.dragging.col) {
       return this.state.dragging.pos;
     }
     return this.xscale(d);
   }.bind(this);
 
   initParallelPlot(this: ParallelPlot) {
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const me = this;
 
-    var div = (this.div = d3.select(me.root_ref.current));
-    var svg = d3.select(me.svg_ref.current);
+    this.div = d3.select(me.root_ref.current);
+    const div = this.div;
+    const svg = d3.select(me.svg_ref.current);
 
     // Foreground canvas for primary view
     me.foreground = this.foreground_ref.current.getContext("2d");
@@ -513,7 +512,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
           .container(function () {
             return this.parentElement.parentElement.parentElement;
           })
-          .on("start", function (event, d: string) {
+          .on("start", (event, d: string) => {
             me.setState({
               dragging: {
                 col: d,
@@ -528,7 +527,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             const eventdx = event.dx;
             const brushEl = d3.select(this).select("." + pstyle.brush);
             me.setState(
-              function (prevState, _) {
+              (prevState, _) => {
                 if (!prevState.dragging) {
                   return null;
                 }
@@ -541,7 +540,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
                   },
                 };
               },
-              function () {
+              () => {
                 // Feedback for axis deletion if dropped
                 if (!me.state.dragging) {
                   return;
@@ -554,20 +553,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
               },
             );
 
-            var new_dimensions = Array.from(me.state.dimensions);
-            new_dimensions.sort(function (a, b) {
-              return me.position(a) - me.position(b);
-            });
-            if (
-              !new_dimensions.every(function (val, idx) {
-                return val == me.state.dimensions[idx];
-              })
-            ) {
+            const new_dimensions = Array.from(me.state.dimensions);
+            new_dimensions.sort((a, b) => me.position(a) - me.position(b));
+            if (!new_dimensions.every((val, idx) => val === me.state.dimensions[idx])) {
               me.setState({ dimensions: new_dimensions });
             }
-            me.dimensions_dom.attr("transform", function (d) {
-              return "translate(" + me.position(d) + ")";
-            });
+            me.dimensions_dom.attr("transform", (d) => "translate(" + me.position(d) + ")");
           })
           .on("end", function (event, d: string) {
             if (!me.state.dragging) {
@@ -577,7 +568,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             if (!me.state.dragging.dragging) {
               // no movement, invert axis
               if (!IS_MOBILE) {
-                var extent = me.toggleInvertAxis(d);
+                const extent = me.toggleInvertAxis(d);
                 me.update_ticks(d, extent);
               }
             } else {
@@ -585,19 +576,14 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
               if (me.state.dragging.pos < 12 || me.state.dragging.pos > me.w - 12) {
                 me.remove_axis(d);
               } else {
-                // eslint-disable-next-line @typescript-eslint/no-this-alias
-                const element = this;
-                me.setState(
-                  { order: Array.from(me.state.dimensions), dragging: null },
-                  function () {
-                    // reorder axes
-                    const parentG = d3.select(element.parentElement.parentElement);
-                    parentG.transition().attr("transform", "translate(" + me.xscale(d) + ")");
-                    var extents = brush_extends();
-                    extent = extents[d];
-                    me.update_ticks(d, extent);
-                  },
-                );
+                me.setState({ order: Array.from(me.state.dimensions), dragging: null }, () => {
+                  // reorder axes
+                  const parentG = d3.select(this.parentElement.parentElement);
+                  parentG.transition().attr("transform", "translate(" + me.xscale(d) + ")");
+                  const extents = brush_extends();
+                  const extent = extents[d];
+                  me.update_ticks(d, extent);
+                });
               }
             }
 
@@ -617,9 +603,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         .enter()
         .append<SVGGElement>("svg:g")
         .attr("class", "dimension")
-        .attr("transform", function (d) {
-          return "translate(" + me.xscale(d) + ")";
-        });
+        .attr("transform", (d) => "translate(" + me.xscale(d) + ")");
 
       // Add an axis and title.
       me.dimensions_dom
@@ -628,11 +612,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         .attr("transform", "translate(0,0)")
         .each(function (d) {
           console.assert(me.yscale[d], d, me.yscale, this);
-          // @ts-ignore
           d3.select(this).call(me.get_axis(d));
         })
         .append("text")
-        .text(function (dim) {
+        .text((dim) => {
           const pd = me.props.params_def[dim];
           return me.labelTextFromHtml(pd.label_html, pd.name);
         })
@@ -647,7 +630,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             .append("title")
             .text(IS_MOBILE ? "Long-press for options" : "Right click for options");
         })
-        .on("contextmenu", function (event, dim: string) {
+        .on("contextmenu", (event, dim: string) => {
           if (me.props.context_menu_ref && me.props.context_menu_ref.current) {
             me.props.context_menu_ref.current.show(event.pageX, event.pageY, dim);
             event.preventDefault();
@@ -727,15 +710,15 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         me.props.context_menu_ref.current.hide();
       }
       const extents: { [key: string]: [number, number] | null } = brush_extends();
-      var actives = me.state.dimensions.filter(function (p) {
-        return extents[p] !== null && extents[p] !== undefined;
-      });
+      const actives = me.state.dimensions.filter(
+        (p) => extents[p] !== null && extents[p] !== undefined,
+      );
 
       // hack to hide ticks beyond extent
       me.dimensions_dom.each(function (dimension) {
         if (_.include(actives, dimension)) {
-          var scale = me.yscale[dimension];
-          var extent = extents[dimension];
+          const scale = me.yscale[dimension];
+          const extent = extents[dimension];
           d3.select(this)
             .selectAll("text")
             .classed(pstyle.tickSelected, true)
@@ -743,7 +726,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
               if (d3.select(this).classed(style.label)) {
                 return null;
               }
-              var value = d3.select(this).data();
+              const value = d3.select(this).data();
               return extent[0] <= scale(value) && scale(value) <= extent[1] ? null : "none";
             });
         } else {
@@ -758,17 +741,17 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       });
 
       // bold dimensions with label
-      div.selectAll("." + style.label).style("font-weight", function (dimension) {
+      div.selectAll("." + style.label).style("font-weight", (dimension) => {
         if (_.include(actives, dimension)) return "bold";
         return null;
       });
 
       // Get lines within extents
-      var filters: Array<Filter> = actives.map(function (dimension) {
+      const filters: Array<Filter> = actives.map((dimension) => {
         const scale = me.yscale[dimension];
         const extent = extents[dimension] as [number, number];
         const range = scale_pixels_range(scale, extent);
-        if (range.type == ParamType.CATEGORICAL && !range.values) {
+        if (range.type === ParamType.CATEGORICAL && !range.values) {
           // Select nothing
           return {
             type: FilterType.Not,
@@ -778,9 +761,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             },
           };
         }
-        var min, max;
-        if (range.type == ParamType.CATEGORICAL) {
-          if (range.values.length == 0) {
+        let min: string | number;
+        let max: string | number;
+        if (range.type === ParamType.CATEGORICAL) {
+          if (range.values.length === 0) {
             return {
               type: FilterType.None,
               data: {},
@@ -788,7 +772,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
           }
           min = range.values[0];
           max = range.values[range.values.length - 1];
-          console.assert(typeof min == typeof max, min, max);
+          console.assert(typeof min === typeof max, min, max);
         } else {
           min = Math.min(...range.range);
           max = Math.max(...range.range);
@@ -811,24 +795,24 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         // match filters-based selected rows
         // But relax the verification a bit - math errors can happen
         // and we only require a 1 pixel precision
-        var selected_pixels_minset = [];
-        var selected_pixels_maxset = [];
-        me.props.rows_filtered.forEach(function (d) {
+        const selected_pixels_minset = [];
+        const selected_pixels_maxset = [];
+        me.props.rows_filtered.forEach((d) => {
           if (
-            actives.every(function (dimension) {
-              var scale = me.yscale[dimension];
-              var extent = extents[dimension] as [number, number];
-              var value = d[dimension];
+            actives.every((dimension) => {
+              const scale = me.yscale[dimension];
+              const extent = extents[dimension] as [number, number];
+              const value = d[dimension];
               return extent[0] + 1 <= scale(value) && scale(value) <= extent[1] - 1;
             })
           ) {
             selected_pixels_minset.push(d);
           }
           if (
-            actives.every(function (dimension) {
-              var scale = me.yscale[dimension];
-              var extent = extents[dimension] as [number, number];
-              var value = d[dimension];
+            actives.every((dimension) => {
+              const scale = me.yscale[dimension];
+              const extent = extents[dimension] as [number, number];
+              const value = d[dimension];
               return extent[0] - 1 <= scale(value) && scale(value) <= extent[1] + 1;
             })
           ) {
@@ -868,9 +852,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.on_resize = _.debounce(function () {
       me.compute_dimensions();
 
-      div.selectAll(".dimension").attr("transform", function (d: string) {
-        return "translate(" + me.xscale(d) + ")";
-      });
+      div
+        .selectAll(".dimension")
+        .attr("transform", (d: string) => "translate(" + me.xscale(d) + ")");
       // update brush placement
       svg.selectAll("." + pstyle.brush).each(function (_d) {
         d3.select(this).call(me.d3brush);
@@ -878,15 +862,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
       // update axis placement
       div.selectAll("." + pstyle.axis).each(function (d: string) {
-        // @ts-ignore
         d3.select(this).call(me.get_axis(d));
       });
       me.updateAxisTitlesAnglesAndFontSize();
 
       // render data
-      this.setState(function (prevState) {
-        return { brush_count: prevState.brush_count + 1 };
-      });
+      this.setState((prevState) => ({ brush_count: prevState.brush_count + 1 }));
       this.props.sendMessage("height_changed", () => null);
     }, 100);
 
@@ -898,9 +879,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     me.sendBrushExtents();
 
     // Trigger initial brush
-    me.setState(function (prevState) {
-      return { brush_count: prevState.brush_count + 1 };
-    });
+    me.setState((prevState) => ({ brush_count: prevState.brush_count + 1 }));
 
     me.pplot = {
       redraw_axis: redraw_axis,
@@ -909,7 +888,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   setScaleRange(k: string, inverted: boolean = this.state.invert.has(k)) {
-    var range = [this.h, 0];
+    let range = [this.h, 0];
     if (inverted) {
       range = [0, this.h];
     }
@@ -917,15 +896,15 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   createScale(k: string) {
-    var pd = this.props.params_def[k];
+    const pd = this.props.params_def[k];
     if (pd === undefined) {
       return null;
     }
-    var range = [this.h, 0];
+    let range = [this.h, 0];
     if (this.state.invert.has(k)) {
       range = [0, this.h];
     }
-    var scale = create_d3_scale(pd);
+    const scale = create_d3_scale(pd);
     scale.range(range);
     scale.parallel_plot_axis = k;
     return scale;
@@ -947,7 +926,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   compute_dimensions() {
     this.w = this.state.width - this.m[1] - this.m[3];
     this.h = this.state.height - this.m[0] - this.m[2];
-    //@ts-ignore
+    //@ts-expect-error
     this.axis = d3.axisLeft(d3.scaleLinear() /* placeholder */);
     this.d3brush
       .extent([
@@ -976,15 +955,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   // transition ticks for reordering, rescaling and inverting
   update_ticks = function (d?: string, extent?) {
-    var div = d3.select(this.root_ref.current);
+    const div = d3.select(this.root_ref.current);
     // update brushes
     if (d) {
-      var brush_el = d3
+      const brush_el = d3
         .select(this.svg_ref.current)
         .selectAll("." + pstyle.brush)
-        .filter(function (key) {
-          return key == d;
-        });
+        .filter((key) => key === d);
       this.d3brush.move(brush_el, extent);
     } else {
       // all ticks
@@ -1003,25 +980,23 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
       d3.select(node).selectAll(".tick text").style("font-weight", null).style("font-size", null);
     });
-    this.setState(function (prevState) {
-      return { brush_count: prevState.brush_count + 1 };
-    });
+    this.setState((prevState) => ({ brush_count: prevState.brush_count + 1 }));
   }.bind(this);
 
   // render a set of polylines on a canvas
   paths = function (selected: Array<Datapoint>, ctx: CanvasRenderingContext2D, count: number) {
-    var n = selected.length,
+    let n = selected.length,
       i = 0,
-      opacity = d3.min([2 / Math.pow(n, 0.3), 1]),
+      opacity = d3.min([2 / n ** 0.3, 1]),
       timer = new Date().getTime();
 
-    var shuffled_data: Array<Datapoint> = _.shuffle(selected);
+    const shuffled_data: Array<Datapoint> = _.shuffle(selected);
 
     ctx.clearRect(0, 0, this.w + 1, this.h + 1);
 
     // Adjusts rendering speed
     const optimize = (timer) => {
-      var delta = new Date().getTime() - timer;
+      const delta = new Date().getTime() - timer;
       this.render_speed = Math.max(Math.ceil((this.render_speed * 30) / delta), 8);
       this.render_speed = Math.min(this.render_speed, 300);
       return new Date().getTime();
@@ -1029,7 +1004,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
     // render a batch of polylines
     const render_range = (selection: Array<Datapoint>, i: number, max: number, opacity: number) => {
-      var s = selection.slice(i, max);
+      const s = selection.slice(i, max);
       s.forEach((d) => {
         this.path(d, ctx, this.props.get_color_for_row(d, opacity));
       });
@@ -1038,7 +1013,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     // render all lines until finished or a new brush event
     const animloop = () => {
       if (i >= n || count < this.state.brush_count) return true;
-      var max = d3.min([i + this.render_speed, n]);
+      const max = d3.min([i + this.render_speed, n]);
       render_range(shuffled_data, i, max, opacity);
       i = max;
       timer = optimize(timer); // adjusts render_speed
@@ -1060,21 +1035,19 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   remove_axis(d: string): void {
-    var pd = this.props.params_def[d];
+    const pd = this.props.params_def[d];
     if (pd !== undefined) {
-      this.setState(function (prevState, _props) {
-        var newHide = new Set(prevState.hide);
+      this.setState((prevState, _props) => {
+        const newHide = new Set(prevState.hide);
         newHide.add(d);
         return {
           hide: newHide,
         };
       });
     }
-    this.setState(function (ps, __) {
-      return {
-        dimensions: _.difference(ps.dimensions, [d]),
-      };
-    });
+    this.setState((ps, __) => ({
+      dimensions: _.difference(ps.dimensions, [d]),
+    }));
   }
 
   can_restore_axis(d: string): boolean {
@@ -1086,8 +1059,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (!this.can_restore_axis(d)) {
       return;
     }
-    this.setState(function (prevState) {
-      var newHide = new Set(prevState.hide);
+    this.setState((prevState) => {
+      const newHide = new Set(prevState.hide);
       newHide.delete(d);
       return {
         hide: newHide,
@@ -1100,9 +1073,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (toRestore.length === 0) {
       return;
     }
-    this.setState(function (prevState) {
-      var newHide = new Set(prevState.hide);
-      var newDimensions = prevState.dimensions.slice();
+    this.setState((prevState) => {
+      const newHide = new Set(prevState.hide);
+      const newDimensions = prevState.dimensions.slice();
       toRestore.forEach((d) => {
         newHide.delete(d);
         if (newDimensions.indexOf(d) === -1) {
@@ -1129,15 +1102,15 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     color?: string,
   ) {
     if (color) ctx.strokeStyle = color;
-    var has_started = false;
-    var x0: number, y0: number;
+    let has_started = false;
+    let x0: number, y0: number;
     this.state.dimensions.map(
       function (this: ParallelPlot, p: string) {
-        var err = d[p] === undefined;
-        if (!err && (d[p] == "inf" || d[p] == "-inf") && this.props.params_def[p].numeric) {
+        let err = d[p] === undefined;
+        if (!err && (d[p] === "inf" || d[p] === "-inf") && this.props.params_def[p].numeric) {
           err = true;
         }
-        var x = this.xscale(p),
+        const x = this.xscale(p),
           y = this.yscale[p](d[p]);
         if (isNaN(y)) {
           err = true;
@@ -1158,10 +1131,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
           ctx.beginPath();
           has_started = true;
         }
-        var cp1x = x - 0.88 * (x - x0);
-        var cp1y = y0;
-        var cp2x = x - 0.12 * (x - x0);
-        var cp2y = y;
+        const cp1x = x - 0.88 * (x - x0);
+        const cp1y = y0;
+        const cp2x = x - 0.12 * (x - x0);
+        const cp2y = y;
         ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x, y);
         x0 = x;
         y0 = y;

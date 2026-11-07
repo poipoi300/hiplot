@@ -5,14 +5,13 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+import * as d3 from "d3";
 import $ from "jquery";
 import React from "react";
-import * as d3 from "d3";
-
-import { HiPlotPluginData } from "../plugin";
 import _ from "underscore";
-import { DistributionPlot, HistogramData } from "./plot";
 import { ResizableH } from "../lib/resizable";
+import type { HiPlotPluginData } from "../plugin";
+import { DistributionPlot, type HistogramData } from "./plot";
 
 export interface HiPlotDistributionPluginState {
   initialHeight: number;
@@ -45,7 +44,7 @@ export class HiPlotDistributionPlugin extends React.Component<
   container_ref: React.RefObject<HTMLDivElement> = React.createRef();
   constructor(props: DistributionPluginProps) {
     super(props);
-    var axis = this.props.persistentState.get("axis", null);
+    let axis = this.props.persistentState.get("axis", null);
     if (axis && this.props.params_def[axis] === undefined) {
       axis = null;
     }
@@ -72,10 +71,10 @@ export class HiPlotDistributionPlugin extends React.Component<
   componentDidMount() {
     if (this.props.context_menu_ref && this.props.context_menu_ref.current) {
       this.props.context_menu_ref.current.addCallback((column, cm) => {
-        var contextmenu = $(cm);
+        const contextmenu = $(cm);
         contextmenu.append($('<div class="dropdown-divider"></div>'));
-        var option = $('<a class="dropdown-item" href="#">').text("View distribution");
-        if (this.state.axis == column) {
+        const option = $('<a class="dropdown-item" href="#">').text("View distribution");
+        if (this.state.axis === column) {
           option.addClass("disabled").css("pointer-events", "none");
         }
         option.click((event) => {
@@ -87,13 +86,13 @@ export class HiPlotDistributionPlugin extends React.Component<
     }
   }
   componentDidUpdate(prevProps: HiPlotPluginData, prevState: HiPlotDistributionPluginState) {
-    if (prevState.axis != this.state.axis) {
+    if (prevState.axis !== this.state.axis) {
       this.props.sendMessage("height_changed", () => null);
       if (this.props.persistentState) {
         this.props.persistentState.set("axis", this.state.axis);
       }
     }
-    if (this.state.histData.all != this.props.rows_filtered) {
+    if (this.state.histData.all !== this.props.rows_filtered) {
       this.setState(
         function (s: HiPlotDistributionPluginState, _p) {
           return {
@@ -105,7 +104,7 @@ export class HiPlotDistributionPlugin extends React.Component<
           };
         }.bind(this),
       );
-    } else if (this.state.histData.selected != this.props.rows_selected) {
+    } else if (this.state.histData.selected !== this.props.rows_selected) {
       this.setState(
         function (s: HiPlotDistributionPluginState, _p) {
           return {
@@ -126,7 +125,7 @@ export class HiPlotDistributionPlugin extends React.Component<
   }
   onResize = _.debounce(
     function (height: number, width: number) {
-      if (height != this.state.height || width != this.state.width) {
+      if (height !== this.state.height || width !== this.state.width) {
         this.setState({ height: height, width: width });
         this.props.sendMessage("height_changed", () => null);
       }

@@ -5,8 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import { DataProviderProps } from "../plugin";
 import React from "react";
+import type { DataProviderProps } from "../plugin";
 
 export class StaticDataProvider extends React.Component<DataProviderProps, {}> {
   render() {
