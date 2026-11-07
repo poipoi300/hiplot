@@ -164,6 +164,7 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
       data: [],
       order: order_by,
       deferRender: true, // Create HTML elements only when displayed
+      layout: { topEnd: ["buttons", "search"] },
       headerCallback: function headerCallback(thead: HTMLTableRowElement) {
         const contextMenuRef = me.props.context_menu_ref;
         Array.from(thead.cells).forEach((th: HTMLElement, _i) => {
@@ -187,10 +188,6 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
       colReorder: true,
     });
     dom.wrap('<div class="hiplot-table-scroll"></div>');
-    const btnsContainer = $(mounted(this.table_container)).find(".col-md-6:eq(1)");
-    btnsContainer.addClass("btn-group");
-    this.dt.buttons().container().appendTo(btnsContainer);
-    btnsContainer.find(".dt-buttons").removeClass("btn-group");
     dom.on(
       "search.dt",
       function (this: RowsDisplayTable) {

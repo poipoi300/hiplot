@@ -43,12 +43,15 @@ export class UploadDataProvider extends React.Component<DataProviderProps, State
           resolve({
             error: `Unexpected file (is it a CSV file?): ${fileRejections[0].file.name} - ${fileRejections[0].errors[0].message}`,
           });
+          return;
         }
         if (acceptedFiles.length > 1) {
           resolve({ error: `Uploading more than one file is not supported` });
+          return;
         }
         if (acceptedFiles.length === 0) {
           resolve({ error: `No file uploaded?` });
+          return;
         }
         const file = acceptedFiles[0];
         const reader = new FileReader();
