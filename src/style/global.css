@@ -64,6 +64,7 @@
   position: relative;
   background-color: var(--hip-bg);
   color: var(--hip-fg);
+  color-scheme: dark;
 }
 
 .hip_thm--dark :link,
@@ -77,6 +78,7 @@
   position: relative;
   background-color: var(--hip-bg);
   color: var(--hip-fg);
+  color-scheme: light;
 }
 
 .hip_thm--light ::selection,

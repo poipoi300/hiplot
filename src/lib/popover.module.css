@@ -4,29 +4,6 @@
   display: inline-flex;
 }
 
-.trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font: inherit;
-  font-size: 12px;
-  line-height: 22px;
-  padding: 0 10px;
-  border: 1px solid var(--hip-rule);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--hip-muted);
-  cursor: pointer;
-  transition:
-    color 150ms ease-out,
-    border-color 150ms ease-out;
-}
-.trigger:hover,
-.trigger[aria-expanded="true"] {
-  color: var(--hip-fg);
-  border-color: var(--hip-axis);
-}
-
 .panel {
   position: absolute;
   top: calc(100% + 6px);

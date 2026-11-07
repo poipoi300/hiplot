@@ -4,9 +4,33 @@
     <meta http-equiv="Content-Type" content="text/html;charset=utf-8" />
     <title>HiPlot</title>
     <link rel="icon" href="static/icon.png" />
+    <style>
+      /*
+       * Only when HiPlot is the whole page: a notebook embeds this markup in its
+       * own body, where these selectors match nothing. The HiPlot theme fills
+       * the viewport; until it renders, the page follows the system theme.
+       */
+      body:has(> .hiplot-page) {
+        margin: 0;
+      }
+      body > .hiplot-page {
+        display: flex;
+        flex-direction: column;
+        min-height: 100vh;
+      }
+      body > .hiplot-page > * {
+        flex: 1 0 auto;
+      }
+      @media (prefers-color-scheme: dark) {
+        body:has(> .hiplot-page) {
+          background: #15181c;
+          color: #e4e7eb;
+        }
+      }
+    </style>
   </head>
-  <body style="margin: 0px">
-    <div id="hiplot_element_id" style="background-color: white">
+  <body>
+    <div id="hiplot_element_id" class="hiplot-page">
       <div style="text-align: center">Loading HiPlot...</div>
       <noscript> HiPlot needs JavaScript to run </noscript>
     </div>

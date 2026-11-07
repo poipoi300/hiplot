@@ -7,6 +7,7 @@
 
 import type React from "react";
 import { useEffect, useId, useRef, useState } from "react";
+import controls from "./controls.module.css";
 import style from "./popover.module.css";
 
 interface PopoverProps {
@@ -68,7 +69,7 @@ export function Popover({
       <button
         ref={buttonRef}
         type="button"
-        className={style.trigger}
+        className={controls.button}
         title={title}
         aria-haspopup="dialog"
         aria-expanded={open}

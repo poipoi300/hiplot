@@ -1,0 +1,71 @@
+/*
+ * The small controls of HiPlot's toolbars: quiet outlined buttons and
+ * segmented choices, shared so every toolbar speaks the same vocabulary.
+ */
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 22px;
+  padding: 0 10px;
+  border: 1px solid var(--hip-rule);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--hip-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color 150ms ease-out,
+    border-color 150ms ease-out,
+    background-color 150ms ease-out;
+}
+.button:hover:not(:disabled),
+.button[aria-expanded="true"] {
+  color: var(--hip-fg);
+  border-color: var(--hip-axis);
+}
+.button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.segmented {
+  display: inline-flex;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--hip-rule);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.segmented button {
+  font: inherit;
+  font-size: 12px;
+  line-height: 22px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--hip-muted);
+  cursor: pointer;
+  transition:
+    color 150ms ease-out,
+    background-color 150ms ease-out;
+}
+.segmented button + button {
+  border-left: 1px solid var(--hip-rule);
+}
+.segmented button:hover {
+  color: var(--hip-fg);
+}
+.segmented button[aria-pressed="true"] {
+  background: var(--hip-brush-fill);
+  color: var(--hip-fg);
+  font-weight: 600;
+}
+.segmented button:focus-visible,
+.button:focus-visible {
+  outline: 2px solid var(--hip-accent);
+  outline-offset: -2px;
+}

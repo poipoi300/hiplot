@@ -8,7 +8,7 @@ from html.parser import HTMLParser
 from bs4 import BeautifulSoup
 
 from ..fetchers_demo import README_DEMOS
-from ..render import get_index_html_template
+from ..render import get_index_html_template, make_experiment_standalone_page
 
 
 @unittest.mock.patch("hiplot.experiment._is_running_ipython", new=lambda: True)
@@ -58,3 +58,11 @@ def test_index_html_valid() -> None:
     parser_actual = MyHTMLParser(html_soup)
     parser_expected = MyHTMLParser(html_template)
     assert parser_actual.content == parser_expected.content
+
+
+def test_standalone_pages_mount_hiplot_in_a_page_filling_element() -> None:
+    page = BeautifulSoup(make_experiment_standalone_page({}), "html.parser")
+    mount = page.select_one("body > .hiplot-page")
+    assert mount is not None
+    assert str(mount["id"]).startswith("hiplot_")
+    assert "style" not in mount.attrs

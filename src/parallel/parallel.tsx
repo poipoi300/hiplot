@@ -23,6 +23,7 @@ import {
 } from "../infertypes";
 import { IS_MOBILE } from "../lib/browsercompat";
 import type { RGB } from "../lib/colors";
+import controls from "../lib/controls.module.css";
 import { labelTextFromHtml } from "../lib/escape";
 import { mounted } from "../lib/refs";
 import { ResizableH } from "../lib/resizable";
@@ -623,7 +624,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       <>
         <div className={pstyle.toolbar}>
           <span>Lines</span>
-          <fieldset className={pstyle.segmented} aria-label="Line shape">
+          <fieldset className={controls.segmented} aria-label="Line shape">
             {shapes.map(({ shape, label, title }) => (
               <button
                 key={shape}
@@ -651,7 +652,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
           />
           <button
             type="button"
-            className={pstyle.toolbarButton}
+            className={controls.button}
             disabled={!this.state.brushed}
             title="Clear every brush and select all rows"
             onClick={() => this.brush_clear_all()}

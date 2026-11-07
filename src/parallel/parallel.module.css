@@ -124,46 +124,6 @@
   font-size: 13px;
   color: var(--hip-muted);
 }
-.segmented {
-  display: inline-flex;
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: 1px solid var(--hip-rule);
-  border-radius: 6px;
-  overflow: hidden;
-}
-.segmented button,
-.toolbarButton {
-  font: inherit;
-  font-size: 12px;
-  line-height: 22px;
-  padding: 0 10px;
-  border: 0;
-  background: transparent;
-  color: var(--hip-muted);
-  cursor: pointer;
-}
-.segmented button[aria-pressed="true"] {
-  background: var(--hip-brush-fill);
-  color: var(--hip-fg);
-  font-weight: 600;
-}
-.segmented button + button {
-  border-left: 1px solid var(--hip-rule);
-}
-.toolbarButton {
-  border: 1px solid var(--hip-rule);
-  border-radius: 6px;
-}
-.segmented button:hover,
-.toolbarButton:hover:not(:disabled) {
-  color: var(--hip-fg);
-}
-.toolbarButton:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
 
 /* Name and value of the line under the pointer. */
 .tooltip {

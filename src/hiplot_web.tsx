@@ -13,6 +13,7 @@ import { StaticDataProvider } from "./dataproviders/static";
 import { UploadDataProvider } from "./dataproviders/upload";
 import { WebserverDataProvider } from "./dataproviders/webserver";
 import { PersistentStateInURL } from "./lib/savedstate";
+import { storedThemeChoice, THEME_URL_PARAMETERS } from "./lib/theme";
 import type { DataProviderClass } from "./plugin";
 
 const dataProviders = {
@@ -35,18 +36,12 @@ interface HiPlotMountPoint extends HTMLElement {
 
 export function build_props(extra?: HiPlotRenderOptions): HiPlotProps {
   const searchParams = new URLSearchParams(location.search);
+  // `hip.theme` is the preferred query parameter; `hip.dark` keeps existing links
+  // working. Without either, the theme last chosen with the toggle applies.
   const themeParam =
-    searchParams.get("hip.theme") ??
-    searchParams.get("hiplot.theme") ??
-    searchParams.get("HIPLOT.theme");
-  const darkParam =
-    searchParams.get("hip.dark") ??
-    searchParams.get("hiplot.dark") ??
-    searchParams.get("HIPLOT.dark");
-  // `hip.theme` is the preferred query parameter. Keep `hip.dark` as a
-  // compatibility fallback for existing links.
-  const themeOrDarkParam = themeParam !== null ? themeParam : darkParam;
-  const darkValue = normalizeDarkModeSetting(themeOrDarkParam, "auto");
+    THEME_URL_PARAMETERS.map((name) => searchParams.get(name)).find((value) => value !== null) ??
+    null;
+  const darkValue = normalizeDarkModeSetting(themeParam ?? storedThemeChoice(), "auto");
   const props: HiPlotProps = {
     experiment: null,
     persistentState: new PersistentStateInURL("hip"),

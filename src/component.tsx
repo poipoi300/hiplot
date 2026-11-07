@@ -33,6 +33,7 @@ import { type ColorBinning, colorBinning } from "./lib/colors";
 import { experimentRows } from "./lib/compress";
 import { mounted } from "./lib/refs";
 import { type PersistentState, PersistentStateInMemory } from "./lib/savedstate";
+import { storeThemeChoice, type ThemeChoice } from "./lib/theme";
 import { ParallelPlot } from "./parallel/parallel";
 import { PlotXY } from "./plotxy";
 import type { DataProviderClass, HiPlotPluginData, PluginWindowState } from "./plugin";
@@ -222,6 +223,13 @@ export function normalizeDarkModeSetting(
   return fallback;
 }
 
+function themeChoiceOf(setting: HiPlotDarkMode): ThemeChoice {
+  if (setting === "auto") {
+    return "system";
+  }
+  return setting ? "dark" : "light";
+}
+
 function resolveDarkModeSetting(setting: HiPlotDarkMode): boolean {
   return setting === "auto" ? detectIsDarkTheme() : setting;
 }
@@ -319,6 +327,11 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       });
     }
   }
+  /** The theme picked with the header toggle: applied, and remembered for next time. */
+  onThemeChoice = (choice: ThemeChoice): void => {
+    storeThemeChoice(choice);
+    this.applyDarkModeSetting(choice);
+  };
   startAutoThemeListeners(): void {
     if (this.mediaQueryList === null && typeof window !== "undefined" && window.matchMedia) {
       this.mediaQueryList = window.matchMedia("(prefers-color-scheme: dark)");
@@ -834,6 +847,8 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
             dataProvider={this.state.dataProvider}
             loadStatus={this.state.loadStatus}
             dark={this.state.dark}
+            themeChoice={themeChoiceOf(this.state.darkModeSetting)}
+            onThemeChoice={this.onThemeChoice}
             restorableColumnsCount={this.state.restorableColumnsCount}
             onRestoreColumns={this.restoreAllColumns.bind(this)}
             {...controlProps}

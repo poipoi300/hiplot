@@ -245,6 +245,10 @@
   margin-left: 5px;
   margin-right: 5px;
 }
+.themeToggle {
+  align-self: center;
+  margin-left: auto;
+}
 
 /* dark theme */
 :global(.hip_thm--dark) a {

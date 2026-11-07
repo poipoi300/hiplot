@@ -16,14 +16,47 @@ import {
   RestoreDataBtn,
 } from "./controls";
 import style from "./hiplot.module.css";
+import controls from "./lib/controls.module.css";
 import { mounted } from "./lib/refs";
 import type { PersistentState } from "./lib/savedstate";
+import { THEME_CHOICES, type ThemeChoice } from "./lib/theme";
 import type { DataProviderClass, DataProviderComponent, DataProviderProps } from "./plugin";
 
 import { HiPlotTutorial } from "./tutorial/tutorial";
 import { type Datapoint, HiPlotLoadStatus, type IDatasets, type LoadURIPromise } from "./types";
 
 const COUNT_FORMAT = new Intl.NumberFormat("en-US");
+
+const THEME_LABELS: { [choice in ThemeChoice]: { label: string; title: string } } = {
+  light: { label: "Light", title: "Light theme" },
+  dark: { label: "Dark", title: "Dark theme" },
+  system: { label: "System", title: "Follow the system's light or dark setting" },
+};
+
+/** Light / Dark / System: the theme, remembered across pages. */
+function ThemeToggle({
+  choice,
+  onChange,
+}: {
+  choice: ThemeChoice;
+  onChange: (choice: ThemeChoice) => void;
+}): React.ReactElement {
+  return (
+    <fieldset className={`${controls.segmented} ${style.themeToggle}`} aria-label="Theme">
+      {THEME_CHOICES.map((option) => (
+        <button
+          key={option}
+          type="button"
+          title={THEME_LABELS[option].title}
+          aria-pressed={choice === option}
+          onClick={() => onChange(option)}
+        >
+          {THEME_LABELS[option].label}
+        </button>
+      ))}
+    </fieldset>
+  );
+}
 
 interface HeaderBarProps extends IDatasets, HiPlotDataControlProps {
   weightColumn?: string;
@@ -32,6 +65,8 @@ interface HeaderBarProps extends IDatasets, HiPlotDataControlProps {
   onLoadExperiment: (load_promise: LoadURIPromise) => void;
 
   dark: boolean;
+  themeChoice: ThemeChoice;
+  onThemeChoice: (choice: ThemeChoice) => void;
   dataProvider: DataProviderClass;
 
   // Optional: restore hidden columns in parallel plot
@@ -208,6 +243,7 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
         <div className={"d-flex flex-wrap"}>
           <img style={{ height: "55px" }} src={this.props.dark ? IconSVGW : IconSVG} alt="HiPlot" />
           {this.renderControls()}
+          <ThemeToggle choice={this.props.themeChoice} onChange={this.props.onThemeChoice} />
         </div>
         {this.state.hasTutorial && (
           <HiPlotTutorial
