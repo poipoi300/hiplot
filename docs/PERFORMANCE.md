@@ -314,3 +314,39 @@ Reading it:
 - The JS heap at 20k × 30 (96 → 182 MB) is one sample after the run and
   swings with garbage collection, as in earlier rounds; nothing in this
   round allocates on the JavaScript side.
+
+## Fifth round: several brushes per axis
+
+Each axis now holds a list of brushes, drawn and dragged by HiPlot itself
+instead of one d3-brush per axis, and its selection mask is the union of
+its brushes' ranges. A drag frame redraws the bands and tags of the axis
+under the pointer only and recomputes that axis's mask only; the other
+axes keep theirs.
+
+"Before" is `e670536`, the fourth round's state; "after" is the branch
+with several brushes per axis. Same harness and machine, measured in one
+session, medians of three page loads. The benchmark drags one new brush
+on an unbrushed axis, as in earlier rounds.
+
+| Size | HTML MB | decode ms | DOM ready ms | initial drawn ms | full redraw ms | drag frame p50 / p95 / max ms | stalls | brush end → lines ms | brush end → table ms | JS heap MB |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5k × 20, before | 2.6 | 3 | 95 | 153 | 2 | 8 / 9 / 9 | 0/120 | 1 | 17 | 42 |
+| 5k × 20, after | 2.6 | 3 | 101 | 160 | 2 | 8 / 9 / 9 | 0/120 | 2 | 17 | 33 |
+| 20k × 30, before | 7.8 | 15 | 364 | 475 | 3 | 8 / 8 / 9 | 0/120 | 1 | 30 | 95 |
+| 20k × 30, after | 7.8 | 16 | 371 | 488 | 4 | 8 / 8 / 9 | 0/120 | 2 | 33 | 173 |
+| 50k × 50, before | 27.3 | 68 | 1483 | 1848 | 7 | 8 / 8 / 9 | 0/120 | 2 | 88 | 320 |
+| 50k × 50, after | 27.3 | 69 | 1387 | 1680 | 7 | 8 / 8 / 9 | 0/120 | 3 | 93 | 259 |
+| 100k × 30, before | 32.8 | 83 | 1702 | 2055 | 12 | 8 / 9 / 17 | 0/120 | 2 | 114 | 349 |
+| 100k × 30, after | 32.8 | 87 | 1691 | 2036 | 11 | 8 / 8 / 9 | 0/120 | 3 | 115 | 354 |
+
+Reading it:
+
+- Drag frames stay at 8 ms median and 9 ms max at every size, with no
+  stall: the custom brushes cost no more per frame than d3-brush did. The
+  17 ms max at 100k × 30 before is one late frame in one of three loads.
+- Brush end → lines is 1 ms later at every size: on release every axis
+  redraws its bands, tags and tick labels, where d3-brush redrew the one
+  it moved.
+- Load and redraw columns move by a few percent in both directions between
+  sessions, as in earlier rounds; the JS heap is one sample after the run
+  and swings with garbage collection.
