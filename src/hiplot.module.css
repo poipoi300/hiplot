@@ -597,6 +597,11 @@ button.lassoClear svg {
   margin: 0;
   accent-color: var(--hip-accent);
 }
+/* A color mode other than the mean, named on the color map button. */
+.colorModeBadge {
+  color: var(--hip-muted);
+  font-weight: 500;
+}
 .colorMapSwatch {
   display: inline-block;
   flex: none;

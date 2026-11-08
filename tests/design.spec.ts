@@ -332,6 +332,28 @@ test("a numeric color map can be picked and is remembered", async ({ page }) => 
   await expect(page.getByTestId("color-map-button")).toHaveText("Magma");
 });
 
+test("what overlapping lines show can be picked, is named on the button and remembered", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  await page.locator(".pplot-label[data-dimension='lr']").click({ button: "right" });
+  await page.locator(".context-menu .dropdown-item", { hasText: "Use for coloring" }).click();
+  const button = page.getByTestId("color-map-button");
+  await button.click();
+  const dialog = page.getByRole("dialog", { name: "Color map" });
+  await expect(dialog.getByLabel("Mean value")).toBeChecked();
+  await dialog.getByLabel("Lowest on top").click();
+  await expect(dialog).toBeHidden();
+  await expect(button).toHaveText("Viridis· lowest on top");
+  expect(page.url()).toContain("color_mode");
+  await page.reload();
+  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
+  await expect(button).toHaveText("Viridis· lowest on top");
+  await button.click();
+  await dialog.getByLabel("Mean value").click();
+  await expect(button).toHaveText("Viridis");
+});
+
 test("an axis opens its menu from anywhere along it, and the plot never shows the browser's", async ({
   page,
 }) => {

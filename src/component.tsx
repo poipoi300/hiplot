@@ -1024,6 +1024,8 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
                   )}
                   theme={this.state.dark ? "dark" : "light"}
                   onPickColorMap={this.onPickColorMap}
+                  colorMode={this.state.colorMode}
+                  onPickColorMode={this.onPickColorMode}
                 />
               )
             }
