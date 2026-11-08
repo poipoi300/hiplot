@@ -18,11 +18,20 @@ and writes every trial to a standalone HiPlot page. With --from-parquet, the
 page is rendered again from the trials a previous run wrote with --parquet,
 without training; that path imports neither torch nor optuna.
 
-Recorded per trial: the hyperparameters; at the kept epoch (lowest unsmoothed
-validation cross entropy, which TPE minimizes) best_val_loss, best_val_accuracy, best_train_loss and
-best_epoch; the same metrics at the last epoch as last_*; the parameter count;
-a divergence flag; and the wall time the model occupied the GPU (the round's
-time scaled by the model's share of the round's steps).
+The digits are split into training, validation and test rows. Each trial keeps
+the epoch with the lowest validation error, ties broken by plain (unsmoothed)
+cross entropy; TPE minimizes the same score. Recorded per trial: the
+hyperparameters; best_val_error, best_val_loss, best_train_loss and best_epoch
+at the kept epoch; the same metrics at the last epoch as last_*; the parameter
+count; a divergence flag; and the wall time the model occupied the GPU.
+
+Only data that played no part in any choice measures how good a configuration
+is. The top configurations are retrained over several seeds: seeds_val_error
+(mean and std) shows how optimistic the search's own validation error was, and
+test_error (mean and std) is the error of their kept checkpoints on the test
+rows. Untuned baselines (majority class, 1-nearest neighbour, logistic
+regression) are rows with negative uids, scored on the same splits; `model`
+tells them apart from the trials.
 
 Usage:
     uv run examples/hptuning/tune.py --out hptuning.html [--trials 10000] [--parquet hptuning.parquet]
@@ -43,15 +52,15 @@ LOG_COLUMNS = ("lr", "weight_decay", "best_val_loss", "best_train_loss", "last_v
 def write_page(experiment: hip.Experiment, out: Path) -> None:
     """Writes the trials as a HiPlot page: log axes for rates and losses, led by the objective.
 
-    The search minimizes best_val_loss, so the page colors, sorts and plots by
-    it. best_* metrics come from each trial's kept epoch; last_* are last-epoch
-    diagnostics, hidden by default. The uid is the trial's index in the search,
-    shown next to the objective: how many trials it took to get close to the best.
+    The search minimizes best_val_error (ties broken by best_val_loss), so the
+    page colors, sorts and plots by it. last_* are last-epoch diagnostics,
+    hidden by default. The uid is the trial's index in the search, shown next
+    to the objective: how many trials it took to get close to the best.
     """
     for log_column in LOG_COLUMNS:
         experiment.parameters_definition[log_column].type = hip.ValueType.NUMERIC_LOG
     experiment.parameters_definition["uid"].type = hip.ValueType.NUMERIC
-    experiment.colorby = "best_val_loss"
+    experiment.colorby = "best_val_error"
     experiment.display_data(hip.Displays.PARALLEL_PLOT).update(
         {
             "order": [
@@ -67,16 +76,30 @@ def write_page(experiment: hip.Experiment, out: Path) -> None:
                 "epochs",
                 "best_epoch",
                 "best_train_loss",
-                "best_val_accuracy",
                 "best_val_loss",
+                "best_val_error",
+                "test_error",
                 "uid",
+                "model",
                 "diverged",
             ],
-            "hide": ["params", "wall_time_s", "last_train_loss", "last_val_loss", "last_val_accuracy"],
+            "hide": [
+                "params",
+                "wall_time_s",
+                "last_train_loss",
+                "last_val_loss",
+                "last_val_error",
+                "seeds_val_error",
+                "seeds_val_error_std",
+                "seeds_failed",
+                "test_error_std",
+            ],
         }
     )
-    experiment.display_data(hip.Displays.XY).update({"axis_x": "lr", "axis_y": "best_val_loss"})
-    experiment.display_data(hip.Displays.TABLE).update({"order_by": [["best_val_loss", "asc"]]})
+    experiment.display_data(hip.Displays.XY).update({"axis_x": "lr", "axis_y": "best_val_error"})
+    experiment.display_data(hip.Displays.TABLE).update(
+        {"order_by": [["best_val_error", "asc"], ["best_val_loss", "asc"]]}
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     experiment.to_html(out)
 
@@ -90,8 +113,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--round", type=int, default=1000, help="trials proposed at once")
     parser.add_argument("--group", type=int, default=250, help="trials trained at once")
     parser.add_argument("--random-trials", type=int, default=2000, help="random trials before TPE")
-    parser.add_argument("--window", type=int, default=1000, help="recent trials TPE learns from")
+    parser.add_argument("--window", type=int, default=10_000, help="recent trials TPE learns from")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--rescore-top", type=int, default=20, help="top configurations retrained over seeds")
+    parser.add_argument("--rescore-seeds", type=int, default=5, help="seeds per re-scored configuration")
     args = parser.parse_args(argv)
     if args.from_parquet is not None:
         if args.parquet is not None:
@@ -101,7 +126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"wrote {args.out} ({len(experiment.datapoints)} trials from {args.from_parquet})")
         return 0
 
-    # Imported here so that rendering from a CSV needs neither torch nor optuna.
+    # Imported here so that rendering from Parquet needs neither torch nor optuna.
     from search import SearchSettings, run_search
 
     rows = run_search(
@@ -112,12 +137,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             random_trials=args.random_trials,
             window=args.window,
             seed=args.seed,
+            rescore_top=args.rescore_top,
+            rescore_seeds=args.rescore_seeds,
         )
     )
     # Trials are written before the page, so a failed render never loses a search.
     if args.parquet is not None:
         args.parquet.parent.mkdir(parents=True, exist_ok=True)
-        pl.DataFrame(rows).write_parquet(args.parquet)
+        # Baseline rows have no hyperparameters; infer the schema from every row.
+        pl.DataFrame(rows, infer_schema_length=None).write_parquet(args.parquet)
         print(f"wrote {args.parquet}")
     experiment = hip.Experiment.from_iterable(rows)
     write_page(experiment, args.out)

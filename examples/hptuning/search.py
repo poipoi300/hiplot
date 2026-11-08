@@ -23,6 +23,7 @@ from typing import Any
 import optuna
 import torch
 from sklearn.datasets import load_digits
+from sklearn.linear_model import LogisticRegression
 
 WIDTHS = (16, 32, 64, 128)
 MAX_DEPTH = 3
@@ -71,12 +72,19 @@ def propose(trial: optuna.Trial, number: int) -> Trial:
 
 @dataclass(frozen=True)
 class Digits:
-    """The digits split once into training and validation rows, on the device."""
+    """The digits split once into training, validation and test rows, on the device.
+
+    Validation picks each trial's epoch and the search's direction. Test plays
+    no part in any choice: only the re-scored top configurations and the
+    baselines are evaluated on it.
+    """
 
     x_train: torch.Tensor
     y_train: torch.Tensor
     x_val: torch.Tensor
     y_val: torch.Tensor
+    x_test: torch.Tensor
+    y_test: torch.Tensor
 
 
 def load_data(device: torch.device, seed: int) -> Digits:
@@ -84,9 +92,18 @@ def load_data(device: torch.device, seed: int) -> Digits:
     x = torch.tensor(digits.data, dtype=torch.float32) / 16.0
     y = torch.tensor(digits.target, dtype=torch.long)
     order = torch.randperm(len(y), generator=torch.Generator().manual_seed(seed))
-    split = int(0.8 * len(y))
-    train, val = order[:split], order[split:]
-    return Digits(x[train].to(device), y[train].to(device), x[val].to(device), y[val].to(device))
+    train_end, val_end = int(0.7 * len(y)), int(0.85 * len(y))
+    train, val, test = order[:train_end], order[train_end:val_end], order[val_end:]
+    return Digits(*(tensor.to(device) for tensor in (x[train], y[train], x[val], y[val], x[test], y[test])))
+
+
+def selection_score[Metric: (float, torch.Tensor)](error: Metric, loss: Metric, rows: int) -> Metric:
+    """Validation error, ties broken by cross entropy.
+
+    The tie-break term is below half of one example's share of the error, so it
+    only orders checkpoints and trials whose error is equal.
+    """
+    return error + (0.5 / rows) * loss / (1.0 + loss)
 
 
 def column(values: Iterable[float], device: torch.device) -> torch.Tensor:
@@ -219,7 +236,7 @@ def steps_of(trial: Trial, rows: int) -> int:
 
 
 def train_round(
-    trials: Sequence[Trial], data: Digits, device: torch.device, seed: int, group: int
+    trials: Sequence[Trial], data: Digits, device: torch.device, seed: int, group: int, score_test: bool = False
 ) -> list[dict[str, Any]]:
     """Trains a round in groups of similar step counts; one result row per trial, in order.
 
@@ -233,13 +250,19 @@ def train_round(
     by_number: dict[int, dict[str, Any]] = {}
     for start in range(0, len(ordered), group):
         chunk = ordered[start : start + group]
-        for result in train_group(chunk, data, device, seed + start):
+        for result in train_group(chunk, data, device, seed + start, score_test):
             by_number[int(result["uid"])] = result
     return [by_number[trial.number] for trial in trials]
 
 
-def train_group(trials: Sequence[Trial], data: Digits, device: torch.device, seed: int) -> list[dict[str, Any]]:
-    """Trains a group of models at once and returns one result row per trial."""
+def train_group(
+    trials: Sequence[Trial], data: Digits, device: torch.device, seed: int, score_test: bool
+) -> list[dict[str, Any]]:
+    """Trains a group of models at once and returns one result row per trial.
+
+    With `score_test`, each row also carries the test error and loss of the
+    kept checkpoint; the search itself never asks for them.
+    """
     generator = torch.Generator(device=device).manual_seed(seed)
     population = Population(trials, device, generator)
     count = len(trials)
@@ -253,16 +276,21 @@ def train_group(trials: Sequence[Trial], data: Digits, device: torch.device, see
 
     epoch_loss_sum = torch.zeros(count, device=device)
     epoch_loss_steps = torch.zeros(count, device=device)
-    last_train_loss = torch.full((count,), math.nan, device=device)
-    last_val_loss = torch.full((count,), math.nan, device=device)
-    last_val_accuracy = torch.full((count,), math.nan, device=device)
-    best_val_loss = torch.full((count,), math.inf, device=device)
-    best_val_accuracy = torch.full((count,), math.nan, device=device)
-    best_train_loss = torch.full((count,), math.nan, device=device)
+
+    def unset() -> torch.Tensor:
+        return torch.full((count,), math.nan, device=device)
+
+    last_train_loss, last_val_loss, last_val_error = unset(), unset(), unset()
+    best_score = torch.full((count,), math.inf, device=device)
+    best_val_error, best_val_loss, best_train_loss = unset(), unset(), unset()
+    best_test_error, best_test_loss = unset(), unset()
     best_epoch = torch.zeros(count, dtype=torch.long, device=device)
     diverged = torch.zeros(count, dtype=torch.bool, device=device)
     x_val = data.x_val.unsqueeze(0).expand(count, -1, -1)
     y_val = data.y_val.unsqueeze(0).expand(count, -1)
+    x_test = data.x_test.unsqueeze(0).expand(count, -1, -1)
+    y_test = data.y_test.unsqueeze(0).expand(count, -1)
+    val_rows = len(data.y_val)
 
     started = time.perf_counter()
     for step in range(longest):
@@ -285,19 +313,28 @@ def train_group(trials: Sequence[Trial], data: Digits, device: torch.device, see
                 continue
             val_logits = population.forward(x_val, train=False, generator=generator)
             losses_val = population.validation_losses(val_logits, y_val)
-            accuracy = (val_logits.argmax(dim=-1) == y_val).float().mean(dim=1)
+            error_val = (val_logits.argmax(dim=-1) != y_val).float().mean(dim=1)
             epoch = (step + 1) // epoch_length
             epoch_train_loss = epoch_loss_sum / epoch_loss_steps.clamp(min=1)
             last_train_loss = torch.where(ends, epoch_train_loss, last_train_loss)
             last_val_loss = torch.where(ends, losses_val, last_val_loss)
-            last_val_accuracy = torch.where(ends, accuracy, last_val_accuracy)
-            # The kept checkpoint is the epoch with the lowest validation loss; every
-            # best_* metric is read at that same epoch.
-            improved = ends & (losses_val < best_val_loss)
+            last_val_error = torch.where(ends, error_val, last_val_error)
+            # The kept checkpoint is the epoch with the lowest validation error, ties
+            # broken by cross entropy; every best_* metric is read at that same epoch.
+            score = selection_score(error_val, losses_val, val_rows)
+            improved = ends & (score < best_score)
+            best_score = torch.where(improved, score, best_score)
+            best_val_error = torch.where(improved, error_val, best_val_error)
             best_val_loss = torch.where(improved, losses_val, best_val_loss)
-            best_val_accuracy = torch.where(improved, accuracy, best_val_accuracy)
             best_train_loss = torch.where(improved, epoch_train_loss, best_train_loss)
             best_epoch = torch.where(improved, epoch, best_epoch)
+            if score_test:
+                test_logits = population.forward(x_test, train=False, generator=generator)
+                error_test = (test_logits.argmax(dim=-1) != y_test).float().mean(dim=1)
+                best_test_error = torch.where(improved, error_test, best_test_error)
+                best_test_loss = torch.where(
+                    improved, population.validation_losses(test_logits, y_test), best_test_loss
+                )
             epoch_loss_sum = torch.where(ends, torch.zeros_like(epoch_loss_sum), epoch_loss_sum)
             epoch_loss_steps = torch.where(ends, torch.zeros_like(epoch_loss_steps), epoch_loss_steps)
     if device.type == "cuda":
@@ -310,9 +347,16 @@ def train_group(trials: Sequence[Trial], data: Digits, device: torch.device, see
         # A trial that diverged after an improving epoch still has a valid kept
         # checkpoint; its last-epoch values describe a run that never finished.
         kept = int(best_epoch[index].item()) > 0
+
+        def at_kept(metric: torch.Tensor, index: int = index, kept: bool = kept) -> float:
+            return float(metric[index].item()) if kept else math.nan
+
+        def at_last(metric: torch.Tensor, index: int = index, failed: bool = failed) -> float:
+            return math.nan if failed else float(metric[index].item())
+
         results.append(
             {
-                "uid": str(trial.number),
+                "uid": trial.number,
                 "lr": trial.lr,
                 "weight_decay": trial.weight_decay,
                 "width": trial.width,
@@ -324,13 +368,18 @@ def train_group(trials: Sequence[Trial], data: Digits, device: torch.device, see
                 "epochs": trial.epochs,
                 "label_smoothing": trial.label_smoothing,
                 "params": parameter_count(trial),
-                "best_val_loss": float(best_val_loss[index].item()) if kept else math.nan,
-                "best_val_accuracy": float(best_val_accuracy[index].item()) if kept else math.nan,
-                "best_train_loss": float(best_train_loss[index].item()) if kept else math.nan,
+                "best_val_error": at_kept(best_val_error),
+                "best_val_loss": at_kept(best_val_loss),
+                "best_train_loss": at_kept(best_train_loss),
                 "best_epoch": int(best_epoch[index].item()),
-                "last_val_loss": math.nan if failed else float(last_val_loss[index].item()),
-                "last_val_accuracy": math.nan if failed else float(last_val_accuracy[index].item()),
-                "last_train_loss": math.nan if failed else float(last_train_loss[index].item()),
+                **(
+                    {"best_test_error": at_kept(best_test_error), "best_test_loss": at_kept(best_test_loss)}
+                    if score_test
+                    else {}
+                ),
+                "last_val_error": at_last(last_val_error),
+                "last_val_loss": at_last(last_val_loss),
+                "last_train_loss": at_last(last_train_loss),
                 "diverged": failed,
                 "wall_time_s": elapsed * float(total_steps[index].item()) / longest,
             }
@@ -338,10 +387,89 @@ def train_group(trials: Sequence[Trial], data: Digits, device: torch.device, see
     return results
 
 
-def objective_value(row: dict[str, Any]) -> float:
-    """What TPE minimizes: the kept checkpoint's validation loss; runs without one score as failures."""
-    loss = float(row["best_val_loss"])
-    return loss if math.isfinite(loss) else 10.0 * DIVERGED_LOSS
+def objective_value(row: dict[str, Any], val_rows: int) -> float:
+    """What TPE minimizes: the kept checkpoint's selection score; runs without one score as failures.
+
+    Failures score 2, above the worst possible error of 1 plus its tie-break.
+    """
+    error, loss = float(row["best_val_error"]), float(row["best_val_loss"])
+    if not (math.isfinite(error) and math.isfinite(loss)):
+        return 2.0
+    score: float = selection_score(error, loss, val_rows)
+    return score
+
+
+def rescore(
+    rows: Sequence[dict[str, Any]], data: Digits, device: torch.device, settings: "SearchSettings"
+) -> dict[int, dict[str, float]]:
+    """Retrains the top configurations over several seeds and scores their kept checkpoints on test.
+
+    The search picked these trials as the best of thousands on the validation
+    split, so their own validation error is optimistic (winner's curse). Fresh
+    seeds give the spread a configuration really has, and the test split, which
+    played no part in any choice, gives an unbiased error.
+    """
+    val_rows = len(data.y_val)
+    ranked = sorted(rows, key=lambda row: objective_value(row, val_rows))[: settings.rescore_top]
+    configs = [
+        Trial(**{name: row[name] for name in Trial.__dataclass_fields__ if name != "number"}, number=int(row["uid"]))
+        for row in ranked
+    ]
+    by_uid: dict[int, list[dict[str, Any]]] = {config.number: [] for config in configs}
+    for seed_index in range(settings.rescore_seeds):
+        seed = settings.seed + 1_000_000 + seed_index
+        for result in train_round(configs, data, device, seed, settings.group, score_test=True):
+            by_uid[int(result["uid"])].append(result)
+
+    def spread(results: Sequence[dict[str, Any]], name: str) -> tuple[float, float]:
+        values = torch.tensor([float(result[name]) for result in results], dtype=torch.float64)
+        finite = values[values.isfinite()]
+        # Seeds without a kept checkpoint are counted in seeds_failed, not averaged.
+        mean = float(finite.mean()) if len(finite) > 0 else math.nan
+        return mean, float(finite.std()) if len(finite) > 1 else math.nan
+
+    summary: dict[int, dict[str, float]] = {}
+    for uid, results in by_uid.items():
+        val_mean, val_std = spread(results, "best_val_error")
+        test_mean, test_std = spread(results, "best_test_error")
+        summary[uid] = {
+            "seeds_val_error": val_mean,
+            "seeds_val_error_std": val_std,
+            "seeds_failed": sum(not math.isfinite(float(result["best_val_error"])) for result in results),
+            "test_error": test_mean,
+            "test_error_std": test_std,
+        }
+    return summary
+
+
+def baselines(data: Digits) -> list[dict[str, Any]]:
+    """Untuned reference models, scored on the same validation and test splits as the trials."""
+
+    def error(predicted: torch.Tensor, labels: torch.Tensor) -> float:
+        return float((predicted != labels).float().mean())
+
+    majority = torch.bincount(data.y_train, minlength=CLASSES).argmax()
+    nearest = data.y_train[torch.cdist(data.x_val, data.x_train).argmin(dim=1)]
+    nearest_test = data.y_train[torch.cdist(data.x_test, data.x_train).argmin(dim=1)]
+    logistic = LogisticRegression(max_iter=5000).fit(data.x_train.cpu().numpy(), data.y_train.cpu().numpy())
+
+    def logistic_predict(x: torch.Tensor) -> torch.Tensor:
+        return torch.as_tensor(logistic.predict(x.cpu().numpy()), device=x.device)
+
+    predictions = {
+        "majority class": (majority.expand(len(data.y_val)), majority.expand(len(data.y_test))),
+        "1-nearest neighbour": (nearest, nearest_test),
+        "logistic regression": (logistic_predict(data.x_val), logistic_predict(data.x_test)),
+    }
+    return [
+        {
+            "uid": -(index + 1),
+            "model": name,
+            "best_val_error": error(val, data.y_val),
+            "test_error": error(test, data.y_test),
+        }
+        for index, (name, (val, test)) in enumerate(predictions.items())
+    ]
 
 
 @dataclass(frozen=True)
@@ -354,6 +482,8 @@ class SearchSettings:
     random_trials: int
     window: int
     seed: int
+    rescore_top: int
+    rescore_seeds: int
 
 
 def run_search(settings: SearchSettings) -> list[dict[str, Any]]:
@@ -369,9 +499,11 @@ def run_search(settings: SearchSettings) -> list[dict[str, Any]]:
     while len(rows) < settings.trials:
         size = min(settings.round, settings.trials - len(rows))
         # Random search first; then multivariate TPE fitted to the most recent
-        # trials. An Optuna ask costs time linear in the history, so a window
-        # keeps ten thousand proposals to minutes; a round is proposed from
-        # the same model, without constant-liar bookkeeping between its asks.
+        # `window` trials. A window as long as the search lets TPE keep every
+        # good region it has seen; a short one makes each round learn only from
+        # the last round's own proposals and narrow early. An ask costs time
+        # linear in the history. A round is proposed from the same model,
+        # without constant-liar bookkeeping between its asks.
         sampler: optuna.samplers.BaseSampler = (
             optuna.samplers.RandomSampler(seed=settings.seed + len(rows))
             if len(rows) < settings.random_trials
@@ -384,13 +516,17 @@ def run_search(settings: SearchSettings) -> list[dict[str, Any]]:
         proposed = time.perf_counter()
         results = train_round(trials, data, device, settings.seed + len(rows), settings.group)
         for trial, result in zip(asked, results, strict=True):
-            study.tell(trial, objective_value(result))
+            study.tell(trial, objective_value(result, len(data.y_val)))
         completed.extend(study.trials[-size:])
         rows.extend(results)
-        best = min(objective_value(row) for row in rows)
+        best = min(rows, key=lambda row: objective_value(row, len(data.y_val)))
         print(
-            f"{len(rows):>6} trials  best val loss {best:.4f}  elapsed {time.perf_counter() - started:6.1f} s "
-            f"(training {time.perf_counter() - proposed:5.1f} s)",
+            f"{len(rows):>6} trials  best val error {best['best_val_error']:.4f} (loss {best['best_val_loss']:.4f})  "
+            f"elapsed {time.perf_counter() - started:6.1f} s (training {time.perf_counter() - proposed:5.1f} s)",
             flush=True,
         )
-    return rows
+    rescored = rescore(rows, data, device, settings)
+    unscored = dict.fromkeys(next(iter(rescored.values())), math.nan)
+    trial_rows = [{**row, "model": "mlp", **rescored.get(int(row["uid"]), unscored)} for row in rows]
+    print(f"rescored the top {len(rescored)} configurations over {settings.rescore_seeds} seeds", flush=True)
+    return trial_rows + baselines(data)
