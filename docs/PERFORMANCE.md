@@ -13,6 +13,7 @@ each to a standalone HTML page:
 | 5k × 20 | 5,000 | 20 | linear numeric, log-scale numeric (seven decades), categorical (3 to 12 values), sparse numeric with 2% inf and 3% NaN |
 | 20k × 30 | 20,000 | 30 | same rotation |
 | 50k × 50 | 50,000 | 50 | same rotation |
+| 100k × 30 | 100,000 | 30 | same rotation (measured from the second round on; `--sizes 100000x30`) |
 
 `bench/run.ts` opens each page in headless Chromium (full build, GPU enabled,
 1600 × 1000 viewport) and measures, per page load:
@@ -180,3 +181,58 @@ instead of 64 ms. The compact payload is parsed by `JSON.parse` from a JSON
 script block where the baseline evaluated a JavaScript string literal; the
 page is 2.6x smaller and DOM ready comes 1.3 s sooner, so the 10 ms are
 accepted, but they are a regression.
+
+## Second round: redesign without regression
+
+The second round anti-aliased the lines, made the curves monotone splines,
+spaced the axes for their labels (scrolling sideways when they do not fit),
+tagged the brush edges, and redesigned the table with per-column filters.
+"Before" is `2209ab7`, the branch as the first round left it; "after" is
+`9ada92b`. Same harness and machine, medians of three page loads, with the
+100k × 30 experiment added because it is what people load.
+
+| Size | HTML MB | decode ms | DOM ready ms | initial drawn ms | full redraw ms | drag frame p50 / p95 / max ms | stalls | brush end → lines ms | brush end → table ms | JS heap MB |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5k × 20, before | 2.5 | 3 | 109 | 161 | 2 | 8 / 8 / 9 | 0/120 | 1 | 14 | 32 |
+| 5k × 20, after | 2.6 | 3 | 100 | 152 | 2 | 8 / 8 / 9 | 0/120 | 1 | 16 | 33 |
+| 20k × 30, before | 7.7 | 16 | 358 | 451 | 4 | 8 / 9 / 9 | 0/120 | 1 | 28 | 116 |
+| 20k × 30, after | 7.8 | 15 | 365 | 476 | 4 | 8 / 8 / 9 | 0/120 | 1 | 29 | 175 |
+| 50k × 50, before | 27.2 | 71 | 1364 | 1662 | 6 | 8 / 8 / 9 | 0/120 | 1 | 79 | 599 |
+| 50k × 50, after | 27.2 | 63 | 1374 | 1634 | 6 | 8 / 8 / 9 | 0/120 | 2 | 83 | 264 |
+| 100k × 30, before | 32.7 | 94 | 1675 | 2108 | 11 | 8 / 8 / 17 | 0/120 | 2 | 108 | 1129 |
+| 100k × 30, after | 32.7 | 67 | 1293 | 1531 | 10 | 8 / 8 / 9 | 0/120 | 2 | 75 | 352 |
+
+The first build of the redesign did regress: at 100k × 30 drag frames were
+17 / 25 / 33 ms and the first picture came 230 ms later. Tracing a drag
+found where the time went, and each cause was fixed rather than traded:
+
+- **Canvases and paint spanned every axis.** Once the axes scrolled, the
+  canvases, the SVG and the browser's raster covered the whole scroll width
+  (4,700 px at 50 columns). The plot now scrolls virtually: it stays at the
+  frame's width and draws the axes in view, with an overlay scrollbar and
+  horizontal wheel gestures setting the offset.
+- **Anti-aliasing doubles the fragments.** Each segment is a strip as wide as
+  the line plus the half pixel where coverage reaches zero (not a full
+  pixel), and the deselected-density target is single-channel (R16F instead
+  of RGBA16F). While a brush or an axis is dragged over more than 20,000 rows,
+  lines are drawn as plain one-pixel lines, which the density tone mapping
+  makes hard to tell apart at that density; the picture is anti-aliased again
+  on release, within the 2 ms "brush end → lines".
+- **Dozens of text inputs.** Each table column filter was an `<input>`, a
+  scroll container to the compositor, and every frame of a drag re-layerized
+  the page around them (5 ms per frame). Filters are buttons until used.
+- **Layout and paint per frame.** Brush tags are measured on a canvas instead
+  of forcing an SVG text layout, and the tags draw without a filter.
+- **A second layout after load.** The axis spacing depends on the widest tick
+  label, which is only known once the axes are drawn; the first layout now
+  applies it at once instead of redrawing on a debounced resize 100 ms later.
+- **The table.** Formatted numbers are rendered for display only (sorting
+  and searching read the value without a function call per row), and the
+  search results are only counted while searching.
+
+Read the small differences as drift: decoding is unchanged code yet moved
+from 94 to 67 ms at 100k × 30 between the two sessions, and the JS heap is
+sampled once after the run, so it swings with garbage collection. The
+numbers in the wrong direction (brush end → table 79 → 83 ms at 50k × 50,
+initial drawn 451 → 476 ms at 20k × 30) are within that drift, but have not
+been shown to be zero.
