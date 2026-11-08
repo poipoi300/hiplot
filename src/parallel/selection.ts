@@ -6,7 +6,7 @@
  */
 
 import type { FilterRange } from "../filters";
-import { convert_to_categorical_input } from "../lib/d3_scales";
+import { convert_to_categorical_input, parse_numeric } from "../lib/d3_scales";
 import { type Datapoint, ParamType } from "../types";
 
 /**
@@ -64,7 +64,7 @@ export class BrushMasks {
         column.missing[index] = 1;
         return;
       }
-      column.values[index] = parseFloat(String(value));
+      column.values[index] = parse_numeric(value);
     });
     this.numericColumns.set(dimension, column);
     return column;

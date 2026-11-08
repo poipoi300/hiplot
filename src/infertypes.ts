@@ -12,7 +12,8 @@ import {
   d3_scale_percentile,
   d3_scale_timestamp,
   get_numeric_values_sorted,
-  is_special_numeric,
+  is_numeric_value,
+  parse_numeric,
   type Scale,
   scale_add_outliers,
 } from "./lib/d3_scales";
@@ -42,15 +43,11 @@ export function isParamType(value: unknown): value is ParamType {
   return Object.values(ParamType).includes(value as ParamType);
 }
 
-function parseNumber(value: DatapointValue): number {
-  return typeof value === "number" ? value : parseFloat(String(value));
-}
-
 function get_min_max_for_numeric_scale(pd: ParamDef): [number, number] {
   let min = pd.force_value_min;
   let max = pd.force_value_max;
   for (const value of pd.distinct_values) {
-    const parsed = parseNumber(value);
+    const parsed = parse_numeric(value);
     if (!Number.isFinite(parsed)) {
       continue;
     }
@@ -68,7 +65,7 @@ function get_min_max_for_numeric_scale(pd: ParamDef): [number, number] {
 }
 
 function has_inf_or_nans(pd: ParamDef): boolean {
-  return pd.distinct_values.some((value) => !Number.isFinite(parseNumber(value)));
+  return pd.distinct_values.some((value) => !Number.isFinite(parse_numeric(value)));
 }
 
 export function create_d3_scale_without_outliers(pd: ParamDef): Scale {
@@ -195,8 +192,7 @@ export function infertypes(
         continue;
       }
       can_be_timestamp = false;
-      // Detect non-numeric column
-      if (typeof v === "boolean" || (!is_special_numeric(v) && Number.isNaN(Number(v)))) {
+      if (!is_numeric_value(v)) {
         numeric = false;
       }
     }

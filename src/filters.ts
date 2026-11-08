@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import { convert_to_categorical_input } from "./lib/d3_scales";
+import { convert_to_categorical_input, parse_numeric } from "./lib/d3_scales";
 import { escapeRegExp } from "./lib/escape";
 import { isStringArray } from "./lib/savedstate";
 import { type Datapoint, type DatapointValue, ParamType } from "./types";
@@ -91,7 +91,7 @@ export function columnConditionHolds(condition: ColumnCondition, value: Datapoin
   if (condition.kind === "text") {
     return String(value).toLowerCase().includes(condition.text);
   }
-  const number = typeof value === "number" ? value : Number(value);
+  const number = parse_numeric(value);
   if (!Number.isFinite(number)) {
     return false;
   }
@@ -133,7 +133,7 @@ function filter_range(data: FilterRange): Predicate {
     if (raw === undefined) {
       return false;
     }
-    const value = parseFloat(String(raw));
+    const value = parse_numeric(raw);
     if (data.min <= value && value <= data.max) {
       return true;
     }

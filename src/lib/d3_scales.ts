@@ -39,13 +39,30 @@ export interface ContinuousScale extends ScaleBase {
 
 export type Scale = CategoricalScale | ContinuousScale;
 
-/** inf, -inf, NaN, null and the empty string, as numbers or as the text CSV gives. */
+/*
+ * How numbers are spelled in text cells, as CSV files carry them. The same
+ * grammar types CSV columns in Python (`hiplot/csvvalues.py`), so a column is
+ * numeric on both sides or on neither.
+ */
+const FINITE_SPELLING = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+const INFINITE_SPELLING = /^([+-]?)(?:inf|infinity)$/i;
+const NAN_SPELLING = /^[+-]?nan$/i;
+
+/**
+ * Whether a text cell spells a value with no finite number: inf, infinity or
+ * nan in any case and with an optional sign, or blank (a missing value).
+ */
+function isSpecialSpelling(text: string): boolean {
+  return text === "" || INFINITE_SPELLING.test(text) || NAN_SPELLING.test(text);
+}
+
+/** inf, -inf, NaN, null and blank, as numbers or as the text CSV gives. */
 export function is_special_numeric(x: unknown): boolean {
   switch (typeof x) {
     case "number":
       return !Number.isFinite(x);
     case "string":
-      return x === "inf" || x === "-inf" || x === "NaN" || x === "";
+      return isSpecialSpelling(x.trim());
     case "object":
       return x === null;
     default:
@@ -53,9 +70,40 @@ export function is_special_numeric(x: unknown): boolean {
   }
 }
 
-/** Numeric coercion matching d3's own `+value`. */
+/** Whether a cell can sit on a numeric axis: a number, a number spelled as text, or a special. */
+export function is_numeric_value(x: unknown): boolean {
+  if (typeof x === "string") {
+    const text = x.trim();
+    return FINITE_SPELLING.test(text) || isSpecialSpelling(text);
+  }
+  return typeof x === "number" || x === null;
+}
+
+/**
+ * The number a cell holds: numbers as they are, text by the spellings above
+ * (inf and infinity give ±Infinity), and NaN for anything holding no number.
+ */
+export function parse_numeric(x: unknown): number {
+  if (typeof x === "number") {
+    return x;
+  }
+  if (typeof x !== "string") {
+    return Number.NaN;
+  }
+  const text = x.trim();
+  if (FINITE_SPELLING.test(text)) {
+    return Number(text);
+  }
+  const infinite = INFINITE_SPELLING.exec(text);
+  if (infinite === null) {
+    return Number.NaN;
+  }
+  return infinite[1] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
+}
+
+/** The number a scale places: a cell's number, or the milliseconds of a Date. */
 function toNumber(value: ScaleInput): number {
-  return typeof value === "number" ? value : Number(value);
+  return value instanceof Date ? value.getTime() : parse_numeric(value);
 }
 
 function toPrecisionFloor(v: number, p: number): number {
@@ -130,9 +178,7 @@ export function d3_scale_categorical(distinct_values: Iterable<ScaleInput>): Cat
 }
 
 export function get_numeric_values_sorted(values: Iterable<ScaleInput>): Array<number> {
-  const numbers = Array.from(values, (x) => parseFloat(String(x))).filter((x) =>
-    Number.isFinite(x),
-  );
+  const numbers = Array.from(values, toNumber).filter((x) => Number.isFinite(x));
   return Array.from(new Set(numbers)).sort((a, b) => a - b);
 }
 

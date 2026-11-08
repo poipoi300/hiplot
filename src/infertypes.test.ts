@@ -51,6 +51,24 @@ describe("type inference", () => {
     expect(pd.type_options).toContain(ParamType.NUMERIC);
   });
 
+  test("text numbers with nan, inf and blank cells stay numeric (a CSV of diverged trials)", () => {
+    const accuracies = range(60, (i) => i / 100).map(String);
+    const pd = infer("val_accuracy", [...accuracies, "nan", "nan", "inf", "-Infinity", "NaN", ""]);
+    expect(pd.numeric).toBe(true);
+    expect(pd.type).toBe(ParamType.NUMERIC);
+    const scale = create_d3_scale(pd);
+    expect(scale.kind === "continuous" && scale.hasOutlierBand).toBe(true);
+  });
+
+  test("hexadecimal text is not a number spelling, so its column is categorical", () => {
+    expect(
+      infer(
+        "id",
+        range(30, (i) => i).map((i) => `0x${i.toString(16)}`),
+      ).numeric,
+    ).toBe(false);
+  });
+
   test("positive values spanning orders of magnitude get a log axis", () => {
     const pd = infer(
       "lr",

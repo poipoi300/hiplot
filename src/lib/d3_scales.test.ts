@@ -8,8 +8,10 @@ import {
   d3_scale_timestamp,
   get_numeric_values_sorted,
   getLogScaleTickValues,
+  is_numeric_value,
   is_special_numeric,
   naturalSortComparator,
+  parse_numeric,
   scale_add_outliers,
 } from "./d3_scales";
 
@@ -21,6 +23,34 @@ describe("special numerics", () => {
     for (const value of [0, 1.5, "1.5", "abc", undefined]) {
       expect(is_special_numeric(value)).toBe(false);
     }
+  });
+
+  test("CSV spellings of inf and nan are special in any case and with a sign", () => {
+    const spellings = ["nan", "NAN", "-nan", "Infinity", "-Infinity", "+inf", "INF", " nan ", "  "];
+    for (const value of spellings) {
+      expect(is_special_numeric(value)).toBe(true);
+      expect(is_numeric_value(value)).toBe(true);
+    }
+  });
+
+  test("numbers spelled as text are numeric values, other text and booleans are not", () => {
+    for (const value of ["1", "-2.5", ".5", "5.", "1e-3", "+3E4", " 7 ", 0, null]) {
+      expect(is_numeric_value(value)).toBe(true);
+    }
+    for (const value of ["abc", "0x1f", "1_000", "1,5", "nan1", true, undefined]) {
+      expect(is_numeric_value(value)).toBe(false);
+    }
+  });
+
+  test("parsing reads infinities with their sign and leaves no number as NaN", () => {
+    expect(parse_numeric("1e-3")).toBe(0.001);
+    expect(parse_numeric(" 42 ")).toBe(42);
+    expect(parse_numeric("inf")).toBe(Infinity);
+    expect(parse_numeric("-Infinity")).toBe(-Infinity);
+    expect(parse_numeric("nan")).toBeNaN();
+    expect(parse_numeric("")).toBeNaN();
+    expect(parse_numeric("0x10")).toBeNaN();
+    expect(parse_numeric(null)).toBeNaN();
   });
 });
 
