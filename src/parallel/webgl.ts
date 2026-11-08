@@ -351,10 +351,17 @@ void main() {
  * spreads as the sum of two uniform spans |n.x| and |n.y| wide, a
  * trapezoid; the coverage is its share within the line's half width of the
  * pixel center. Summed over a column of pixels, it is the line's area in
- * that column, so a line's intensity per unit length is the same at every
- * slope and wherever it falls between pixel centers. A line narrower than a
- * pixel keeps a one-pixel footprint and fades with its width, as Canvas 2D
- * hairlines do.
+ * that column, so a line's intensity per unit length is the same wherever
+ * it falls between pixel centers. A line narrower than a pixel keeps a
+ * one-pixel footprint and fades with its width, as Canvas 2D hairlines do.
+ *
+ * A one-pixel footprint never covers a whole pixel unless it is level: at
+ * most 91% at 45 degrees. Coverage is scaled up by the share the line
+ * covers of a pixel on its center, so a pixel a line runs through the
+ * middle of counts as covered, and pixels crossed by many lines at all
+ * offsets, whose peak coverage stands for how much of them is covered (see
+ * COMPOSITE_FRAGMENT_SHADER), reach full opacity. Lines at 45 degrees are
+ * then up to 9% brighter than level ones, the same all along each line.
  */
 const COVERAGE = `
 uniform float u_halfWidth;
@@ -385,7 +392,9 @@ float coverage() {
   float wide = max(spans.x, spans.y);
   float inside = squareBelow(v_across + halfFootprint, narrow, wide) -
     squareBelow(v_across - halfFootprint, narrow, wide);
-  return inside * min(2.0 * u_halfWidth, 1.0);
+  float insideOnCenter = squareBelow(halfFootprint, narrow, wide) -
+    squareBelow(-halfFootprint, narrow, wide);
+  return inside / insideOnCenter * min(2.0 * u_halfWidth, 1.0);
 }
 `;
 

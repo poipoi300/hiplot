@@ -367,6 +367,60 @@ for (const deviceScaleFactor of [1, 2]) {
   });
 }
 
+/**
+ * Thirty thousand rows fanning out from one point over a whole axis, and the
+ * canvas's opacity along the middle of the fan from `from` to `to` of the way
+ * from the point. The rows' density, and so the opacity, falls smoothly away
+ * from the point, where every pixel is crossed by lines at all offsets.
+ */
+async function fanOpacities(page: Page, from: number, to: number): Promise<number[]> {
+  const fan = Array.from({ length: 30000 }, (_, i) => [0, i / 29999, i / 29999]);
+  await uploadRows(page, ["a", "b", "c"], [...fan, [1, 1, 1]], "c");
+  return page.evaluate(
+    ({ from, to }) => {
+      const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
+        | (ParallelPlotHandle & CoverageProbe)
+        | null;
+      const canvas = pp?.foreground_ref.current;
+      if (!pp || !canvas) {
+        throw new Error("No parallel plot");
+      }
+      pp.redrawLines();
+      const copy = document.createElement("canvas");
+      copy.width = canvas.width;
+      copy.height = canvas.height;
+      const context = copy.getContext("2d");
+      if (context === null) {
+        throw new Error("No 2D context");
+      }
+      // Same task as the draw, so a WebGL buffer has not been presented and cleared yet.
+      context.drawImage(canvas, 0, 0);
+      const { data } = context.getImageData(0, 0, copy.width, copy.height);
+      const ratio = pp.pixelRatio;
+      const [xPoint, xEnd] = ["a", "b"].map(
+        (dimension) => (pp.position(dimension) - pp.scrollLeft) * ratio,
+      );
+      const [yPoint, yEnd] = [pp.yscale.a(0) * ratio, pp.yscale.b(0.5) * ratio];
+      const values: number[] = [];
+      const steps = Math.ceil(Math.abs(xEnd - xPoint) * (to - from));
+      for (let step = 0; step < steps; ++step) {
+        const t = from + (step / steps) * (to - from);
+        const [x, y] = [xPoint + t * (xEnd - xPoint), yPoint + t * (yEnd - yPoint)].map(Math.floor);
+        values.push(data[(y * copy.width + x) * 4 + 3]);
+      }
+      return values;
+    },
+    { from, to },
+  );
+}
+
+test("pixels crossed by lines at every offset are fully opaque", async ({ page }) => {
+  // A one-pixel line covers at most 91% of a pixel at 45 degrees: taken as
+  // is, dense regions of sloped lines never become opaque.
+  const opacities = await fanOpacities(page, 0.01, 0.05);
+  expect(Math.min(...opacities)).toBeGreaterThanOrEqual(254);
+});
+
 for (const [mode, expected] of [
   ["mean", "the color map at their mean value"],
   ["lowest", "the lowest value's color"],
