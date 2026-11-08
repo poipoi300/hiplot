@@ -1079,7 +1079,9 @@ class DocAndCredits extends React.Component<DocsCreditsProps> {
             <p>
               <strong>Brush</strong>: Drag vertically along an axis.
               <br />
-              <strong>Remove Brush</strong>: Tap the axis background.
+              <strong>Remove Brush</strong>: Click or tap it.
+              <br />
+              <strong>Remove Brushes of an Axis</strong>: Click or tap the axis outside its brushes.
               <br />
               <strong>Reorder Axes</strong>: Drag a label horizontally.
               <br />

@@ -75,6 +75,21 @@ export function mergeBrushes(brushes: Iterable<AxisBrush>, touching: number): Ax
   return merged;
 }
 
+/**
+ * The brushes of an axis left by a click (a press and release without a
+ * drag) on the brush `clicked`, which removes just that brush, or on the axis
+ * outside its brushes (`clicked` null), which removes them all.
+ */
+export function brushesAfterClick(
+  brushes: Iterable<AxisBrush>,
+  clicked: number | null,
+): AxisBrush[] {
+  if (clicked === null) {
+    return [];
+  }
+  return Array.from(brushes).filter((brush) => brush.id !== clicked);
+}
+
 /** Rounding left in positions computed from pixels or values at the axis ends. */
 const POSITION_EPSILON = 1e-9;
 

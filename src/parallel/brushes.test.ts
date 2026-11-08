@@ -6,6 +6,7 @@ import { type DatapointValue, ParamType } from "../types";
 import {
   type AxisBrush,
   type AxisInterval,
+  brushesAfterClick,
   coversWholeAxis,
   intervalPixels,
   isSavedBrushes,
@@ -64,6 +65,17 @@ describe("merging brushes", () => {
     const input = [brush(1, 0.1, 0.5), brush(2, 0.4, 0.6)];
     mergeBrushes(input, 0);
     expect(input).toEqual([brush(1, 0.1, 0.5), brush(2, 0.4, 0.6)]);
+  });
+});
+
+describe("clicks on an axis", () => {
+  const brushes = [brush(0, 0.1, 0.2), brush(1, 0.4, 0.5), brush(2, 0.7, 0.9)];
+  test("a click on a brush removes just that brush", () => {
+    expect(brushesAfterClick(brushes, 1)).toEqual([brush(0, 0.1, 0.2), brush(2, 0.7, 0.9)]);
+  });
+
+  test("a click on the axis outside its brushes removes them all", () => {
+    expect(brushesAfterClick(brushes, null)).toEqual([]);
   });
 });
 

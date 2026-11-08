@@ -43,6 +43,7 @@ import {
 } from "./axisformat";
 import {
   type AxisBrush,
+  brushesAfterClick,
   coversWholeAxis,
   intervalPixels,
   isSavedBrushes,
@@ -263,7 +264,10 @@ const GRIP_OFFSET_Y = -9;
 const BRUSH_WIDTH = 38;
 /** Height of the band along each brush edge that resizes it. */
 const BRUSH_HANDLE_PIXELS = 6;
-/** A press that moves less than this is a click: on a brush, it removes the brush. */
+/**
+ * A press that moves less than this is a click: on a brush, it removes the
+ * brush; elsewhere on the axis, every brush of the axis.
+ */
 const BRUSH_CLICK_PIXELS = 2;
 /** Brushes on one axis this close merge when a gesture ends. */
 const BRUSH_TOUCH_PIXELS = 1;
@@ -854,8 +858,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   /**
    * Ends a brush gesture: a click on a brush removes it, a click elsewhere
-   * changes nothing; after a drag, empty brushes go and the brushes of the
-   * axis that overlap or touch merge.
+   * on the axis removes all its brushes; after a drag, empty brushes go and
+   * the brushes of the axis that overlap or touch merge.
    */
   private endBrushGesture(): void {
     const gesture = this.brushGesture;
@@ -865,13 +869,20 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.brushGesture = null;
     this.interacting = false;
     this.cancelBrushMove();
-    if (!gesture.moved && gesture.kind === "create") {
+    const brushes = this.brushes.get(gesture.dimension) ?? [];
+    if (!gesture.moved) {
+      if (brushes.length === 0) {
+        return;
+      }
+      const clicked = gesture.kind === "create" ? null : gesture.brushId;
+      this.setAxisBrushes(gesture.dimension, brushesAfterClick(brushes, clicked));
+      this.commitBrushes();
       return;
     }
-    const brushes = (this.brushes.get(gesture.dimension) ?? []).filter(
-      (brush) => brush.end > brush.start && (gesture.moved || brush.id !== gesture.brushId),
+    this.setAxisBrushes(
+      gesture.dimension,
+      brushes.filter((brush) => brush.end > brush.start),
     );
-    this.setAxisBrushes(gesture.dimension, brushes);
     this.commitBrushes();
   }
 
@@ -1569,7 +1580,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         .classed("overlay", true)
         .attr("width", BRUSH_WIDTH)
         .append("title")
-        .text("Drag up or down to add a brush on this axis");
+        .text("Drag up or down to add a brush on this axis; click to remove all its brushes");
       brushBands.call(me.brushDrag);
       me.drawBrushes();
       me.fitTickLabels();
@@ -1858,7 +1869,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
           .classed("selection", true)
           .attr("width", BRUSH_WIDTH)
           .append("title")
-          .text("Drag to move this brush, drag an edge to resize it, click to remove it");
+          .text(
+            "Drag to move this brush, drag an edge to resize it, click to remove it; " +
+              "click the axis outside its brushes to remove them all",
+          );
         for (const edge of ["top", "bottom"]) {
           band
             .append("rect")

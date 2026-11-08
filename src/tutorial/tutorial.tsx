@@ -152,7 +152,7 @@ class StepLearnToSlice extends React.Component<TutorialStepProps> {
         <hr />
         <p className="mb-0">
           Drag a slice to move it, or its top or bottom edge to resize it. To remove a slice, click
-          on it.
+          on it; to remove every slice of an axis, click the axis outside its slices.
         </p>
       </div>
     );

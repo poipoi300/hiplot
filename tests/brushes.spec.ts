@@ -234,12 +234,35 @@ test("tags bump inside brushes that leave no room outside, and never overlap", a
   expect(insideTop.y + insideTop.height).toBeLessThanOrEqual(first.y + first.height);
 });
 
-test("clicking an empty part of an axis keeps its brushes", async ({ page }) => {
+test("clicking an axis outside its brushes removes all of them, and only them", async ({
+  page,
+}) => {
   await loadDemo(page);
   await brushAxis(page, "seed", 0.1, 0.3);
+  await brushAxis(page, "seed", 0.5, 0.6);
+  await brushAxis(page, "r", 0.2, 0.9);
+  const brushedR = await selected(page);
   const overlay = await boxOf(axis(page, "seed").locator(".pplot-brush rect.overlay"));
-  await page.mouse.click(overlay.x + overlay.width / 2, overlay.y + overlay.height * 0.7);
+  // Off the axis line, at the band's edge: anywhere on the axis counts.
+  await page.mouse.click(overlay.x + 3, overlay.y + overlay.height * 0.8);
+  await expect(bands(page, "seed")).toHaveCount(0);
+  await expect(bands(page, "r")).toHaveCount(1);
+  await expect.poll(() => selected(page)).toBeGreaterThanOrEqual(brushedR);
+  // A click on an axis without brushes changes nothing.
+  await page.mouse.click(overlay.x + overlay.width / 2, overlay.y + overlay.height * 0.4);
+  await expect(bands(page, "r")).toHaveCount(1);
+});
+
+test("clicking a brush removes just that brush", async ({ page }) => {
+  await loadDemo(page);
+  await brushAxis(page, "seed", 0.1, 0.3);
+  await brushAxis(page, "seed", 0.5, 0.6);
+  const upper = await boxOf(bands(page, "seed").first());
+  const lower = await boxOf(bands(page, "seed").nth(1));
+  await page.mouse.click(upper.x + upper.width / 2, upper.y + upper.height / 2);
   await expect(bands(page, "seed")).toHaveCount(1);
+  const left = await boxOf(bands(page, "seed"));
+  expect(Math.abs(left.y - lower.y)).toBeLessThanOrEqual(1);
 });
 
 test("the axis menu clears the brushes of that axis only", async ({ page }) => {
