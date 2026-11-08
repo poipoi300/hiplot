@@ -21,7 +21,7 @@ import { powerOfTenLabels } from "./lib/numberformat";
 import { mounted } from "./lib/refs";
 import { ResizableH } from "./lib/resizable";
 import { isString, readState } from "./lib/savedstate";
-import { valueFormatter } from "./parallel/axisformat";
+import { columnAxisStyle, valueFormatter } from "./parallel/axisformat";
 import { type FitMode, isFitMode, type ScatterStats, scatterStats } from "./plots/scatterstats";
 import type { HiPlotPluginData } from "./plugin";
 import { formatParameter } from "./stats/distributions";
@@ -352,11 +352,17 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
       if (scale.kind !== "continuous" || paramDef.type === ParamType.TIMESTAMP) {
         return null;
       }
-      const values = valueFormatter(scale, tickCount);
+      // Decided from every row, so Keep and Exclude never switch the notation.
+      const style = columnAxisStyle(
+        me.props.params_def_unfiltered[param],
+        paramDef.type,
+        tickCount,
+      );
+      const values = valueFormatter(scale, tickCount, style);
       if (paramDef.type !== ParamType.NUMERICLOG || tickValues === null) {
         return values;
       }
-      const powerLabels = powerOfTenLabels(tickValues);
+      const powerLabels = powerOfTenLabels(tickValues, !style.scientific);
       const labels = new Map(tickValues.map((power, index) => [power, powerLabels[index]]));
       return (value) => labels.get(value) ?? values(value);
     }

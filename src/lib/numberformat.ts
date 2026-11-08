@@ -97,12 +97,18 @@ function notationOf(found: Magnitudes): Notation {
   return { kind: "fixed", decimals: Math.max(0, Math.min(MAX_DECIMALS, decimals)) };
 }
 
+/** Whether ticks spanning these magnitudes read best in scientific notation. */
+export function ticksNeedScientific(ticks: ReadonlyArray<number>): boolean {
+  return needsScientific(magnitudes(ticks.filter(Number.isFinite)));
+}
+
 /**
- * The notation of an axis from its tick values: fixed with the decimals the
- * tick step needs, or scientific with the digits that keep the ticks apart
- * when the axis spans magnitudes fixed notation writes badly.
+ * The notation of an axis from its tick values: scientific when `scientific`
+ * (see `ticksNeedScientific`), with the digits that keep the ticks apart,
+ * else fixed with the decimals the tick step needs. A step finer than fixed
+ * notation writes is scientific all the same.
  */
-export function tickNotation(ticks: ReadonlyArray<number>): Notation {
+export function tickNotation(ticks: ReadonlyArray<number>, scientific: boolean): Notation {
   const finite = ticks.filter(Number.isFinite);
   const found = magnitudes(finite);
   if (!found.any) {
@@ -116,15 +122,15 @@ export function tickNotation(ticks: ReadonlyArray<number>): Notation {
       step = Math.min(step, Number((sorted[i] - sorted[i - 1]).toPrecision(12)));
     }
   }
-  if (needsScientific(found)) {
+  const decimals = Number.isFinite(step) ? d3.precisionFixed(step) : SIGNIFICANT_DIGITS;
+  if (scientific || decimals > MAX_DECIMALS) {
     const digits = Number.isFinite(step) ? d3.precisionRound(step, found.largest) : 1;
     return { kind: "scientific", digits: Math.max(1, Math.min(SIGNIFICANT_DIGITS + 1, digits)) };
   }
   if (found.allIntegers) {
     return { kind: "integer" };
   }
-  const decimals = Number.isFinite(step) ? d3.precisionFixed(step) : SIGNIFICANT_DIGITS;
-  return { kind: "fixed", decimals: Math.min(MAX_DECIMALS, decimals) };
+  return { kind: "fixed", decimals };
 }
 
 /** A formatter writing every value in `notation`; non-finite values as JavaScript writes them. */
@@ -198,18 +204,48 @@ const SUPERSCRIPTS: { [character: string]: string } = {
   "9": "⁹",
 };
 
+const superscript = (exponent: number): string =>
+  Array.from(String(exponent), (character) => SUPERSCRIPTS[character]).join("");
+
+/** Whether every one of these powers of ten can be written out (0.01 to 1000). */
+export function powersWrittenOut(powers: ReadonlyArray<number>): boolean {
+  return powers.every((power) => {
+    const exponent = Math.round(Math.log10(power));
+    return exponent >= -2 && exponent <= 3;
+  });
+}
+
 /**
- * Labels of the powers of ten on one log axis: all written out (0.01 to
- * 1000) when every one of them can be, otherwise all as 10 with a
- * superscript exponent.
+ * Labels of the powers of ten on one log axis: all written out when
+ * `writtenOut` (by default, when every one of them can be), otherwise all
+ * as 10 with a superscript exponent.
  */
-export function powerOfTenLabels(powers: ReadonlyArray<number>): string[] {
+export function powerOfTenLabels(
+  powers: ReadonlyArray<number>,
+  writtenOut: boolean = powersWrittenOut(powers),
+): string[] {
   const exponents = powers.map((power) => Math.round(Math.log10(power)));
-  if (exponents.every((exponent) => exponent >= -2 && exponent <= 3)) {
+  if (writtenOut) {
     return exponents.map((exponent) => d3.format("~r")(10 ** exponent));
   }
-  return exponents.map(
-    (exponent) =>
-      `10${Array.from(String(exponent), (character) => SUPERSCRIPTS[character]).join("")}`,
-  );
+  return exponents.map((exponent) => `10${superscript(exponent)}`);
+}
+
+/**
+ * Writes values as a mantissa of `digits` significant digits times a power
+ * of ten with a superscript exponent (1.8×10⁻²): the notation of log axes
+ * whose ticks read 10ⁿ.
+ */
+export function powerOfTenFormatter(digits: number): (value: number) => string {
+  const format = plainLocale.format(`.${digits - 1}e`);
+  return (value) => {
+    if (!Number.isFinite(value)) {
+      return String(value);
+    }
+    if (value === 0) {
+      return "0";
+    }
+    const [mantissa, exponent] = format(value).split("e");
+    return `${mantissa}×10${superscript(Number(exponent))}`;
+  };
 }

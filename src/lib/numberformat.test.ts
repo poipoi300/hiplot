@@ -3,13 +3,16 @@ import {
   columnNotation,
   fixedWidthFormatter,
   formatterFor,
+  powerOfTenFormatter,
   powerOfTenLabels,
   tickNotation,
+  ticksNeedScientific,
 } from "./numberformat";
 
 const formatColumn = (values: number[]): string[] =>
   values.map(formatterFor(columnNotation(values)));
-const formatTicks = (ticks: number[]): string[] => ticks.map(formatterFor(tickNotation(ticks)));
+const formatTicks = (ticks: number[]): string[] =>
+  ticks.map(formatterFor(tickNotation(ticks, ticksNeedScientific(ticks))));
 
 describe("one notation per table column", () => {
   test("integer columns stay whole", () => {
@@ -104,6 +107,16 @@ describe("one notation per axis", () => {
   test("an axis of tiny values is all scientific", () => {
     expect(formatTicks([1e-4, 2e-4, 3e-4])).toEqual(["1e-4", "2e-4", "3e-4"]);
   });
+
+  test("the notation decided for the whole column holds on a zoomed-in axis", () => {
+    const zoomed = [0.2, 0.3, 0.4];
+    expect(tickNotation(zoomed, true)).toEqual({ kind: "scientific", digits: 1 });
+    expect(tickNotation(zoomed, false)).toEqual({ kind: "fixed", decimals: 1 });
+  });
+
+  test("a step finer than fixed notation writes is scientific all the same", () => {
+    expect(tickNotation([0.5, 0.5000001, 0.5000002], false).kind).toBe("scientific");
+  });
 });
 
 describe("powers of ten on log axes", () => {
@@ -120,5 +133,15 @@ describe("powers of ten on log axes", () => {
       "10⁰",
     ]);
     expect(powerOfTenLabels([1, 1e5])).toEqual(["10⁰", "10⁵"]);
+  });
+
+  test("the style decided for the whole column holds for a subset of its powers", () => {
+    expect(powerOfTenLabels([0.01, 0.1], false)).toEqual(["10⁻²", "10⁻¹"]);
+  });
+
+  test("values between the powers are a mantissa times a power of ten", () => {
+    const format = powerOfTenFormatter(2);
+    expect([0.018, 3.2e-5, 250, 0].map(format)).toEqual(["1.8×10⁻²", "3.2×10⁻⁵", "2.5×10²", "0"]);
+    expect(format(Number.POSITIVE_INFINITY)).toBe("Infinity");
   });
 });

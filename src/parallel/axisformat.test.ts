@@ -3,7 +3,9 @@ import { create_d3_scale, infertypes } from "../infertypes";
 import { PersistentStateInMemory } from "../lib/savedstate";
 import { type Datapoint, type DatapointValue, ParamType } from "../types";
 import {
+  axisStyle,
   columnAxis,
+  columnAxisStyle,
   formatTimestamp,
   OUTLIER_TICK_LABEL,
   tickCountFor,
@@ -11,10 +13,26 @@ import {
 } from "./axisformat";
 import { densityReference, segmentSamples } from "./webgl";
 
-function scaleOf(values: DatapointValue[], type?: ParamType) {
+function columnOf(values: DatapointValue[]) {
   const rows: Datapoint[] = values.map((value, i) => ({ uid: `${i}`, from_uid: null, x: value }));
-  const pd = infertypes(new PersistentStateInMemory("", {}), rows).x;
+  return infertypes(new PersistentStateInMemory("", {}), rows).x;
+}
+
+function scaleOf(values: DatapointValue[], type?: ParamType) {
+  const pd = columnOf(values);
   return create_d3_scale(type === undefined ? pd : { ...pd, type }).range([400, 0]);
+}
+
+/** An axis's value formatter in the style its own scale suits. */
+function formatterOf(scale: ReturnType<typeof scaleOf>, tickCount: number) {
+  return valueFormatter(scale, tickCount, axisStyle(scale, tickCount));
+}
+
+/** Tick labels of a column axis. */
+function tickLabels(scale: ReturnType<typeof scaleOf>, style = axisStyle(scale, 4)): string[] {
+  const axis = columnAxis(scale, 400, style);
+  const format = axis.tickFormat();
+  return (axis.tickValues() ?? []).map((value) => format?.(value, 0) ?? "");
 }
 
 const range = (n: number, map: (i: number) => number) =>
@@ -22,22 +40,49 @@ const range = (n: number, map: (i: number) => number) =>
 
 describe("tick formats", () => {
   test("a log axis writes all its powers of ten the same way", () => {
-    const wide = columnAxis(scaleOf(range(40, (i) => 10 ** (i / 5 - 4))), 400);
-    const format = wide.tickFormat();
-    const labels = (wide.tickValues() ?? []).map((value) => format?.(value, 0));
+    const labels = tickLabels(scaleOf(range(40, (i) => 10 ** (i / 5 - 4))));
     expect(labels).toContain("10⁻²");
-    expect(labels.every((label) => label?.startsWith("10"))).toBe(true);
+    expect(labels.every((label) => label.startsWith("10"))).toBe(true);
+  });
+
+  test("brush ends on a log axis read in the notation of its ticks", () => {
+    const lr = scaleOf(range(40, (i) => 10 ** (i / 10 - 5)));
+    expect(tickLabels(lr)).toContain("10⁻²");
+    expect(formatterOf(lr, 4)(0.018)).toBe("1.8×10⁻²");
+    const narrow = scaleOf(
+      range(40, (i) => 10 ** (i / 20 - 1)),
+      ParamType.NUMERICLOG,
+    );
+    expect(tickLabels(narrow)).toContain("1");
+    expect(formatterOf(narrow, 4)(0.18)).toBe("0.180");
+  });
+
+  test("an axis rescaled to the rows Keep left writes numbers as the whole column does", () => {
+    const all = columnOf(range(40, (i) => 10 ** (i / 5 - 5)));
+    const kept = scaleOf(
+      range(40, (i) => 10 ** (i / 20 - 1)),
+      ParamType.NUMERICLOG,
+    );
+    const style = columnAxisStyle(all, ParamType.NUMERICLOG, 4);
+    expect(style).toEqual({ scientific: true });
+    expect(columnAxisStyle(all, ParamType.NUMERICLOG, 4)).toBe(style);
+    expect(tickLabels(kept, style)).toContain("10⁰");
+    expect(valueFormatter(kept, 4, style)(0.18)).toBe("1.8×10⁻¹");
+    const linear = columnOf(range(30, (i) => i * 100_000));
+    const zoomed = scaleOf(range(30, (i) => i / 10));
+    const linearStyle = columnAxisStyle(linear, ParamType.NUMERIC, 5);
+    expect(valueFormatter(zoomed, 5, linearStyle)(1.5)).toBe("1.5e0");
   });
 
   test("a linear axis writes every tick in one notation", () => {
-    const large = valueFormatter(scaleOf(range(30, (i) => i * 100_000)), 5);
+    const large = formatterOf(scaleOf(range(30, (i) => i * 100_000)), 5);
     expect([0, 1_000_000, 2_500_000].map(large)).toEqual(["0", "1.0e6", "2.5e6"]);
-    const small = valueFormatter(scaleOf(range(30, (i) => i / 10)), 5);
+    const small = formatterOf(scaleOf(range(30, (i) => i / 10)), 5);
     expect([0.5, 1.5, 2].map(small)).toEqual(["0.5", "1.5", "2.0"]);
   });
 
   test("percentile axes use three significant digits, the outlier band its own label", () => {
-    const format = valueFormatter(
+    const format = formatterOf(
       scaleOf([...range(30, (i) => 10 ** (i / 5)), "inf"], ParamType.NUMERICPERCENTILE),
       5,
     );
@@ -57,14 +102,16 @@ describe("tick formats", () => {
 
 describe("column axes", () => {
   test("crowded categories are thinned to keep labels apart", () => {
-    const axis = columnAxis(scaleOf(range(60, (i) => i).map((i) => `c${i}`)), 300);
+    const categories = scaleOf(range(60, (i) => i).map((i) => `c${i}`));
+    const axis = columnAxis(categories, 300, axisStyle(categories, 3));
     const shown = axis.tickValues();
     expect(shown?.length).toBeLessThan(60);
     expect(shown?.[0]).toBe("c0");
   });
 
   test("log axes tick on powers of ten and keep the outlier band", () => {
-    const axis = columnAxis(scaleOf([...range(40, (i) => 10 ** (i / 5 - 4)), "inf"]), 400);
+    const scale = scaleOf([...range(40, (i) => 10 ** (i / 5 - 4)), "inf"]);
+    const axis = columnAxis(scale, 400, axisStyle(scale, 4));
     const shown = axis.tickValues() ?? [];
     expect(shown).toContain(1);
     expect(Number.isNaN(shown[shown.length - 1] as number)).toBe(true);

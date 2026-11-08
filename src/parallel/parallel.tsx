@@ -32,8 +32,10 @@ import { isNumber, isStringArray, readState } from "../lib/savedstate";
 import type { HiPlotPluginData } from "../plugin";
 import { type Datapoint, ParamType } from "../types";
 import {
+  type AxisStyle,
   type AxisValue,
   columnAxis,
+  columnAxisStyle,
   formatTimestamp,
   tickCountFor,
   valueFormatter,
@@ -950,7 +952,16 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   };
 
   get_axis(d: string): d3.Axis<AxisValue> {
-    return columnAxis(this.yscale[d], this.h);
+    return columnAxis(this.yscale[d], this.h, this.axisStyleOf(d));
+  }
+
+  /** How an axis writes numbers, decided from every row of its column. */
+  private axisStyleOf(dimension: string): AxisStyle {
+    return columnAxisStyle(
+      this.props.params_def_unfiltered[dimension],
+      this.yscale[dimension].paramType,
+      tickCountFor(this.h),
+    );
   }
 
   render() {
@@ -1839,7 +1850,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         const format =
           scale.paramType === ParamType.TIMESTAMP
             ? formatTimestamp
-            : valueFormatter(scale, tickCountFor(this.h));
+            : valueFormatter(scale, tickCountFor(this.h), this.axisStyleOf(dimension));
         return { top: format(scale.invert(span.top)), bottom: format(scale.invert(span.bottom)) };
       });
       const placed = placeBrushTags(spans, {
