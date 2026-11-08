@@ -1,12 +1,19 @@
 import { describe, expect, test } from "bun:test";
+import { create_d3_scale, infertypes, scale_pixels_range } from "../infertypes";
+import { d3_scale_categorical, type Scale } from "../lib/d3_scales";
+import { PersistentStateInMemory } from "../lib/savedstate";
+import { type DatapointValue, ParamType } from "../types";
 import {
   type AxisBrush,
+  type AxisInterval,
   intervalPixels,
   isSavedBrushes,
   mergeBrushes,
   pixelInterval,
+  savedBrushIntervals,
+  savedBrushOf,
 } from "./brushes";
-import { type PlacedTag, placeBrushTags, type TagMetrics } from "./brushtags";
+import { categoryTagTexts, type PlacedTag, placeBrushTags, type TagMetrics } from "./brushtags";
 
 const brush = (id: number, start: number, end: number): AxisBrush => ({ id, start, end });
 
@@ -59,8 +66,14 @@ describe("merging brushes", () => {
 });
 
 describe("saved brushes", () => {
-  test("valid saved brushes are accepted", () => {
+  test("valid saved brushes are accepted, in values or as earlier positions", () => {
     expect(isSavedBrushes({})).toBe(true);
+    expect(
+      isSavedBrushes({
+        lr: [{ min: 1e-4, max: 0.01, include_infnans: false }, [0.5, 1]],
+        opt: [{ categories: ["adam", "sgd"] }],
+      }),
+    ).toBe(true);
     expect(
       isSavedBrushes({
         lr: [
@@ -84,9 +97,79 @@ describe("saved brushes", () => {
       { lr: [[0.1, Number.NaN]] },
       { lr: [[0.1, 0.2, 0.3]] },
       { lr: [["0", 1]] },
+      { lr: [{ min: 2, max: 1, include_infnans: false }] },
+      { lr: [{ min: 0, max: Number.POSITIVE_INFINITY, include_infnans: false }] },
+      { lr: [{ min: 0, max: 1 }] },
+      { opt: [{ categories: [1] }] },
     ]) {
       expect(isSavedBrushes(value)).toBe(false);
     }
+  });
+});
+
+describe("brushes saved in values", () => {
+  const numeric = (values: DatapointValue[]) => {
+    const scale = create_d3_scale(
+      infertypes(
+        new PersistentStateInMemory("", {}),
+        values.map((value, index) => ({ uid: `${index}`, from_uid: null, x: value })),
+      ).x,
+    ).range([400, 0]);
+    if (scale.kind !== "continuous") {
+      throw new Error("Expected a numeric axis");
+    }
+    return scale;
+  };
+  const tenths = Array.from({ length: 11 }, (_, i) => i / 10);
+  const pixelsOf = (scale: Scale, interval: AxisInterval) =>
+    intervalPixels(scale.range(), interval);
+
+  test("a numeric brush saves its values and selects them again on reload", () => {
+    const scale = numeric(tenths);
+    const saved = savedBrushOf(scale_pixels_range(scale, [80, 240]));
+    expect(saved).toEqual({ min: 0.4, max: 0.8, include_infnans: false });
+    const [interval] = savedBrushIntervals(scale, saved);
+    expect(pixelsOf(scale, interval).top).toBeCloseTo(80);
+    expect(pixelsOf(scale, interval).bottom).toBeCloseTo(240);
+  });
+
+  test("a numeric brush keeps its values when the data's range changed", () => {
+    const saved = { min: 0.4, max: 0.8, include_infnans: false };
+    const wider = numeric([...tenths, 2]);
+    const [interval] = savedBrushIntervals(wider, saved);
+    const span = pixelsOf(wider, interval);
+    expect(wider.invert(span.bottom)).toBeCloseTo(0.4);
+    expect(wider.invert(span.top)).toBeCloseTo(0.8);
+    expect(savedBrushIntervals(numeric([5, 6, 7, 8, 9, 10, 11, 12]), saved)).toEqual([]);
+  });
+
+  test("a brush reaching the outlier band covers it again; one on the band alone, its outer half", () => {
+    const scale = numeric([...tenths, "nan"]);
+    const [through] = savedBrushIntervals(scale, { min: 0.5, max: 1, include_infnans: true });
+    expect(pixelsOf(scale, through).top).toBe(0);
+    const [band] = savedBrushIntervals(scale, { min: 1.1, max: 1.1, include_infnans: true });
+    expect(pixelsOf(scale, band)).toEqual({ top: 0, bottom: 15 });
+    const selection = scale_pixels_range(scale, [0, 15]);
+    expect(selection.type !== ParamType.CATEGORICAL && selection.include_infnans).toBe(true);
+  });
+
+  test("a categorical brush saves its categories and covers each run of them on reload", () => {
+    const scale = Object.assign(d3_scale_categorical(["a", "b", "c", "d", "e"]).range([400, 0]), {
+      paramType: ParamType.CATEGORICAL,
+    });
+    expect(savedBrushOf(scale_pixels_range(scale, [90, 210]))).toEqual({ categories: ["c", "d"] });
+    const intervals = savedBrushIntervals(scale, { categories: ["e", "b", "a", "gone"] });
+    expect(intervals.map((interval) => pixelsOf(scale, interval))).toEqual([
+      { top: 292, bottom: 400 },
+      { top: 0, bottom: 8 },
+    ]);
+    for (const interval of intervals) {
+      const span = pixelsOf(scale, interval);
+      const selected = scale_pixels_range(scale, [span.top, span.bottom]);
+      expect(selected.type === ParamType.CATEGORICAL && selected.values.length).toBeGreaterThan(0);
+    }
+    expect(savedBrushIntervals(scale, { min: 0, max: 1, include_infnans: false })).toEqual([]);
+    expect(savedBrushIntervals(numeric(tenths), { categories: ["a"] })).toEqual([]);
   });
 });
 
@@ -122,15 +205,20 @@ function random(seed: number): () => number {
 
 describe("brush tag placement", () => {
   test("a brush with room around it is tagged outside both edges", () => {
-    const tags = placeBrushTags([{ top: 100, bottom: 200 }], metrics);
+    const tags = placeBrushTags([{ top: 100, bottom: 200, single: false }], metrics);
     expect(tags).toEqual([
       { brush: 0, edge: "top", center: 88, inside: false },
       { brush: 0, edge: "bottom", center: 212, inside: false },
     ]);
   });
 
+  test("a brush covering a single category takes one tag, at its top edge", () => {
+    const tags = placeBrushTags([{ top: 100, bottom: 200, single: true }], metrics);
+    expect(tags).toEqual([{ brush: 0, edge: "top", center: 88, inside: false }]);
+  });
+
   test("an edge at an axis end takes its tag inside", () => {
-    const tags = placeBrushTags([{ top: 5, bottom: 410 }], metrics);
+    const tags = placeBrushTags([{ top: 5, bottom: 410, single: false }], metrics);
     expect(tagOf(tags, 0, "top")).toEqual({ brush: 0, edge: "top", center: 17, inside: true });
     expect(tagOf(tags, 0, "bottom")).toEqual({
       brush: 0,
@@ -143,8 +231,8 @@ describe("brush tag placement", () => {
   test("close neighbors take their facing tags inside; distant ones keep them outside", () => {
     const close = placeBrushTags(
       [
-        { top: 50, bottom: 150 },
-        { top: 170, bottom: 300 },
+        { top: 50, bottom: 150, single: false },
+        { top: 170, bottom: 300, single: false },
       ],
       metrics,
     );
@@ -157,8 +245,8 @@ describe("brush tag placement", () => {
 
     const distant = placeBrushTags(
       [
-        { top: 50, bottom: 150 },
-        { top: 200, bottom: 300 },
+        { top: 50, bottom: 150, single: false },
+        { top: 200, bottom: 300, single: false },
       ],
       metrics,
     );
@@ -167,9 +255,9 @@ describe("brush tag placement", () => {
 
   test("the placement does not depend on the order of the brushes", () => {
     const spans = [
-      { top: 200, bottom: 230 },
-      { top: 20, bottom: 60 },
-      { top: 240, bottom: 380 },
+      { top: 200, bottom: 230, single: false },
+      { top: 20, bottom: 60, single: false },
+      { top: 240, bottom: 380, single: false },
     ];
     const forward = placeBrushTags(spans, metrics);
     const backward = placeBrushTags(spans.slice().reverse(), metrics);
@@ -183,9 +271,9 @@ describe("brush tag placement", () => {
   test("tags of brushes too short to hold them are pushed apart, never overlapping", () => {
     const tags = placeBrushTags(
       [
-        { top: 100, bottom: 104 },
-        { top: 106, bottom: 112 },
-        { top: 113, bottom: 114 },
+        { top: 100, bottom: 104, single: false },
+        { top: 106, bottom: 112, single: false },
+        { top: 113, bottom: 114, single: false },
       ],
       metrics,
     );
@@ -210,6 +298,7 @@ describe("brush tag placement", () => {
     const spans = [0, 1, 2, 3, 4].map((index) => ({
       top: index * 15 + 1,
       bottom: index * 15 + 10,
+      single: false,
     }));
     const tags = placeBrushTags(spans, short);
     expect(new Set(tags.map((tag) => tag.brush))).toEqual(new Set([0]));
@@ -223,11 +312,28 @@ describe("brush tag placement", () => {
       const spans = Array.from({ length: count }, () => {
         const a = next() * metrics.max;
         const b = Math.min(metrics.max - 15, a + next() * 60);
-        return { top: Math.min(a, b), bottom: Math.max(a, b) };
+        return { top: Math.min(a, b), bottom: Math.max(a, b), single: next() < 0.3 };
       });
       const tags = placeBrushTags(spans, metrics);
       expectNoOverlap(tags, metrics);
       expect(placeBrushTags(spans, metrics)).toEqual(tags);
     }
+  });
+});
+
+describe("categorical brush tags", () => {
+  const categories = ["adam", "adamw", "sgd"];
+  const upright = d3_scale_categorical(categories).range([400, 0]);
+
+  test("the top tag names the category drawn highest, whatever the domain order", () => {
+    // On an upright axis the first category of the domain is drawn at the bottom.
+    expect(categoryTagTexts(["adam", "adamw"], upright)).toEqual({ top: "adamw", bottom: "adam" });
+    const inverted = d3_scale_categorical(categories).range([0, 400]);
+    expect(categoryTagTexts(["adam", "adamw"], inverted)).toEqual({ top: "adam", bottom: "adamw" });
+  });
+
+  test("a brush covering one category, or none, takes a single tag", () => {
+    expect(categoryTagTexts(["sgd"], upright)).toEqual({ top: "sgd", bottom: null });
+    expect(categoryTagTexts([], upright)).toEqual({ top: "none", bottom: null });
   });
 });

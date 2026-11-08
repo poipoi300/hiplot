@@ -72,6 +72,25 @@
   font-weight: 600;
   letter-spacing: 0.01em;
 }
+/*
+ * The brush being hovered, moved or resized, with its tags, in the
+ * interaction highlight; the other tags of its axis step back, so
+ * overlapping brushes keep their tags apart.
+ */
+.brushActive :global(.selection) {
+  fill: var(--hip-brush-active-fill);
+  stroke: var(--hip-brush-active-stroke);
+  stroke-width: 1.5;
+}
+.tagActive rect {
+  fill: var(--hip-brush-active-tag);
+}
+.tagActive .brushRange {
+  fill: var(--hip-brush-active-ink);
+}
+.tagDimmed {
+  opacity: 0.3;
+}
 
 /*
  * Flow badges right of the categories next to a brush: quiet pills, so the

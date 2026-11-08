@@ -31,6 +31,11 @@
   --hip-accent: #2459c9;
   --hip-brush-fill: rgba(36, 89, 201, 0.1);
   --hip-brush-stroke: #2459c9;
+  /* The brush being interacted with: amber, 4:1 stroke on --hip-bg, 9:1 tag text. */
+  --hip-brush-active-stroke: #a86f00;
+  --hip-brush-active-fill: rgba(242, 185, 0, 0.2);
+  --hip-brush-active-tag: #f2b900;
+  --hip-brush-active-ink: #1f2328;
   --hip-halo: rgba(248, 248, 246, 0.9);
   --hip-rule: #dcdcd8;
   /* Raised surfaces (menus, popovers) and their shadow */
@@ -51,6 +56,11 @@
   --hip-accent: #6ea2ff;
   --hip-brush-fill: rgba(110, 162, 255, 0.14);
   --hip-brush-stroke: #6ea2ff;
+  /* 11:1 stroke on --hip-bg, 12:1 tag text. */
+  --hip-brush-active-stroke: #ffcc33;
+  --hip-brush-active-fill: rgba(255, 204, 51, 0.16);
+  --hip-brush-active-tag: #ffcc33;
+  --hip-brush-active-ink: #15181c;
   --hip-halo: rgba(21, 24, 28, 0.9);
   --hip-rule: #2c3238;
   --hip-surface: #1e2227;

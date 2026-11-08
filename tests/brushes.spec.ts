@@ -117,12 +117,51 @@ test("categorical brushes select the categories inside any of them", async ({ pa
       ).length,
   );
   await expect.poll(() => selected(page)).toBe(expected);
-  await expect(axis(page, "c").locator("text.pplot-brush-range")).toHaveText([
-    "red",
-    "red",
-    "black",
-    "black",
-  ]);
+  // Each brush covers a single category, so it takes a single tag.
+  const texts = await axis(page, "c").locator("text.pplot-brush-range").allTextContents();
+  expect(texts.sort()).toEqual(["black", "red"]);
+});
+
+test("a categorical brush tags its highest category on top and its lowest below", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  // Red is drawn at the top of the axis and green in the middle.
+  await brushAxis(page, "c", 0, 0.6);
+  const tags = axis(page, "c");
+  await expect(tags.locator("[data-edge='top'] text.pplot-brush-range")).toHaveText("red");
+  await expect(tags.locator("[data-edge='bottom'] text.pplot-brush-range")).toHaveText("green");
+});
+
+test("the brush under the pointer is highlighted and the other tags of its axis dimmed", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  await brushAxis(page, "seed", 0.1, 0.3);
+  await brushAxis(page, "seed", 0.6, 0.8);
+  await page.mouse.move(5, 5);
+  const tags = axis(page, "seed").locator("[data-edge]:has(text.pplot-brush-range)");
+  await expect(tags).toHaveCount(4);
+  const styles = () =>
+    tags.evaluateAll((elements) =>
+      elements
+        .map((element) => {
+          const rect = element.querySelector("rect");
+          return `${getComputedStyle(element).opacity}:${rect === null ? "" : getComputedStyle(rect).fill}`;
+        })
+        .sort(),
+    );
+  const resting = await styles();
+  expect(new Set(resting).size).toBe(1);
+  const upper = await boxOf(bands(page, "seed").first());
+  await page.mouse.move(upper.x + upper.width / 2, upper.y + upper.height / 2);
+  await expect
+    .poll(async () => (await styles()).map((style) => style.split(":")[0]))
+    .toEqual(["0.3", "0.3", "1", "1"]);
+  const highlighted = (await styles()).filter((style) => style.startsWith("1:"));
+  expect(highlighted.every((style) => style !== resting[0])).toBe(true);
+  await page.mouse.move(5, 5);
+  await expect.poll(styles).toEqual(resting);
 });
 
 test("a brush moves by its body, resizes by its edge, and merges with one it touches", async ({
@@ -227,18 +266,40 @@ test("brushes are restored after a reload", async ({ page }) => {
   await brushAxis(page, "seed", 0.6, 0.8);
   await expect(bands(page, "seed")).toHaveCount(2);
   const before = await Promise.all([0, 1].map((index) => boxOf(bands(page, "seed").nth(index))));
-  await expect.poll(() => page.url()).toContain("brushes");
+  // Saved as the values they select, not as positions on the axis.
+  await expect.poll(() => decodeURIComponent(page.url())).toContain('"seed":[{"min":');
   await page.reload();
   await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
   await expect(bands(page, "seed")).toHaveCount(2);
   for (const [index, box] of before.entries()) {
     const after = await boxOf(bands(page, "seed").nth(index));
-    expect(after.y).toBeCloseTo(box.y, 0);
-    expect(after.height).toBeCloseTo(box.height, 0);
+    // Within a pixel: the bands snap to whole pixels.
+    expect(Math.abs(after.y - box.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(after.height - box.height)).toBeLessThanOrEqual(1);
   }
   await expect(page.getByRole("button", { name: "Reset brushes" })).toBeEnabled();
   const { selected: count, total } = await counts(page);
   expect(count).toBeLessThan(total);
+});
+
+test("brushes saved as axis positions by earlier versions still load", async ({ page }) => {
+  await loadDemo(page);
+  await brushAxis(page, "seed", 0.1, 0.3);
+  await expect.poll(() => page.url()).toContain("brushes");
+  const url = new URL(page.url());
+  const key = [...url.searchParams.keys()].find((name) => name.endsWith("brushes"));
+  if (key === undefined) {
+    throw new Error("No saved brushes in the URL");
+  }
+  // From the bottom of the axis: 20 % to 40 % of its height.
+  url.searchParams.set(key, JSON.stringify({ seed: [[0.2, 0.4]] }));
+  await page.goto(url.toString());
+  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
+  await expect(bands(page, "seed")).toHaveCount(1);
+  const overlay = await boxOf(axis(page, "seed").locator(".pplot-brush rect.overlay"));
+  const band = await boxOf(bands(page, "seed"));
+  expect(Math.abs(band.y - (overlay.y + overlay.height * 0.6))).toBeLessThanOrEqual(1);
+  expect(Math.abs(band.height - overlay.height * 0.2)).toBeLessThanOrEqual(1);
 });
 
 test("Keep saves the brushes of an axis as one multi-range filter", async ({ page }) => {

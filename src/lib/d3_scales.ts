@@ -404,7 +404,7 @@ export function getLogScaleTickValues(domain: number[], approxTickCount: number)
 }
 
 /** The size of the band holding inf, NaN and missing values, at the end of the range. */
-const OUTLIER_BAND_PIXELS = 30;
+export const OUTLIER_BAND_PIXELS = 30;
 
 /**
  * Adds NaN/Inf/-Inf to a continuous scale, with one extra tick for them.

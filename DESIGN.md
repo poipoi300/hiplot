@@ -22,6 +22,9 @@ colors:
   dark-context-line: "#6f7781"
   keep-dot: "#2e9e5b"
   exclude-dot: "#d1453b"
+  light-brush-active: "#f2b900"
+  light-brush-active-stroke: "#a86f00"
+  dark-brush-active: "#ffcc33"
 typography:
   title:
     fontFamily: "IBM Plex Sans Variable, IBM Plex Sans, system-ui, sans-serif"
@@ -127,7 +130,8 @@ and diverging maps for numbers), themed per background.
 
 ### Named Rules
 **The Data Owns Color Rule.** Hue in the chrome is limited to the selection
-accent and the Keep/Exclude dots. Statistical overlays (fits, flow badges)
+accent, the Keep/Exclude dots, and the amber interaction highlight, which
+appears only on the brush being hovered, moved or resized. Statistical overlays (fits, flow badges)
 take a neutral or a hue chosen outside the active color map, never one of the
 data's own colors.
 
@@ -180,6 +184,13 @@ pills. Borders are 1 px hairlines in `--hip-rule`.
 - **Toast**: bottom-right, surface background, floating shadow, ink text;
   errors carry a red dot like Exclude. Disappears after a few seconds or on
   dismiss.
+- **Brush tags**: pills in the brush stroke color with background-colored
+  600 text, at the top and bottom edges of each brush (one tag when a
+  categorical brush covers a single category), in the notation of the
+  axis's ticks. The brush under the pointer or in a gesture turns amber
+  (`--hip-brush-active-*`: amber fill with ink text, an amber 1.5 px band
+  stroke) and the other tags on its axis drop to 30 % opacity, so
+  overlapping brushes keep their tags apart.
 - **Flow badges**: right of each category next to a brushed axis, a pill in
   the background color at 82 % opacity with a hairline rule, a muted arrow
   pointing the way the selection flows and the count in 10.5 px/600 ink.
