@@ -125,6 +125,13 @@
   font-size: 11.5px;
   pointer-events: none;
 }
+/* Over a one-axis plot, whose bottom edge holds its axis's name. */
+.hintTop {
+  top: 2px;
+  right: 14px;
+  bottom: auto;
+  left: auto;
+}
 .axisName,
 .axisValue,
 .hoverText {

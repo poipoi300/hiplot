@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { insidePolygon, lassoed, startsLasso, WHEEL_GESTURE_GAP_MS, WheelLatch } from "./lasso";
+import {
+  insidePolygon,
+  lassoed,
+  lassoedAlong,
+  startsLasso,
+  WHEEL_GESTURE_GAP_MS,
+  WheelLatch,
+} from "./lasso";
 
 const square = [
   { x: 0, y: 0 },
@@ -37,6 +44,15 @@ describe("lasso selection", () => {
 
   test("a gesture too short to enclose anything picks nothing", () => {
     expect(lassoed(1, () => ({ x: 0, y: 0 }), square.slice(0, 2))).toEqual([]);
+    expect(lassoedAlong(1, () => 0, square.slice(0, 2), "x")).toEqual([]);
+  });
+
+  test("on one axis, the lasso takes what lies within its extent along that axis", () => {
+    const positions = [-1, 0, 4, 10, 11, null];
+    const at = (index: number) => positions[index];
+    expect(lassoedAlong(positions.length, at, square, "x")).toEqual([1, 2, 3]);
+    const tall = square.map(({ x, y }) => ({ x, y: y * 2 }));
+    expect(lassoedAlong(positions.length, at, tall, "y")).toEqual([1, 2, 3, 4]);
   });
 });
 

@@ -19,6 +19,7 @@ import {
 import { labelTextFromHtml } from "../lib/escape";
 import { powerOfTenLabels } from "../lib/numberformat";
 import { mounted } from "../lib/refs";
+import { lassoedAlong, type ScreenPoint } from "../plots/lasso";
 import { type Datapoint, ParamType } from "../types";
 import { type ColumnFit, densityCurve, fitColumn } from "./fit";
 
@@ -436,6 +437,30 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
         </div>
       </div>
     );
+  }
+
+  /**
+   * The rows of the plot whose value lies within a lasso's extent along the
+   * data axis, the polygon in pixels from the plot's top left corner: a row
+   * has no other coordinate here.
+   */
+  lassoedRows(polygon: ReadonlyArray<ScreenPoint>): Datapoint[] {
+    const positionOf = this.positionOf;
+    if (positionOf === null) {
+      throw new Error("A lasso was drawn over a distribution that is not drawn");
+    }
+    const vertical = this.isVertical();
+    const offset = vertical ? margin.left : margin.top;
+    const rows = this.props.histData.all;
+    return lassoedAlong(
+      rows.length,
+      (index) => {
+        const position = positionOf(rows[index]);
+        return position === null ? null : position + offset;
+      },
+      polygon,
+      vertical ? "x" : "y",
+    ).map((index) => rows[index]);
   }
 
   /** A line across the plot at each highlighted row's value, in the row's color. */

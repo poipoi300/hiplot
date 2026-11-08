@@ -65,10 +65,12 @@ space, is drawn as a grid, unless an axis is categorical.
 
 ## Lasso selection
 
-A ctrl-drag (cmd-drag on a Mac) draws a lasso. It selects exactly the points
-inside it, among every row Keep and Exclude left, including rows other
-brushes or an earlier lasso had deselected, and its rows replace the
-selection:
+A ctrl-drag (cmd-drag on a Mac) draws a lasso over any scatter: one-axis,
+XY or 3D. It selects exactly the points inside it, among every row Keep and
+Exclude left, including rows other brushes or an earlier lasso had
+deselected. A one-axis plot has no second coordinate, so there the lasso
+takes the rows whose values lie within its extent along the data axis. Its
+rows replace the selection:
 
 - the parallel plot's brushes are cleared (their saved state too), and the
   header shows "Lasso selection · N rows" with a button that selects every

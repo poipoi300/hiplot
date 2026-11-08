@@ -81,6 +81,34 @@ export function lassoed(
   return inside;
 }
 
+/**
+ * Indices, among `count` points that sit on one axis only, of those within
+ * the lasso's extent along that axis (`along`): a one-axis plot has no other
+ * coordinate to test. `position` gives a point's pixel on the axis, or null
+ * when it has no value.
+ */
+export function lassoedAlong(
+  count: number,
+  position: (index: number) => number | null,
+  polygon: ReadonlyArray<ScreenPoint>,
+  along: "x" | "y",
+): number[] {
+  if (polygon.length < MIN_LASSO_POINTS) {
+    return [];
+  }
+  const coordinates = polygon.map((point) => point[along]);
+  const low = Math.min(...coordinates);
+  const high = Math.max(...coordinates);
+  const inside: number[] = [];
+  for (let index = 0; index < count; ++index) {
+    const at = position(index);
+    if (at !== null && at >= low && at <= high) {
+      inside.push(index);
+    }
+  }
+  return inside;
+}
+
 /** Wheel events further apart than this start a new gesture. */
 export const WHEEL_GESTURE_GAP_MS = 250;
 

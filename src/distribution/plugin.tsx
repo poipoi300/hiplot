@@ -8,11 +8,15 @@
 import $ from "jquery";
 import React from "react";
 import _ from "underscore";
+import { lassoFilter } from "../filters";
 import { ColumnSelect } from "../lib/columnpicker";
 import { fitColor } from "../lib/fitcolor";
+import { mounted } from "../lib/refs";
 import { ResizableH } from "../lib/resizable";
 import { isString, readState } from "../lib/savedstate";
 import { PanelHeader, pickableColumns, SectionBar } from "../plots/frame";
+import { LASSO_GESTURE, type ScreenPoint } from "../plots/lasso";
+import { LassoSurface } from "../plots/lassosurface";
 import { type DistributionPanel, isDistributionPanels, nextPanelId } from "../plots/panels";
 import pstyle from "../plots/plots.module.css";
 import type { HiPlotPluginData } from "../plugin";
@@ -45,11 +49,23 @@ interface DistributionViewState {
 
 const initialHeight = (): number => Math.min(Math.max(document.body.clientHeight - 540, 240), 500);
 
-/** The histogram of one column: the selected rows over all filtered rows. */
+/** The controls, as the hint over the plot lists them. */
+const CONTROLS_HINT = `${LASSO_GESTURE} across values to lasso them`;
+
+/**
+ * The histogram of one column: the selected rows over all filtered rows. A
+ * lasso takes the rows whose values it spans.
+ */
 export class DistributionView extends React.Component<
   DistributionViewProps,
   DistributionViewState
 > {
+  private plotRef = React.createRef<DistributionPlot>();
+  /** A lasso's rows replace the selection. */
+  private onLasso = (polygon: ReadonlyArray<ScreenPoint>): void => {
+    const rows = mounted(this.plotRef).lassoedRows(polygon);
+    this.props.setSelected(rows, lassoFilter(rows));
+  };
   constructor(props: DistributionViewProps) {
     super(props);
     this.state = {
@@ -92,21 +108,27 @@ export class DistributionView extends React.Component<
         onRemove={this.props.onClose}
       >
         {this.state.width > 0 && (
-          <DistributionPlot
-            axis={this.props.axis}
-            height={this.state.height}
-            width={this.state.width}
-            histData={this.state.histData}
-            param_def={param_def}
-            nbins={this.props.nbins}
-            animateMs={this.props.animateMs}
-            highlighted={this.props.rows_highlighted}
-            colorOf={(row) => this.props.get_color_for_row(row, 1)}
-            fitColor={fitColor(
-              this.props.color_binning.palette,
-              this.props.dark ? "dark" : "light",
-            )}
-          />
+          <LassoSurface onLasso={this.onLasso}>
+            <DistributionPlot
+              ref={this.plotRef}
+              axis={this.props.axis}
+              height={this.state.height}
+              width={this.state.width}
+              histData={this.state.histData}
+              param_def={param_def}
+              nbins={this.props.nbins}
+              animateMs={this.props.animateMs}
+              highlighted={this.props.rows_highlighted}
+              colorOf={(row) => this.props.get_color_for_row(row, 1)}
+              fitColor={fitColor(
+                this.props.color_binning.palette,
+                this.props.dark ? "dark" : "light",
+              )}
+            />
+            <div className={`${pstyle.hint} ${pstyle.hintTop}`} data-testid="scatter-hint">
+              {CONTROLS_HINT}
+            </div>
+          </LassoSurface>
         )}
       </ResizableH>
     );

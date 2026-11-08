@@ -149,6 +149,50 @@ test("a lasso over a zoomed XY scatter takes only the points in view", async ({ 
   expect(lassoed.length).toBeLessThan(await filteredCount(page));
 });
 
+test("a Ctrl-drag over a one-axis plot lassos the values it spans, deselected rows included", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  await brushAxis(page, "lr", 0.05, 0.2);
+  const brushed = new Set(await selectedUids(page));
+  await page.getByRole("button", { name: "Add scatter plot" }).click();
+  const panel = page.getByTestId("scatter-panel").last();
+  await pickColumn(panel, "Y", "pct_success");
+  const plot = panel.locator('[data-testid="distribution-plot"][data-axis="pct_success"]');
+  await expect(plot.locator("svg rect").first()).toBeAttached();
+  await expect(panel.getByTestId("scatter-hint")).toHaveText(
+    "Ctrl-drag across values to lasso them",
+  );
+  await lasso(page, plot.locator("svg").first(), [0.3, 0.2], [0.6, 0.7]);
+  await expect(page.getByTestId("lasso-selection")).toBeVisible();
+  const lassoed = new Set(await selectedUids(page));
+  expect(lassoed.size).toBeGreaterThan(0);
+  expect([...lassoed].some((uid) => !brushed.has(uid))).toBe(true);
+  // The lasso spans one interval of values: every row inside it is taken.
+  const { inside, outside } = await page.evaluate(
+    (chosen) => {
+      const rows = (
+        window as unknown as {
+          hiplot_last_instance: {
+            state: { rows_filtered: { uid: string; pct_success: number }[] };
+          };
+        }
+      ).hiplot_last_instance.state.rows_filtered;
+      const taken = rows.filter((row) => chosen.includes(row.uid)).map((row) => row.pct_success);
+      const [low, high] = [Math.min(...taken), Math.max(...taken)];
+      return {
+        inside: taken.length,
+        outside: rows.filter(
+          (row) => !chosen.includes(row.uid) && row.pct_success >= low && row.pct_success <= high,
+        ).length,
+      };
+    },
+    [...lassoed],
+  );
+  expect(inside).toBe(lassoed.size);
+  expect(outside).toBe(0);
+});
+
 async function open3D(page: Page): Promise<Locator> {
   await page.getByRole("button", { name: "Add scatter plot" }).click();
   const panel = page.getByTestId("scatter-panel").last();
