@@ -350,3 +350,38 @@ Reading it:
 - Load and redraw columns move by a few percent in both directions between
   sessions, as in earlier rounds; the JS heap is one sample after the run
   and swings with garbage collection.
+
+## Sixth and seventh rounds: brush tags, saved values and brush fixes
+
+The sixth round fixed the brush tags, highlighted the brush under the
+pointer and saved brushes as the values they select. The seventh read
+`NA`, `N/A`, `null` and `None` as missing values, kept brushes that
+select nothing on reload, clipped scatter fits out of the special-values
+band, centred brushes on the axis line, removed brushes covering a whole
+axis, and made a click outside an axis's brushes clear them. 100k × 30 is
+part of the default run from the seventh round on.
+
+"Round 6" was measured at `9a256a1` without the 100k × 30 page; "round 7"
+at `2c0402a`. Same harness and machine, medians of three page loads, in
+two sessions.
+
+| Size | HTML MB | decode ms | DOM ready ms | initial drawn ms | full redraw ms | drag frame p50 / p95 / max ms | stalls | brush end → lines ms | brush end → table ms | JS heap MB |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5k × 20, round 6 | 2.6 | 2 | 83 | 139 | 2 | 8 / 8 / 9 | 0/120 | 2 | 15 | 33 |
+| 5k × 20, round 7 | 2.6 | 2 | 77 | 119 | 2 | 8 / 8 / 9 | 0/120 | 1 | 13 | 33 |
+| 20k × 30, round 6 | 7.8 | 16 | 288 | 412 | 4 | 8 / 8 / 9 | 0/120 | 2 | 28 | 117 |
+| 20k × 30, round 7 | 7.8 | 11 | 247 | 343 | 3 | 8 / 8 / 9 | 0/120 | 2 | 23 | 121 |
+| 50k × 50, round 6 | 27.3 | 48 | 953 | 1248 | 6 | 8 / 8 / 9 | 0/120 | 3 | 65 | 258 |
+| 50k × 50, round 7 | 27.3 | 47 | 945 | 1166 | 5 | 8 / 8 / 9 | 0/120 | 2 | 57 | 258 |
+| 100k × 30, round 7 | 32.8 | 72 | 1209 | 1588 | 8 | 8 / 8 / 9 | 0/120 | 3 | 89 | 352 |
+
+Reading it:
+
+- Drag frames stay at 8 ms median and 9 ms max at every size, with no
+  stall, and lines are final within 3 ms of release. None of the seventh
+  round's changes runs per drag frame: the whole-axis check and the saved
+  form of a brush are computed once, when a gesture ends.
+- Load times are lower than in the fifth round at every size (100k × 30:
+  1,209 / 1,588 ms DOM ready / initial drawn against 1,691 / 2,036 ms) on
+  code that did not change the load path. Read it as drift between
+  sessions, as in earlier rounds, not as a gain.
