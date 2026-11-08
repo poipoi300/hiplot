@@ -279,6 +279,107 @@ for (const deviceScaleFactor of [0.5, 1, 2]) {
   });
 }
 
+for (const [mode, expected] of [
+  ["mean", "the color map at their mean value"],
+  ["lowest", "the lowest value's color"],
+  ["highest", "the highest value's color"],
+] as const) {
+  test(`coincident lines of distant values show ${expected} in the ${mode} color mode`, async ({
+    page,
+  }) => {
+    // Two coincident bundles colored by the ends of the color map. Their
+    // colors average to a dull brown for viridis, which the map does not
+    // have; their values average to its middle, a teal.
+    const bundles = [0, 1].flatMap((value) => Array.from({ length: 100 }, () => [0, 3, value]));
+    await uploadRows(page, ["a", "b", "c"], [...bundles, ...RANGE_ROWS], "c", { color_mode: mode });
+    const profile = await segmentProfile(page);
+    const target = await page.evaluate((mode) => {
+      const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
+        | (ParallelPlotHandle & ColorProbe)
+        | null;
+      if (!pp) {
+        throw new Error("No parallel plot");
+      }
+      const binning = pp.props.color_binning;
+      const [low, high] = [0, 1].map((value) => binning.binOf(value));
+      const bin = mode === "lowest" ? low : mode === "highest" ? high : (low + high) / 2;
+      const [below, above] = [binning.palette[Math.floor(bin)], binning.palette[Math.ceil(bin)]];
+      const fraction = bin - Math.floor(bin);
+      return (["r", "g", "b"] as const).map(
+        (channel) => below[channel] + fraction * (above[channel] - below[channel]),
+      );
+    }, mode);
+    expect(profile.length).toBeGreaterThan(40);
+    for (const column of profile) {
+      for (const channel of [0, 1, 2]) {
+        expect(Math.abs(column.color[channel] - target[channel])).toBeLessThan(8);
+      }
+    }
+  });
+}
+
+for (const [mode, value] of [
+  ["lowest", 0],
+  ["highest", 1],
+] as const) {
+  test(`the Canvas 2D fallback draws the ${mode} values on top in the ${mode} color mode`, async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      const getContext = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function (
+        this: HTMLCanvasElement,
+        kind: string,
+        options?: unknown,
+      ) {
+        return kind === "webgl2" ? null : getContext.call(this, kind, options);
+      } as typeof HTMLCanvasElement.prototype.getContext;
+    });
+    // Coincident lines spread over both ends of the color map, a color bin
+    // each: drawn in shuffled order, any of them could end up on top.
+    const bundles = Array.from({ length: 100 }, (_, i) => [
+      [0, 3, 0.3 * (i / 99)],
+      [0, 3, 1 - 0.3 * (i / 99)],
+    ]).flat();
+    await uploadRows(page, ["a", "b", "c"], [...bundles, ...RANGE_ROWS], "c", { color_mode: mode });
+    expect(await renderer(page)).toBe("canvas");
+    const onTop = await page.evaluate((value) => {
+      const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
+        | (ParallelPlotHandle & ColorProbe)
+        | null;
+      if (!pp) {
+        throw new Error("No parallel plot");
+      }
+      const { r, g, b } = pp.props.color_binning.palette[pp.props.color_binning.binOf(value)];
+      return [r, g, b];
+    }, value);
+    // Canvas 2D draws progressively: wait for the last frame. Its anti-aliased
+    // edges let the other bundle show through in a few columns, so the
+    // typical column is compared; each color bin is one translucent stroke,
+    // so the values next to the end on top tint it a little.
+    await expect
+      .poll(async () => {
+        const profile = await segmentProfile(page, { redraw: false });
+        return Math.max(
+          ...[0, 1, 2].map((channel) => {
+            const values = profile.map((column) => column.color[channel]).sort((x, y) => x - y);
+            return Math.abs(values[values.length >> 1] - onTop[channel]);
+          }),
+        );
+      })
+      .toBeLessThan(16);
+  });
+}
+
+interface ColorProbe {
+  props: {
+    color_binning: {
+      binOf: (value: number) => number;
+      palette: ReadonlyArray<{ r: number; g: number; b: number }>;
+    };
+  };
+}
+
 /**
  * Rows that give the axes of `a` (0 to 1), `b` (0 to 10) and the color column
  * `c` (0 to 1, with enough distinct values to stay numeric) their ranges. In
@@ -288,22 +389,28 @@ for (const deviceScaleFactor of [0.5, 1, 2]) {
 const RANGE_ROWS = [
   [0, 0, 0],
   [1, 10, 0.25],
+  [1, 10, 0.4],
   [1, 10, 0.6],
   [1, 10, 0.75],
   [1, 10, 1],
 ];
 
-/** Loads `rows` of the `names` columns from a CSV upload, colored by `colorBy`, straight lines. */
+/**
+ * Loads `rows` of the `names` columns from a CSV upload, colored by
+ * `colorBy`, with straight lines and the saved page `state` given.
+ */
 async function uploadRows(
   page: Page,
   names: ReadonlyArray<string>,
   rows: ReadonlyArray<ReadonlyArray<number>>,
   colorBy: string,
+  state: Record<string, unknown> = {},
 ): Promise<void> {
-  const hidden = encodeURIComponent(JSON.stringify(["uid", colorBy]));
-  await page.goto(
-    `/?provider=upload&hip.PARALLEL_PLOT.hide=${hidden}&hip.color_by=${encodeURIComponent(JSON.stringify(colorBy))}`,
-  );
+  const saved = { "PARALLEL_PLOT.hide": ["uid", colorBy], color_by: colorBy, ...state };
+  const query = Object.entries(saved)
+    .map(([key, value]) => `hip.${key}=${encodeURIComponent(JSON.stringify(value))}`)
+    .join("&");
+  await page.goto(`/?provider=upload&${query}`);
   await page.locator("input[type=file]").setInputFiles({
     name: "rows.csv",
     mimeType: "text/csv",
@@ -324,14 +431,15 @@ interface ColumnProfile {
 /**
  * Per device pixel column from `from` to `to` of the way along the segment
  * of the first row between the first two axes: what the canvas shows within
- * `radius` pixels of where the segment crosses the column.
+ * `radius` pixels of where the segment crosses the column, right after a
+ * redraw (WebGL) or as the canvas stands (Canvas 2D, which draws over frames).
  */
 async function segmentProfile(
   page: Page,
-  { from = 0.1, to = 0.4, radius = 6 } = {},
+  { from = 0.1, to = 0.4, radius = 6, redraw = true } = {},
 ): Promise<ColumnProfile[]> {
   return page.evaluate(
-    ({ from, to, radius }) => {
+    ({ from, to, radius, redraw }) => {
       const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
         | (ParallelPlotHandle & CoverageProbe & BundleProbe)
         | null;
@@ -339,7 +447,9 @@ async function segmentProfile(
       if (!pp || !canvas) {
         throw new Error("No parallel plot");
       }
-      pp.redrawLines();
+      if (redraw) {
+        pp.redrawLines();
+      }
       const copy = document.createElement("canvas");
       copy.width = canvas.width;
       copy.height = canvas.height;
@@ -378,6 +488,6 @@ async function segmentProfile(
       }
       return columns;
     },
-    { from, to, radius },
+    { from, to, radius, redraw },
   );
 }

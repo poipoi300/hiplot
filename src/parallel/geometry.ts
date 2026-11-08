@@ -6,7 +6,7 @@
  */
 
 import type { ParamScale } from "../infertypes";
-import type { ColorBinning } from "../lib/colors";
+import type { ColorBinning, ColorMode } from "../lib/colors";
 import type { Datapoint } from "../types";
 
 interface CachedColumn {
@@ -45,6 +45,7 @@ export class LineGeometry {
   private readonly indexOfRow: Map<Datapoint, number>;
   private readonly columns = new Map<string, CachedColumn>();
   private colors: { binning: ColorBinning; colorby: string; bins: Uint32Array } | null = null;
+  private colorOrderMemo: { bins: Uint32Array; mode: ColorMode; order: Uint32Array } | null = null;
 
   constructor(rows: ReadonlyArray<Datapoint>, random: () => number = Math.random) {
     this.rows = rows;
@@ -101,5 +102,38 @@ export class LineGeometry {
     });
     this.colors = { binning, colorby, bins };
     return bins;
+  }
+
+  /**
+   * The draw order with the lowest or highest color values last, where
+   * alpha blending puts them on top: rows sorted by the bin of a numeric
+   * color map (`colorMapBins` leading bins), rows past it (missing values)
+   * first, and the shuffled order kept among rows of one bin. The shuffled
+   * order itself for the "mean" mode or a categorical column (no color map).
+   */
+  colorOrder(bins: Uint32Array, colorMapBins: number, mode: ColorMode): Uint32Array {
+    if (mode === "mean" || colorMapBins === 0) {
+      return this.order;
+    }
+    const memo = this.colorOrderMemo;
+    if (memo !== null && memo.bins === bins && memo.mode === mode) {
+      return memo.order;
+    }
+    // Counting sort on the rank: 0 for missing values, then the bins toward the top.
+    const rankOf = (bin: number): number =>
+      bin >= colorMapBins ? 0 : 1 + (mode === "highest" ? bin : colorMapBins - 1 - bin);
+    const starts = new Uint32Array(colorMapBins + 2);
+    for (const row of this.order) {
+      starts[rankOf(bins[row]) + 1] += 1;
+    }
+    for (let rank = 1; rank < starts.length; ++rank) {
+      starts[rank] += starts[rank - 1];
+    }
+    const order = new Uint32Array(this.order.length);
+    for (const row of this.order) {
+      order[starts[rankOf(bins[row])]++] = row;
+    }
+    this.colorOrderMemo = { bins, mode, order };
+    return order;
   }
 }

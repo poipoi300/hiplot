@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import type { RGB } from "../lib/colors";
+import type { ColorMode, RGB } from "../lib/colors";
 import { SPLINE_HANDLE } from "./spline";
 import {
   encodePixelColumn,
@@ -45,6 +45,26 @@ export interface LineFrame {
   /** Color and peak opacity of the deselected lines. */
   contextColor: RGB;
   contextAlpha: number;
+  /**
+   * What a pixel crossed by several selected lines shows, for a numeric
+   * color-by column; categorical columns mix their colors. Without float
+   * render targets lines are alpha-blended in draw order instead, which the
+   * caller sorts to put the lowest or highest values on top.
+   */
+  colorMode: ColorMode;
+}
+
+/** How rows are colored: a palette color per row, by bin. */
+export interface LineColors {
+  bins: Uint32Array;
+  palette: ReadonlyArray<RGB>;
+  /**
+   * For a numeric color-by column, the leading palette entries, which sample
+   * its color map evenly from 0 to 1; the one entry after them is the color
+   * of missing values. 0 for a categorical column, whose palette has a color
+   * per category.
+   */
+  colorMapBins: number;
 }
 
 /**
@@ -112,6 +132,7 @@ uniform sampler2D u_palette;
 uniform int u_axisCount;
 uniform int u_textureWidth;
 uniform int u_rowsPerColumn;
+uniform int u_colorMapBins;
 uniform int u_samples;
 uniform int u_keep;
 uniform bool u_curved;
@@ -121,6 +142,8 @@ uniform vec2 u_viewport;
 uniform float u_halfWidth;
 
 out vec3 v_rgb;
+/** The row's position on a numeric color map, or -1 (categorical column, missing value). */
+flat out float v_value;
 out float v_selected;
 out float v_across;
 
@@ -252,6 +275,7 @@ void main() {
   if (!kept || !current.drawn) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     v_rgb = vec3(0.0);
+    v_value = -1.0;
     v_selected = 0.0;
     v_across = 0.0;
     return;
@@ -304,6 +328,7 @@ void main() {
   );
   uint bin = texelFetch(u_bins, at(row), 0).r;
   v_rgb = texelFetch(u_palette, at(int(bin)), 0).rgb;
+  v_value = int(bin) < u_colorMapBins ? float(bin) / float(u_colorMapBins - 1) : -1.0;
   v_selected = selected ? 1.0 : 0.0;
   v_across = side * extent;
 }
@@ -325,25 +350,53 @@ float coverage() {
 }
 `;
 
+/** `u_colorMode` of the density passes, one per ColorMode. */
+const COLOR_MODE_CODES: Record<ColorMode, number> = { mean: 0, lowest: 1, highest: 2 };
+
 /**
- * Accumulates line density. Color channels add up and alpha channels keep
- * the maximum (see `draw`): target 0 holds the coverage-weighted color sum
- * of the selected lines and their peak coverage; target 1 the coverage sums
- * of the deselected (r) and selected (g) lines, and the deselected peak (a).
+ * The line that a pixel shows on top in the "lowest" and "highest" color
+ * modes, kept by MAX blending as one float: 1 + rank * ON_TOP_RANKS +
+ * coverage, both quantized to integers below ON_TOP_RANKS, where the rank is
+ * the value counted toward the end on top. The highest rank wins, then the
+ * highest coverage; 0 means no line. Exact in single floats (below 2^24).
+ */
+const ON_TOP_RANKS = 1024;
+
+/**
+ * Accumulates line density into two targets (see `draw`). Target 0 adds up,
+ * per selected line, its coverage-weighted color (r, g, b) and its coverage
+ * (a). The color is the line's palette color for a categorical column; for a
+ * numeric one, its value on the color map (r) and, for a missing value, its
+ * coverage (g) instead. Target 1 keeps the maximum of its color channels: the
+ * selected and deselected peak coverages and the line on top (see
+ * ON_TOP_RANKS); and adds up the deselected coverage in alpha.
  */
 const DENSITY_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
 ${COVERAGE}
+uniform bool u_valueColors;
+uniform int u_colorMode;
 in vec3 v_rgb;
+flat in float v_value;
 in float v_selected;
-layout(location = 0) out vec4 selected;
-layout(location = 1) out vec4 sums;
+layout(location = 0) out vec4 selectedSums;
+layout(location = 1) out vec4 layers;
 void main() {
   float covered = coverage();
   float selectedCoverage = v_selected * covered;
   float contextCoverage = (1.0 - v_selected) * covered;
-  selected = vec4(v_rgb * selectedCoverage, selectedCoverage);
-  sums = vec4(contextCoverage, selectedCoverage, 0.0, contextCoverage);
+  bool valued = v_value >= 0.0;
+  selectedSums = !u_valueColors
+    ? vec4(v_rgb * selectedCoverage, selectedCoverage)
+    : vec4(valued ? v_value * selectedCoverage : 0.0, valued ? 0.0 : selectedCoverage, 0.0,
+        selectedCoverage);
+  float onTop = 0.0;
+  if (u_colorMode != ${COLOR_MODE_CODES.mean} && valued && selectedCoverage > 0.0) {
+    float rank = u_colorMode == ${COLOR_MODE_CODES.highest} ? v_value : 1.0 - v_value;
+    float steps = ${(ON_TOP_RANKS - 1).toFixed(1)};
+    onTop = 1.0 + round(rank * steps) * ${ON_TOP_RANKS.toFixed(1)} + round(selectedCoverage * steps);
+  }
+  layers = vec4(selectedCoverage, contextCoverage, onTop, contextCoverage);
 }
 `;
 
@@ -374,9 +427,15 @@ void main() {
 
 /**
  * Log tone mapping of the accumulated densities: opacity grows with the log of
- * how many lines cross a pixel, relative to a reference density, and the color
- * is the average color of those lines. The selection is composited over the
- * faint deselected layer.
+ * how many lines cross a pixel, relative to a reference density. The color is
+ * the average color of those lines for a categorical column; for a numeric
+ * one, the color map at their average value, mixed with the missing-value
+ * color by the share of lines without a value, or, in the "lowest" and
+ * "highest" modes, the color of the line on top over that, as far as it
+ * covers the pixel. Mixing values rather than colors keeps every color on the
+ * color map: averaging the colors of distant values gives muddy colors that
+ * the map does not have. The selection is composited over the faint
+ * deselected layer.
  *
  * Coverage is applied after the tone mapping, not inside it. N lines that
  * coincide and cover a fraction c of a pixel are a line of density N drawn
@@ -390,8 +449,13 @@ void main() {
  */
 const COMPOSITE_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
-uniform sampler2D u_selectedDensity;
-uniform sampler2D u_coverageSums;
+uniform sampler2D u_selectedSums;
+uniform sampler2D u_layers;
+uniform sampler2D u_palette;
+uniform int u_paletteWidth;
+uniform bool u_valueColors;
+uniform int u_colorMapBins;
+uniform int u_colorMode;
 uniform float u_selectedReference;
 uniform float u_contextReference;
 uniform vec3 u_contextColor;
@@ -404,13 +468,40 @@ float toneMapped(float coverageSum, float peakCoverage, float reference) {
   float density = coverageSum / peakCoverage;
   return peakCoverage * clamp(log(1.0 + density) / log(1.0 + reference), 0.0, 1.0);
 }
+vec3 paletteColor(int bin) {
+  return texelFetch(u_palette, ivec2(bin % u_paletteWidth, bin / u_paletteWidth), 0).rgb;
+}
+/** The color map at \`value\` in [0, 1], interpolated between its bins. */
+vec3 colorMapAt(float value) {
+  float position = clamp(value, 0.0, 1.0) * float(u_colorMapBins - 1);
+  int below = int(floor(position));
+  int above = min(below + 1, u_colorMapBins - 1);
+  return mix(paletteColor(below), paletteColor(above), position - float(below));
+}
+vec3 selectedColor(vec4 sums, vec4 layers) {
+  if (!u_valueColors) {
+    return sums.rgb / sums.a;
+  }
+  float valuedCoverage = sums.a - sums.g;
+  vec3 mixed = valuedCoverage > 0.0 ? colorMapAt(sums.r / valuedCoverage) : vec3(0.0);
+  mixed = mix(mixed, paletteColor(u_colorMapBins), sums.g / sums.a);
+  if (layers.b <= 0.0) {
+    return mixed;
+  }
+  float onTop = layers.b - 1.0;
+  float steps = ${(ON_TOP_RANKS - 1).toFixed(1)};
+  float rank = floor(onTop / ${ON_TOP_RANKS.toFixed(1)}) / steps;
+  float coverage = mod(onTop, ${ON_TOP_RANKS.toFixed(1)}) / steps;
+  float value = u_colorMode == ${COLOR_MODE_CODES.highest} ? rank : 1.0 - rank;
+  return mix(mixed, colorMapAt(value), min(coverage / layers.r, 1.0));
+}
 void main() {
   ivec2 pixel = ivec2(gl_FragCoord.xy);
-  vec4 selected = texelFetch(u_selectedDensity, pixel, 0);
-  vec4 sums = texelFetch(u_coverageSums, pixel, 0);
-  float selectedAlpha = toneMapped(sums.g, selected.a, u_selectedReference);
-  float contextAlpha = u_contextAlpha * toneMapped(sums.r, sums.a, u_contextReference);
-  vec3 selectedColor = sums.g > 0.0 ? selected.rgb / sums.g : vec3(0.0);
+  vec4 sums = texelFetch(u_selectedSums, pixel, 0);
+  vec4 layers = texelFetch(u_layers, pixel, 0);
+  float selectedAlpha = toneMapped(sums.a, layers.r, u_selectedReference);
+  float contextAlpha = u_contextAlpha * toneMapped(layers.a, layers.g, u_contextReference);
+  vec3 selectedColor = sums.a > 0.0 ? selectedColor(sums, layers) : vec3(0.0);
   color = vec4(
     selectedColor * selectedAlpha + u_contextColor * contextAlpha * (1.0 - selectedAlpha),
     selectedAlpha + contextAlpha * (1.0 - selectedAlpha)
@@ -429,8 +520,8 @@ const LINE_SAMPLERS = {
 type SamplerName = keyof typeof LINE_SAMPLERS;
 const UNITS = LINE_SAMPLERS;
 /** Texture units of the density targets, read by the composite pass. */
-const SELECTED_DENSITY_UNIT = 6;
-const COVERAGE_SUMS_UNIT = 7;
+const SELECTED_SUMS_UNIT = 6;
+const LAYERS_UNIT = 7;
 
 /**
  * Lines crossing a pixel at which the density reaches full opacity. Densities
@@ -488,8 +579,8 @@ class Program {
 /** Float render targets the line pass accumulates densities into (see DENSITY_FRAGMENT_SHADER). */
 interface DensityTargets {
   framebuffer: WebGLFramebuffer;
-  selected: WebGLTexture;
-  coverageSums: WebGLTexture;
+  selectedSums: WebGLTexture;
+  layers: WebGLTexture;
   width: number;
   height: number;
 }
@@ -504,7 +595,12 @@ interface DensityTargets {
 export class WebGLLineRenderer {
   private readonly gl: WebGL2RenderingContext;
   /** Density accumulation then tone mapping, when float render targets exist. */
-  private readonly densityPrograms: { lines: Program; composite: Program } | null;
+  private readonly densityPrograms: {
+    lines: Program;
+    composite: Program;
+    /** Sets each target's blending (see DENSITY_FRAGMENT_SHADER). */
+    indexedBlending: OES_draw_buffers_indexed;
+  } | null;
   /** Alpha-blended lines, the fallback without float render targets. */
   private readonly directProgram: Program;
   private density: DensityTargets | null = null;
@@ -516,9 +612,12 @@ export class WebGLLineRenderer {
   /** Texture slot of each uploaded pixel column. */
   private slots = new Map<Float32Array, number>();
   private slotCapacity = 0;
+  /** The shuffled order of the current rows, which identifies them. */
+  private rowsOrder: Uint32Array | null = null;
   private uploadedOrder: Uint32Array | null = null;
   private uploadedBins: Uint32Array | null = null;
   private uploadedPalette: ReadonlyArray<RGB> | null = null;
+  private colorMapBins = 0;
   private uploadedSelection: Uint8Array | null = null;
 
   /** A renderer on `canvas`, or null when WebGL2 is unavailable. */
@@ -538,16 +637,20 @@ export class WebGLLineRenderer {
     // growing once its spacing exceeds twice the added coverage, at a point
     // that depends on that coverage, so the summed colors of a dense bundle
     // drift from pixel to pixel. They are summed in single floats, which need
-    // both renderable float targets and blending on them.
+    // both renderable float targets and blending on them, and the two
+    // targets blend differently.
     const floatTargets =
       gl.getExtension("EXT_color_buffer_float") !== null &&
       gl.getExtension("EXT_float_blend") !== null;
-    this.densityPrograms = !floatTargets
-      ? null
-      : {
-          lines: new Program(gl, VERTEX_SHADER, DENSITY_FRAGMENT_SHADER),
-          composite: new Program(gl, COMPOSITE_VERTEX_SHADER, COMPOSITE_FRAGMENT_SHADER),
-        };
+    const indexedBlending = gl.getExtension("OES_draw_buffers_indexed");
+    this.densityPrograms =
+      !floatTargets || indexedBlending === null
+        ? null
+        : {
+            lines: new Program(gl, VERTEX_SHADER, DENSITY_FRAGMENT_SHADER),
+            composite: new Program(gl, COMPOSITE_VERTEX_SHADER, COMPOSITE_FRAGMENT_SHADER),
+            indexedBlending,
+          };
     const textures: Partial<Record<SamplerName, WebGLTexture>> = {};
     for (const name of Object.keys(UNITS) as SamplerName[]) {
       const texture = gl.createTexture();
@@ -576,18 +679,39 @@ export class WebGLLineRenderer {
     this.gl.bindTexture(this.gl.TEXTURE_2D, this.textures[name]);
   }
 
-  /** Starts over for a new set of rows: every per-row texture is re-uploaded on demand. */
+  /**
+   * Starts over for a new set of rows, known by their shuffled draw order:
+   * every per-row texture is re-uploaded on demand.
+   */
   setRows(rowCount: number, order: Uint32Array): void {
-    if (rowCount === this.rowCount && order === this.uploadedOrder) {
+    if (rowCount === this.rowCount && order === this.rowsOrder) {
       return;
     }
-    const gl = this.gl;
     this.rowCount = rowCount;
+    this.rowsOrder = order;
     this.layout = textureLayout(rowCount, this.maxTextureSize);
     this.slots = new Map();
     this.slotCapacity = 0;
+    this.uploadedOrder = null;
     this.uploadedBins = null;
+    // Laid out at the width of the row textures, which follows the row count.
+    this.uploadedPalette = null;
     this.uploadedSelection = null;
+    this.setDrawOrder(order);
+  }
+
+  /**
+   * The order lines are drawn in, a permutation of the rows: only alpha
+   * blending, without float render targets, shows it.
+   */
+  setDrawOrder(order: Uint32Array): void {
+    if (order === this.uploadedOrder) {
+      return;
+    }
+    if (order.length !== this.rowCount) {
+      throw new Error(`A draw order of ${order.length} rows for ${this.rowCount} rows`);
+    }
+    const gl = this.gl;
     this.bind("u_order");
     gl.texImage2D(
       gl.TEXTURE_2D,
@@ -657,7 +781,13 @@ export class WebGLLineRenderer {
     });
   }
 
-  setColors(bins: Uint32Array, palette: ReadonlyArray<RGB>): void {
+  setColors({ bins, palette, colorMapBins }: LineColors): void {
+    if (colorMapBins > 0 && palette.length !== colorMapBins + 1) {
+      throw new Error(
+        `A numeric palette holds its ${colorMapBins} color map bins and the missing color, not ${palette.length} colors`,
+      );
+    }
+    this.colorMapBins = colorMapBins;
     const gl = this.gl;
     if (bins !== this.uploadedBins) {
       this.bind("u_bins");
@@ -734,8 +864,8 @@ export class WebGLLineRenderer {
     const gl = this.gl;
     if (this.density !== null) {
       gl.deleteFramebuffer(this.density.framebuffer);
-      gl.deleteTexture(this.density.selected);
-      gl.deleteTexture(this.density.coverageSums);
+      gl.deleteTexture(this.density.selectedSums);
+      gl.deleteTexture(this.density.layers);
     }
     const target = (format: number): WebGLTexture => {
       const texture = gl.createTexture();
@@ -748,18 +878,18 @@ export class WebGLLineRenderer {
       gl.texStorage2D(gl.TEXTURE_2D, 1, format, width, height);
       return texture;
     };
-    const selected = target(gl.RGBA32F);
-    const coverageSums = target(gl.RGBA32F);
+    const selectedSums = target(gl.RGBA32F);
+    const layers = target(gl.RGBA32F);
     const framebuffer = gl.createFramebuffer();
     if (framebuffer === null) {
       throw new Error("Could not create a WebGL framebuffer");
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, selected, 0);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, coverageSums, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, selectedSums, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, layers, 0);
     gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    this.density = { framebuffer, selected, coverageSums, width, height };
+    this.density = { framebuffer, selectedSums, layers, width, height };
     return this.density;
   }
 
@@ -777,6 +907,7 @@ export class WebGLLineRenderer {
     gl.uniform1i(program.uniform("u_axisCount"), frame.axes.length);
     gl.uniform1i(program.uniform("u_textureWidth"), this.layout.width);
     gl.uniform1i(program.uniform("u_rowsPerColumn"), this.layout.rowsPerColumn);
+    gl.uniform1i(program.uniform("u_colorMapBins"), this.colorMapBins);
     gl.uniform1i(program.uniform("u_samples"), samples);
     gl.uniform1i(program.uniform("u_curved"), frame.curved ? 1 : 0);
     gl.uniform2f(
@@ -866,15 +997,20 @@ export class WebGLLineRenderer {
 
     // One pass accumulates both layers; a second tone-maps them onto the canvas.
     const targets = this.densityTargets(width, height);
-    const { lines, composite } = this.densityPrograms;
+    const { lines, composite, indexedBlending } = this.densityPrograms;
+    const valueColors = this.colorMapBins > 0;
+    const colorMode = COLOR_MODE_CODES[frame.colorMode];
     gl.bindFramebuffer(gl.FRAMEBUFFER, targets.framebuffer);
     gl.viewport(0, 0, width, height);
     gl.clearBufferfv(gl.COLOR, 0, [0, 0, 0, 0]);
     gl.clearBufferfv(gl.COLOR, 1, [0, 0, 0, 0]);
-    gl.blendEquationSeparate(gl.FUNC_ADD, gl.MAX);
     gl.blendFunc(gl.ONE, gl.ONE);
+    indexedBlending.blendEquationiOES(0, gl.FUNC_ADD);
+    indexedBlending.blendEquationSeparateiOES(1, gl.MAX, gl.FUNC_ADD);
     const samples = this.prepareLines(lines, frame);
     gl.uniform1i(lines.uniform("u_keep"), DRAW_ALL);
+    gl.uniform1i(lines.uniform("u_valueColors"), valueColors ? 1 : 0);
+    gl.uniform1i(lines.uniform("u_colorMode"), colorMode);
     this.drawLines(frame, samples);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -882,12 +1018,18 @@ export class WebGLLineRenderer {
     gl.disable(gl.BLEND);
     // biome-ignore lint/correctness/useHookAtTopLevel: WebGL2RenderingContext.useProgram, not a React hook.
     gl.useProgram(composite.program);
-    gl.activeTexture(gl.TEXTURE0 + SELECTED_DENSITY_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, targets.selected);
-    gl.activeTexture(gl.TEXTURE0 + COVERAGE_SUMS_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, targets.coverageSums);
-    gl.uniform1i(composite.uniform("u_selectedDensity"), SELECTED_DENSITY_UNIT);
-    gl.uniform1i(composite.uniform("u_coverageSums"), COVERAGE_SUMS_UNIT);
+    gl.activeTexture(gl.TEXTURE0 + SELECTED_SUMS_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, targets.selectedSums);
+    gl.activeTexture(gl.TEXTURE0 + LAYERS_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, targets.layers);
+    this.bind("u_palette");
+    gl.uniform1i(composite.uniform("u_selectedSums"), SELECTED_SUMS_UNIT);
+    gl.uniform1i(composite.uniform("u_layers"), LAYERS_UNIT);
+    gl.uniform1i(composite.uniform("u_palette"), UNITS.u_palette);
+    gl.uniform1i(composite.uniform("u_paletteWidth"), this.layout.width);
+    gl.uniform1i(composite.uniform("u_valueColors"), valueColors ? 1 : 0);
+    gl.uniform1i(composite.uniform("u_colorMapBins"), this.colorMapBins);
+    gl.uniform1i(composite.uniform("u_colorMode"), colorMode);
     gl.uniform1f(
       composite.uniform("u_selectedReference"),
       densityReference(frame.selectedCount, frame.height),
@@ -902,9 +1044,9 @@ export class WebGLLineRenderer {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindVertexArray(null);
     // Unbound so the next line pass, which renders into them, has no feedback loop.
-    gl.activeTexture(gl.TEXTURE0 + SELECTED_DENSITY_UNIT);
+    gl.activeTexture(gl.TEXTURE0 + SELECTED_SUMS_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, null);
-    gl.activeTexture(gl.TEXTURE0 + COVERAGE_SUMS_UNIT);
+    gl.activeTexture(gl.TEXTURE0 + LAYERS_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, null);
   }
 }

@@ -70,7 +70,7 @@ import { defaultHiddenColumns } from "./hidden";
 import pstyle from "./parallel.module.css";
 import { type AxisSelection, BrushMasks } from "./selection";
 import { monotoneSlope, SPLINE_HANDLE, splineParameter, splineY } from "./spline";
-import { WebGLLineRenderer } from "./webgl";
+import { type LineColors, WebGLLineRenderer } from "./webgl";
 
 interface ParallelPlotState {
   height: number;
@@ -773,6 +773,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (
       selectionChanged ||
       prevProps.color_binning !== this.props.color_binning ||
+      prevProps.color_mode !== this.props.color_mode ||
       prevProps.dark !== this.props.dark ||
       prevState.lineShape !== this.state.lineShape ||
       prevProps.colorby !== this.props.colorby ||
@@ -2322,14 +2323,19 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** Draws every line in one WebGL pass: the selection over the faint deselected rows. */
   private drawWithWebGL(webgl: WebGLLineRenderer): void {
     const geometry = this.geometry();
-    const binning = this.props.color_binning;
     const mask = this.selectionMask(geometry);
     let selectedCount = 0;
     for (let i = 0; i < mask.length; ++i) {
       selectedCount += mask[i];
     }
+    const colors = this.lineColors(geometry);
     webgl.setRows(geometry.rows.length, geometry.order);
-    webgl.setColors(geometry.colorBins(binning, this.props.colorby), binning.palette);
+    webgl.setDrawOrder(
+      webgl.densityRendering
+        ? geometry.order
+        : geometry.colorOrder(colors.bins, colors.colorMapBins, this.props.color_mode),
+    );
+    webgl.setColors(colors);
     webgl.setSelection(mask);
     webgl.draw({
       axes: this.state.dimensions.map((dimension) => ({
@@ -2350,7 +2356,18 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       contextCount: mask.length - selectedCount,
       contextColor: this.contextColor(),
       contextAlpha: this.props.dark ? CONTEXT_ALPHA_DARK : CONTEXT_ALPHA_LIGHT,
+      colorMode: this.props.color_mode,
     });
+  }
+
+  /** Every row's color bin, and how many bins sample a numeric color map (see LineColors). */
+  lineColors(geometry: LineGeometry): LineColors {
+    const binning = this.props.color_binning;
+    return {
+      bins: geometry.colorBins(binning, this.props.colorby),
+      palette: binning.palette,
+      colorMapBins: binning.legend.kind === "numeric" ? binning.missingBin : 0,
+    };
   }
 
   /** Indices of the deselected rows, in draw order. */
@@ -2365,16 +2382,20 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return geometry.order.filter((row) => isSelected[row] === 0);
   }
 
-  /** Indices of the selected rows, in draw order. */
-  drawnRows(geometry: LineGeometry, selected: ReadonlyArray<Datapoint>): Uint32Array {
+  /** Indices of the selected rows, in `order`. */
+  drawnRows(
+    geometry: LineGeometry,
+    selected: ReadonlyArray<Datapoint>,
+    order: Uint32Array,
+  ): Uint32Array {
     if (selected === geometry.rows) {
-      return geometry.order;
+      return order;
     }
     const isSelected = new Uint8Array(geometry.rows.length);
     selected.forEach((row) => {
       isSelected[geometry.indexOf(row)] = 1;
     });
-    return geometry.order.filter((row) => isSelected[row] === 1);
+    return order.filter((row) => isSelected[row] === 1);
   }
 
   cancelDrawing(): void {
@@ -2415,7 +2436,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   paths(selected: ReadonlyArray<Datapoint>, ctx: CanvasRenderingContext2D, count: number): void {
     const opacity = Math.min(2 / selected.length ** 0.3, 1);
     const geometry = this.geometry();
-    const selectedRows = this.drawnRows(geometry, selected);
+    const colors = this.lineColors(geometry);
+    const colorOrder = geometry.colorOrder(colors.bins, colors.colorMapBins, this.props.color_mode);
+    // Drawn "destination-over" (see below): the rows to show on top come first.
+    const order = colorOrder === geometry.order ? colorOrder : colorOrder.slice().reverse();
+    const selectedRows = this.drawnRows(geometry, selected, order);
     const contextRows = this.contextRows(geometry, selectedRows);
     // Composited "destination-over": the selection is drawn first and stays on top.
     const rows = new Uint32Array(selectedRows.length + contextRows.length);

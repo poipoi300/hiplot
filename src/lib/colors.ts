@@ -25,6 +25,16 @@ export interface RGB {
 /** Numeric columns are colored with this many evenly spaced samples of the color map. */
 export const NUMERIC_COLOR_BINS = 256;
 
+/**
+ * Which color a pixel crossed by several lines of a numeric color-by column
+ * shows: the color of their mean value, or the color of the line with the
+ * lowest or the highest value drawn over the others.
+ */
+export type ColorMode = "mean" | "lowest" | "highest";
+export const COLOR_MODES: ReadonlyArray<ColorMode> = ["mean", "lowest", "highest"];
+export const isColorMode = (value: unknown): value is ColorMode =>
+  COLOR_MODES.some((mode) => mode === value);
+
 /** What a legend shows for a color-by column. */
 export type ColorLegend =
   | { kind: "categorical"; categories: ReadonlyArray<string> }
