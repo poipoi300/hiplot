@@ -32,6 +32,7 @@ import { IS_MOBILE } from "../lib/browsercompat";
 import type { RGB } from "../lib/colors";
 import { ColumnPicker, type PickableColumn } from "../lib/columnpicker";
 import controls from "../lib/controls.module.css";
+import { snapTextsToDevicePixels } from "../lib/crisptext";
 import { labelTextFromHtml } from "../lib/escape";
 import { mounted } from "../lib/refs";
 import { ResizableH } from "../lib/resizable";
@@ -583,13 +584,16 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return this.highlighted;
   }
 
-  /** Horizontal position of a displayed dimension's axis. */
+  /**
+   * Horizontal position of a displayed dimension's axis, on a device pixel:
+   * its line, ticks and labels are then drawn sharp.
+   */
   xPosition(dimension: string): number {
     const x = this.xscale(dimension);
     if (x === undefined) {
       throw new Error(`Dimension ${dimension} is not displayed`);
     }
-    return x;
+    return Math.round(x * this.pixelRatio) / this.pixelRatio;
   }
 
   /** Flips an axis; its brushes keep their values, as they are kept along the scale. */
@@ -1821,7 +1825,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       // pass measures the same labels, which ends the recursion.
       this.tickLabelWidth = widest;
       this.relayout?.();
+      return;
     }
+    snapTextsToDevicePixels(
+      mounted(this.root_ref).querySelectorAll<SVGTextElement>(`.${pstyle.axis} .tick text`),
+      this.pixelRatio,
+    );
   }
 
   /**

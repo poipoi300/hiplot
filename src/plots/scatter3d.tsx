@@ -9,6 +9,7 @@ import * as d3 from "d3";
 import React from "react";
 import { create_d3_scale_without_outliers, type ParamDefMap } from "../infertypes";
 import type { ColorBinning, RGB } from "../lib/colors";
+import { devicePixelShift } from "../lib/crisptext";
 import { is_special_numeric } from "../lib/d3_scales";
 import { labelTextFromHtml } from "../lib/escape";
 import { fitColor } from "../lib/fitcolor";
@@ -143,6 +144,10 @@ interface Scatter3DState {
   hover: { x: number; y: number; text: string } | null;
   plane: PlaneState;
 }
+
+/** A label's anchor on the nearest device pixel, where its text renders sharp. */
+const onDevicePixel = (position: number): number =>
+  position + devicePixelShift(position, window.devicePixelRatio);
 
 /** Point diameter in CSS pixels, smaller when there are many rows. */
 const pointDiameter = (rows: number): number => (rows > 20_000 ? 2.5 : rows > 2_000 ? 3.5 : 5);
@@ -552,7 +557,7 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
             <span
               key={label.key}
               className={label.kind === "name" ? style.axisName : style.axisValue}
-              style={{ left: label.x, top: label.y }}
+              style={{ left: onDevicePixel(label.x), top: onDevicePixel(label.y) }}
               data-axis-label={label.key}
             >
               {label.text}

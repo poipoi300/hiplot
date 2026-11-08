@@ -15,6 +15,7 @@ import style from "./hiplot.module.css";
 import { create_d3_scale, type ParamDef, type ParamScale } from "./infertypes";
 import { IS_MOBILE } from "./lib/browsercompat";
 import controls from "./lib/controls.module.css";
+import { snapTextsToDevicePixels } from "./lib/crisptext";
 import { finiteExtent, getLogScaleTickValues, type Scale } from "./lib/d3_scales";
 import { labelTextFromHtml } from "./lib/escape";
 import { fitColor } from "./lib/fitcolor";
@@ -450,6 +451,9 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
       svg.attr("viewBox", [0, 0, me.state.width, me.state.height].join(","));
       svg.append("g").attr("class", "axis_render").call(xAxis);
       svg.append("g").attr("class", "axis_render").call(yAxis);
+      snapTextsToDevicePixels(
+        svg.selectAll<SVGTextElement, unknown>(".axis_render .tick text").nodes(),
+      );
       svg.append("g").attr("class", "brush").call(zoom_brush);
     }
     function recompute_scale(force: boolean = false) {

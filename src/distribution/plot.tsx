@@ -9,6 +9,7 @@ import * as d3 from "d3";
 import React from "react";
 import style from "../hiplot.module.css";
 import { create_d3_scale_without_outliers, type ParamDef } from "../infertypes";
+import { snapTextsToDevicePixels } from "../lib/crisptext";
 import {
   type CategoricalScale,
   type ContinuousScale,
@@ -169,12 +170,13 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
       const axis = d3.axisBottom(dataScale).ticks(tickCount);
       configureAxis(axis, tickCount);
       d3.select(mounted(this.axisBottom)).call(axis);
+      this.snapTicks();
       d3.select(mounted(this.axisBottomName))
         .html(null)
         .append("text")
         .attr("text-anchor", "middle")
-        .attr("font-weight", "bold")
         .attr("fill", "currentColor")
+        .classed(style.axisLabelText, true)
         .text(labelTextFromHtml(this.props.param_def.label_html, this.props.axis));
       mounted(this.axisRight).innerHTML = "";
     } else {
@@ -188,20 +190,28 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
         .transition()
         .duration(animate ? this.props.animateMs : 0)
         .call(axisRight)
-        .attr("text-anchor", "end");
+        .attr("text-anchor", "end")
+        .on("end.snap", this.snapTicks);
       d3.select(mounted(this.axisLeft))
         .transition()
         .duration(animate ? this.props.animateMs : 0)
-        .call(axisLeft);
+        .call(axisLeft)
+        .on("end.snap", this.snapTicks);
       d3.select(mounted(this.axisBottomName))
         .html(null)
         .append("text")
         .attr("text-anchor", "middle")
-        .attr("font-weight", "bold")
         .attr("fill", "currentColor")
+        .classed(style.axisLabelText, true)
         .text("Density");
     }
   }
+  /** Puts the tick labels on device pixels, once their axes are drawn (see crisptext). */
+  snapTicks = (): void => {
+    snapTextsToDevicePixels(
+      mounted(this.svgContainer).querySelectorAll<SVGTextElement>(".tick text"),
+    );
+  };
   createDataScaleAndAxis(): void {
     this.dataScale = create_d3_scale_without_outliers(this.props.param_def);
     this.createDataAxis(this.dataScale, false);
@@ -292,13 +302,15 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
             .axisLeft(densityScale)
             .ticks(1 + this.props.height / 50)
             .tickSizeInner(-(this.props.width - margin.left - margin.right)),
-        );
+        )
+        .on("end.snap", this.snapTicks);
     } else {
       densityScale = densityScale.range([0, this.figureWidth()]);
       d3.select(mounted(this.axisBottom))
         .transition()
         .duration(animate ? this.props.animateMs : 0)
-        .call(d3.axisBottom(densityScale).ticks(1 + this.props.width / 50));
+        .call(d3.axisBottom(densityScale).ticks(1 + this.props.width / 50))
+        .on("end.snap", this.snapTicks);
       // Compute reordering of the bins - we want to display higher densities first.
       const ordered1 = Array.from(displayIndexByOriginal)
         .map((value, index) => ({

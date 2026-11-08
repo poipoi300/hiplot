@@ -23,7 +23,9 @@
   --hip-fg: #1f2328;
   --hip-muted: #59616b;
   --hip-axis: #8b929a;
-  --hip-tick-text: #2a2f35;
+  --hip-tick-text: #1f2328;
+  /* Axis titles: a step past the body ink, as they name what every mark means. */
+  --hip-axis-title: #121418;
   --hip-tick-halo: rgba(248, 248, 246, 0.92);
   /* Deselected rows: a faint neutral layer behind the selection */
   --hip-context-line: #8d949c;
@@ -49,7 +51,8 @@
   /* 8.3:1 on --hip-bg: secondary text stays well above WCAG AA. */
   --hip-muted: #a9b1bb;
   --hip-axis: #5e666f;
-  --hip-tick-text: #d5dae0;
+  --hip-tick-text: #e4e7eb;
+  --hip-axis-title: #f3f5f7;
   --hip-tick-halo: rgba(21, 24, 28, 0.92);
   --hip-context-line: #6f7781;
   --hip-missing: #7d848c;

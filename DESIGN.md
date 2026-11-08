@@ -6,7 +6,8 @@ colors:
   light-fg: "#1f2328"
   light-muted: "#59616b"
   light-axis: "#8b929a"
-  light-tick-text: "#2a2f35"
+  light-tick-text: "#1f2328"
+  light-axis-title: "#121418"
   light-rule: "#dcdcd8"
   light-surface: "#ffffff"
   light-accent: "#2459c9"
@@ -15,7 +16,8 @@ colors:
   dark-fg: "#e4e7eb"
   dark-muted: "#a9b1bb"
   dark-axis: "#5e666f"
-  dark-tick-text: "#d5dae0"
+  dark-tick-text: "#e4e7eb"
+  dark-axis-title: "#f3f5f7"
   dark-rule: "#2c3238"
   dark-surface: "#1e2227"
   dark-accent: "#6ea2ff"
@@ -48,7 +50,7 @@ typography:
   tick:
     fontFamily: "IBM Plex Sans Variable, IBM Plex Sans, system-ui, sans-serif"
     fontSize: "11px"
-    fontWeight: 400
+    fontWeight: 500
     fontFeature: "tnum"
 rounded:
   control: "6px"
@@ -122,8 +124,10 @@ and diverging maps for numbers), themed per background.
 - **Pencil** (`--hip-muted`): secondary text (counts, hints, units). Must keep
   ≥ 4.5:1 against `--hip-bg` in both themes.
 - **Axis Gray** (`--hip-axis`): axis lines, tick marks, grips.
-- **Tick Ink** (`--hip-tick-text`): tick labels, drawn over a halo of the
-  background so they read over dense lines.
+- **Tick Ink** (`--hip-tick-text`): tick labels, the body ink, drawn over a
+  halo of the background so they read over dense lines.
+- **Axis Title Ink** (`--hip-axis-title`): axis names, a step past the body
+  ink in both themes.
 - **Rule** (`--hip-rule`): hairline borders and dividers.
 - **Context Line** (`--hip-context-line`): deselected rows behind the
   selection.
@@ -146,7 +150,11 @@ columns of values aligned.
 - **Title** (600, 13px): section bars ("Scatter plots"), panel kinds.
 - **Axis title** (600, 12px): parallel-plot and scatter axis names.
 - **Body / control** (400–500, 13px): buttons, menus, table cells.
-- **Tick** (400, 11px, tnum): tick labels and badges.
+- **Tick** (500, 11px, tnum): tick labels and badges.
+
+Axis text starts and sits on whole device pixels: axes are placed on the
+pixel grid, and tick labels are shifted onto it once drawn (`lib/crisptext`),
+since a label half a pixel off is smeared over two rows of pixels.
 
 ## Layout
 

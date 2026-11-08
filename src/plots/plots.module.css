@@ -132,10 +132,12 @@
   bottom: auto;
   left: auto;
 }
+/* Centred on their anchor; a whole-pixel line height keeps the centring off half pixels. */
 .axisName,
 .axisValue,
 .hoverText {
   position: absolute;
+  line-height: 16px;
   transform: translate(-50%, -50%);
   white-space: nowrap;
   pointer-events: none;
@@ -143,14 +145,15 @@
   font-variant-numeric: tabular-nums;
 }
 .axisName {
-  color: var(--hip-fg);
+  color: var(--hip-axis-title);
   font-size: 12px;
   font-weight: 600;
   text-shadow: 0 0 3px var(--hip-bg);
 }
 .axisValue {
-  color: var(--hip-muted);
+  color: var(--hip-tick-text);
   font-size: 11px;
+  font-weight: 500;
   text-shadow: 0 0 3px var(--hip-bg);
 }
 .hoverRing {

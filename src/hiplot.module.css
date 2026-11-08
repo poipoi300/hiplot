@@ -175,9 +175,13 @@
 .plotxy-graph-svg :global(.tick) line {
   color: #9a9a9a26;
 }
-.plotxy-graph-svg :global(.tick) text {
+.plotxy-graph-svg :global(.tick) text,
+.distr-graph-svg :global(.tick) text {
   fill: var(--hip-tick-text);
+  font-family: var(--hip-font);
   font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 .plotxy-graph-svg :global(.plotxy-label) {
   font-size: 12px;
@@ -297,7 +301,9 @@
 
 /* Axis titles read as ink in both themes, like the parallel plot's. */
 .axisLabelText {
-  color: var(--hip-fg);
+  color: var(--hip-axis-title);
+  font-family: var(--hip-font);
+  font-weight: 600;
 }
 
 textarea.runsSelectionTextarea {
