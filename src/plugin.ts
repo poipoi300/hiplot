@@ -53,6 +53,8 @@ export interface HiPlotPluginDataWithoutDatasets {
 
   setSelected: (new_selected: Array<Datapoint>, filter: Filter | null) => void;
   setHighlighted: (new_highlighted: Array<Datapoint>) => void;
+  /** Tells the user, in a toast, about something refused or recovered from. */
+  notify: (message: string) => void;
 
   asserts: boolean;
 }

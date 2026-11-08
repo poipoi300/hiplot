@@ -15,9 +15,14 @@ export interface PersistentState {
   get(name: string, def_value: unknown): unknown;
   set(name: string, value: unknown): void;
   children(name: string): PersistentState;
+  /** Told when a stored value was unusable and its fallback was used instead. */
+  reportInvalid?(name: string, value: unknown): void;
 }
 
-/** Reads `name`, falling back when it is missing or does not have the expected shape. */
+/**
+ * Reads `name`, falling back when it is missing or does not have the expected
+ * shape; an unusable stored value is reported to the state.
+ */
 export function readState<T>(
   state: PersistentState,
   name: string,
@@ -25,7 +30,41 @@ export function readState<T>(
   fallback: T,
 ): T {
   const value = state.get(name);
-  return isValid(value) ? value : fallback;
+  if (isValid(value)) {
+    return value;
+  }
+  if (value !== undefined) {
+    state.reportInvalid?.(name, value);
+  }
+  return fallback;
+}
+
+/**
+ * A persistent state that tells `onInvalid` about stored values its readers
+ * could not use, with their full key, and stores everything in `inner`.
+ */
+export class ReportingPersistentState implements PersistentState {
+  constructor(
+    private readonly inner: PersistentState,
+    private readonly onInvalid: (key: string, value: unknown) => void,
+    private readonly prefix: string = "",
+  ) {}
+  get(name: string, def_value?: unknown): unknown {
+    return this.inner.get(name, def_value);
+  }
+  set(name: string, value: unknown): void {
+    this.inner.set(name, value);
+  }
+  children(name: string): ReportingPersistentState {
+    return new ReportingPersistentState(
+      this.inner.children(name),
+      this.onInvalid,
+      `${this.prefix}${name}.`,
+    );
+  }
+  reportInvalid(name: string, value: unknown): void {
+    this.onInvalid(this.prefix + name, value);
+  }
 }
 
 export const isString = (value: unknown): value is string => typeof value === "string";

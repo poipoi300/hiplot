@@ -39,8 +39,14 @@ import {
 } from "./lib/colors";
 import { experimentRows } from "./lib/compress";
 import { mounted } from "./lib/refs";
-import { type PersistentState, PersistentStateInMemory, readState } from "./lib/savedstate";
+import {
+  type PersistentState,
+  PersistentStateInMemory,
+  ReportingPersistentState,
+  readState,
+} from "./lib/savedstate";
 import { storeThemeChoice, type ThemeChoice } from "./lib/theme";
+import { type Toast, Toasts } from "./lib/toast";
 import { ParallelPlot } from "./parallel/parallel";
 import { ScatterPlots } from "./plots/scatterplots";
 import type { DataProviderClass, HiPlotPluginData, PluginWindowState } from "./plugin";
@@ -93,6 +99,57 @@ export function definePlugin<P extends HiPlotPluginData>(
 }
 
 class CanceledLoad extends Error {}
+
+/** A crash this soon after a display was rebuilt means rebuilding does not help. */
+const REBUILD_COOLDOWN_MS = 2000;
+
+interface PluginBoundaryProps {
+  name: string;
+  notify: (message: string) => void;
+  children: React.ReactNode;
+}
+
+interface PluginBoundaryState {
+  /** Bumped to rebuild the display from its saved state. */
+  generation: number;
+  /** The error that stopped the display, while it is not rebuilt. */
+  error: string | null;
+}
+
+/**
+ * Keeps one display's crash from taking the page down: the display is rebuilt
+ * from its saved state (which a display only updates once a change applied
+ * cleanly), and the error is shown as a toast. A display that crashes again
+ * right after being rebuilt shows its error in place instead.
+ */
+class PluginBoundary extends React.Component<PluginBoundaryProps, PluginBoundaryState> {
+  state: PluginBoundaryState = { generation: 0, error: null };
+  private lastRebuild = Number.NEGATIVE_INFINITY;
+  static getDerivedStateFromError(error: unknown): Partial<PluginBoundaryState> {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+  componentDidCatch(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const now = performance.now();
+    if (now - this.lastRebuild < REBUILD_COOLDOWN_MS) {
+      this.props.notify(`The ${this.props.name} display failed again and stays off: ${message}`);
+      return;
+    }
+    this.lastRebuild = now;
+    this.props.notify(`The ${this.props.name} display hit an error and was restored: ${message}`);
+    this.setState((state) => ({ generation: state.generation + 1, error: null }));
+  }
+  render() {
+    if (this.state.error !== null) {
+      return (
+        <div className="alert alert-danger" role="alert">
+          The {this.props.name} display could not be drawn: {this.state.error}
+        </div>
+      );
+    }
+    return <React.Fragment key={this.state.generation}>{this.props.children}</React.Fragment>;
+  }
+}
 
 type PluginProps = HiPlotPluginData &
   React.RefAttributes<React.Component<HiPlotPluginData>> & {
@@ -172,6 +229,7 @@ interface HiPlotState extends IDatasets {
 
   // Track hidden columns count for header button
   restorableColumnsCount: number;
+  toasts: Toast[];
 }
 
 function detectIsDarkTheme(): boolean {
@@ -283,7 +341,13 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
   constructor(props: HiPlotProps) {
     super(props);
     const darkModeSetting = normalizeDarkModeSetting(this.props.dark, "auto");
-    const persistentState = props.persistentState ?? new PersistentStateInMemory("", {});
+    const persistentState = new ReportingPersistentState(
+      props.persistentState ?? new PersistentStateInMemory("", {}),
+      (key, value) =>
+        this.notify(
+          `The saved setting "${key}" (${JSON.stringify(value)}) does not fit this page; its default is used.`,
+        ),
+    );
     this.state = {
       experiment: null,
       colormap: null,
@@ -306,6 +370,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       persistentState,
       dataProvider: this.props.dataProvider ? this.props.dataProvider : StaticDataProvider,
       restorableColumnsCount: 0,
+      toasts: [],
     };
     Object.keys(props.plugins).forEach((name, _index) => {
       this.plugins_window_state[name] = {};
@@ -339,6 +404,24 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       });
     }
   }
+  private nextToastId = 0;
+  /**
+   * Shows `message` as a toast. Deferred, as it may be called while a display
+   * renders (when it reads unusable saved state); repeats of a shown message
+   * are dropped.
+   */
+  notify = (message: string): void => {
+    window.setTimeout(() => {
+      this.setState((state) =>
+        state.toasts.some((toast) => toast.message === message)
+          ? null
+          : { toasts: [...state.toasts, { id: this.nextToastId++, message }] },
+      );
+    }, 0);
+  };
+  dismissToast = (id: number): void => {
+    this.setState((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) }));
+  };
   /** The theme picked with the header toggle: applied, and remembered for next time. */
   onThemeChoice = (choice: ThemeChoice): void => {
     storeThemeChoice(choice);
@@ -847,6 +930,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
         context_menu_ref: this.contextMenuRef,
         setSelected: this.setSelected.bind(this),
         setHighlighted: this.setHighlighted.bind(this),
+        notify: this.notify,
         asserts: this.props.asserts,
       };
       // Add callback for ParallelPlot to notify when hidden columns change
@@ -894,16 +978,17 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
             />
           )}
           <ContextMenu ref={this.contextMenuRef} />
+          <Toasts toasts={this.state.toasts} onDismiss={this.dismissToast} />
           {this.state.loadStatus === HiPlotLoadStatus.Loaded && experiment !== null && (
             <div>
               {(experiment.enabled_displays ?? Object.keys(this.props.plugins)).map(
                 (display_name: string) => (
-                  <React.Fragment key={display_name}>
+                  <PluginBoundary key={display_name} name={display_name} notify={this.notify}>
                     {React.createElement(
                       this.props.plugins[display_name],
                       createPluginProps(experiment, display_name),
                     )}
-                  </React.Fragment>
+                  </PluginBoundary>
                 ),
               )}
             </div>

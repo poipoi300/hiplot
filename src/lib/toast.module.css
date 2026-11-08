@@ -1,0 +1,71 @@
+/* Messages about something HiPlot refused or recovered from, bottom right. */
+.stack {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 420px;
+  padding: 10px 10px 10px 14px;
+  border: 1px solid var(--hip-rule);
+  border-radius: 8px;
+  background: var(--hip-surface);
+  color: var(--hip-fg);
+  font-size: 13px;
+  line-height: 1.45;
+  box-shadow: 0 8px 24px var(--hip-shadow);
+  pointer-events: auto;
+  animation: toast-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: #d1453b;
+}
+.message {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--hip-muted);
+  cursor: pointer;
+}
+.dismiss:hover {
+  background: var(--hip-brush-fill);
+  color: var(--hip-fg);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+}

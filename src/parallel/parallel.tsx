@@ -516,18 +516,25 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (prevState.height !== this.state.height || prevState.width !== this.state.width) {
       this.on_resize?.();
     }
-    if (prevState.invert !== this.state.invert) {
-      this.props.persistentState.set("invert", Array.from(this.state.invert));
-    }
-    if (prevState.hide !== this.state.hide) {
-      this.props.persistentState.set("hide", Array.from(this.state.hide));
-      this.props.onHiddenColumnsChange?.(this.getRestorableColumnsCount());
-    }
-    if (prevState.lineShape !== this.state.lineShape) {
-      this.props.persistentState.set("lineShape", this.state.lineShape);
-    }
-    if (prevState.order !== this.state.order) {
-      this.props.persistentState.set("order", this.state.order);
+    // Scales first: laying the axes out reads the scale of every dimension,
+    // including the ones just shown.
+    if (
+      this.pplot &&
+      (this.state.dimensions !== prevState.dimensions ||
+        prevProps.params_def !== this.props.params_def)
+    ) {
+      const drop_scales: string[] = [];
+      this.state.dimensions.forEach((d: string) => {
+        const new_scale = this.createScale(d);
+        if (new_scale === null) {
+          drop_scales.push(d);
+          return;
+        }
+        this.yscale[d] = new_scale;
+      });
+      drop_scales.forEach((d: string) => {
+        this.remove_axis(d);
+      });
     }
     if (prevState.dimensions !== this.state.dimensions && this.dimensions_dom !== null) {
       this.dimensions_dom.filter((p) => this.state.dimensions.indexOf(p) === -1).remove();
@@ -573,25 +580,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         });
       }
     }
-    // Recompute scales - when dimensions got removed, or scaling changed for one
-    if (
-      this.pplot &&
-      (this.state.dimensions !== prevState.dimensions ||
-        prevProps.params_def !== this.props.params_def)
-    ) {
-      const drop_scales: string[] = [];
-      this.state.dimensions.forEach((d: string) => {
-        const new_scale = this.createScale(d);
-        if (new_scale === null) {
-          drop_scales.push(d);
-          return;
-        }
-        this.yscale[d] = new_scale;
-      });
-      drop_scales.forEach((d: string) => {
-        this.remove_axis(d);
-      });
-    }
     // Dimension added - redraw missing axis
     const oldDimsSet = new Set(prevState.dimensions);
     if (this.pplot && !this.state.dimensions.every((value) => oldDimsSet.has(value))) {
@@ -623,6 +611,21 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.redrawLines();
     }
     this.props.window_state.height = this.state.height;
+    // Saved last, once the change applied: a display rebuilt after an error
+    // starts from the last state that worked.
+    if (prevState.invert !== this.state.invert) {
+      this.props.persistentState.set("invert", Array.from(this.state.invert));
+    }
+    if (prevState.hide !== this.state.hide) {
+      this.props.persistentState.set("hide", Array.from(this.state.hide));
+      this.props.onHiddenColumnsChange?.(this.getRestorableColumnsCount());
+    }
+    if (prevState.lineShape !== this.state.lineShape) {
+      this.props.persistentState.set("lineShape", this.state.lineShape);
+    }
+    if (prevState.order !== this.state.order) {
+      this.props.persistentState.set("order", this.state.order);
+    }
   }
   /** Whether a brush or an axis is being dragged (see `antialiasedLines`). */
   private interacting = false;
@@ -1962,8 +1965,22 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         return { name, label: labelTextFromHtml(pd.label_html, pd.name) };
       });
   }
-  /** Shows columns as axes (appended at the right) or hides them. */
+  /**
+   * Shows columns as axes (appended at the right) or hides them. A column
+   * whose axis cannot be built is refused with a toast, and nothing changes.
+   */
   setColumnsShown(names: ReadonlyArray<string>, shown: boolean): void {
+    if (shown) {
+      for (const name of names) {
+        const refusal = this.axisRefusal(name);
+        if (refusal !== null) {
+          this.props.notify(
+            `Could not show "${name}": ${refusal}. The columns were left as they were.`,
+          );
+          return;
+        }
+      }
+    }
     this.setState((prevState) => {
       const hide = new Set(prevState.hide);
       if (!shown) {
@@ -1982,6 +1999,14 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       }
       return { hide, dimensions: prevState.dimensions.concat(added) };
     });
+  }
+  /** Why `name` cannot be drawn as an axis, or null when it can. */
+  private axisRefusal(name: string): string | null {
+    try {
+      return this.createScale(name) === null ? "the column is not in the experiment" : null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
   }
   getRestorableColumnsCount(): number {
     return Array.from(this.state.hide).filter((d) => this.can_restore_axis(d)).length;

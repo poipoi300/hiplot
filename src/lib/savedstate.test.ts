@@ -4,6 +4,7 @@ import {
   isStringArray,
   PersistentStateInMemory,
   PersistentStateInURL,
+  ReportingPersistentState,
   readState,
 } from "./savedstate";
 
@@ -51,5 +52,32 @@ describe("validated reads", () => {
     expect(readState(state, "order", isStringArray, [])).toEqual(["x"]);
     expect(readState(state, "height", isNumber, 600)).toBe(600);
     expect(readState(state, "missing", isNumber, 1)).toBe(1);
+  });
+});
+
+describe("reporting unusable stored values", () => {
+  test("a stored value of the wrong shape falls back and is reported with its full key", () => {
+    const params: { [key: string]: unknown } = { "PARALLEL_PLOT.order": "lr" };
+    const reported: [string, unknown][] = [];
+    const root = new ReportingPersistentState(
+      new PersistentStateInMemory("", params),
+      (key, value) => reported.push([key, value]),
+    );
+    const plot = root.children("PARALLEL_PLOT");
+    expect(readState(plot, "order", isStringArray, ["x"])).toEqual(["x"]);
+    expect(reported).toEqual([["PARALLEL_PLOT.order", "lr"]]);
+  });
+
+  test("a missing value falls back silently and a valid one is read through", () => {
+    const params: { [key: string]: unknown } = { height: 300 };
+    const reported: string[] = [];
+    const root = new ReportingPersistentState(new PersistentStateInMemory("", params), (key) =>
+      reported.push(key),
+    );
+    expect(readState(root, "width", isNumber, 10)).toBe(10);
+    expect(readState(root, "height", isNumber, 10)).toBe(300);
+    root.set("width", 20);
+    expect(params.width).toBe(20);
+    expect(reported).toEqual([]);
   });
 });
