@@ -101,3 +101,19 @@ test("numbers show six significant digits with the exact value in a tooltip", as
   expect(Number.isFinite(shown)).toBe(true);
   expect(Math.abs(shown - exact)).toBeLessThanOrEqual(Math.abs(exact) * 1e-5);
 });
+
+test("a column filter is a button until used and turns back into one when emptied", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  const button = page.getByRole("button", { name: "Filter optimizer", exact: true });
+  await expect(button).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Filter optimizer" })).toHaveCount(0);
+  await button.focus();
+  await page.keyboard.type("sgd");
+  const input = page.getByRole("textbox", { name: "Filter optimizer" });
+  await expect(input).toHaveValue("sgd");
+  await input.fill("");
+  await page.locator(".dt-info").click();
+  await expect(button).toBeVisible();
+});

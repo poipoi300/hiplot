@@ -26,6 +26,10 @@
 .scroller {
   overflow-x: auto;
   overflow-y: hidden;
+  scrollbar-color: var(--hip-axis) transparent;
+}
+.scroller::-webkit-scrollbar-thumb {
+  background: var(--hip-axis);
 }
 .spacer {
   height: 1px;

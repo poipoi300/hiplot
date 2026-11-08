@@ -10,17 +10,23 @@
   position: relative;
 }
 
+/* The bottom edge drags to resize: a hairline that thickens under the pointer. */
 .resizableH:after {
   content: " ";
-  background-color: #ccc;
   position: absolute;
   bottom: 0;
   left: 0;
   width: 100%;
   height: 4px;
+  background: linear-gradient(var(--hip-rule), var(--hip-rule)) center / 100% 1px no-repeat;
   cursor: row-resize;
+  transition: background-size 150ms ease-out;
+}
+.resizableH:hover:after {
+  background-size: 100% 4px;
 }
 
+/* Dragged shut: releasing closes the plot. */
 .pendingDelete {
-  background-color: red;
+  background-color: color-mix(in srgb, #d1453b 18%, transparent);
 }
