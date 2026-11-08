@@ -27,11 +27,11 @@ test("a scatter plot grows from a distribution to an XY then a 3D scatter, and i
   await page.getByRole("button", { name: "Add scatter plot" }).click();
   await expect(scatterPanels(page)).toHaveCount(before + 1);
   const panel = scatterPanels(page).last();
-  await expect(panel).toContainText("Pick X to see its distribution");
+  await expect(panel.getByTestId("scatter-empty")).toContainText("Pick a column on X, Y or Z");
 
   await pick(page, "X", "lr");
   await expect(panel.locator("svg").first()).toBeVisible();
-  await expect(panel).toContainText("Distribution of X");
+  await expect(panel).toContainText("Distribution");
 
   await pick(page, "Y", "exp_metric");
   await expect(panel.getByRole("img", { name: "XY scatter plot" })).toBeVisible();
@@ -44,6 +44,43 @@ test("a scatter plot grows from a distribution to an XY then a 3D scatter, and i
   await reloadDemo(page);
   await expect(scatterPanels(page)).toHaveCount(before + 1);
   await expect(axisButton(scatterPanels(page).last(), "Z")).toHaveAccessibleName("Z: r");
+});
+
+test("any axis can be None: the set ones are plotted in order, and kept", async ({ page }) => {
+  await loadDemo(page);
+  await page.getByRole("button", { name: "Add scatter plot" }).click();
+  const panel = scatterPanels(page).last();
+  for (const axis of ["X", "Y", "Z"]) {
+    await expect(axisButton(panel, axis)).toHaveAccessibleName(`${axis}: None`);
+  }
+  await pick(page, "Z", "exp_metric");
+  await expect(
+    panel.locator('[data-testid="distribution-plot"][data-axis="exp_metric"]'),
+  ).toBeVisible();
+
+  await pick(page, "Y", "lr");
+  const xy = panel.getByRole("img", { name: "XY scatter plot" });
+  await expect(xy).toBeVisible();
+  // Y runs across and Z up: the horizontal axis is drawn first.
+  await expect(xy.locator(".plotxy-label")).toHaveText([/^lr/, /^exp_metric/]);
+  const across = await xy.locator(".plotxy-label").nth(0).boundingBox();
+  const up = await xy.locator(".plotxy-label").nth(1).boundingBox();
+  expect(across?.y ?? 0).toBeGreaterThan(up?.y ?? 0);
+  // The pickers keep their axes: X stays None.
+  await expect(axisButton(panel, "X")).toHaveAccessibleName("X: None");
+  await expect(axisButton(panel, "Y")).toHaveAccessibleName("Y: lr");
+  await expect(axisButton(panel, "Z")).toHaveAccessibleName("Z: exp_metric");
+
+  const saved = JSON.parse(new URL(page.url()).searchParams.get("hip.XY.panels") ?? "[]");
+  expect(saved.at(-1)).toMatchObject({ x: null, y: "lr", z: "exp_metric" });
+  await reloadDemo(page);
+  const reloaded = scatterPanels(page).last();
+  await expect(axisButton(reloaded, "X")).toHaveAccessibleName("X: None");
+  await expect(reloaded.getByRole("img", { name: "XY scatter plot" })).toBeVisible();
+
+  await pickColumn(reloaded, "Y", null);
+  await pickColumn(reloaded, "Z", null);
+  await expect(reloaded.getByTestId("scatter-empty")).toBeVisible();
 });
 
 test("the 3D scatter turns when dragged and names the point under the pointer", async ({

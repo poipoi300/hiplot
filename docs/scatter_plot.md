@@ -17,14 +17,21 @@ Depending on your data, the same panel can show:
 
 ## Enabling and axis selection
 
-The XY panel appears when both axes are set.
+Each scatter panel picks a column, or None, on each of X, Y and Z, from a
+filterable list in its header. The columns set are plotted in X, Y, Z order,
+whichever axes are None:
 
-Typical flow in the UI:
+- none: the panel asks for a column;
+- one: the distribution of that column;
+- two: an XY scatter, the first across and the second up (X = None with Y
+  and Z set draws Y across and Z up);
+- three: a 3D scatter.
 
-- Right-click a column in the parallel plot
-- Choose `Set as X axis` and `Set as Y axis`
+The pickers keep their axes: X = None stays None. A column can also be sent
+to the last panel from the parallel plot: right-click it and choose
+`Set as X axis`, `Set as Y axis` or `Set as Z axis`.
 
-The selected axes are persisted through persistent state (`axis_x`, `axis_y`).
+The panels and their columns are persisted in the page state (`panels`).
 
 ## Interactions
 

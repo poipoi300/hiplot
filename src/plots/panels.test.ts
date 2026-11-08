@@ -5,6 +5,7 @@ import {
   isScatterPanels,
   nextPanelId,
   normalizeScatterPanel,
+  plottedColumns,
   scatterKind,
   withOneAxisPanels,
 } from "./panels";
@@ -22,22 +23,36 @@ test("new panels take an id after the largest one", () => {
   expect(nextPanelId([{ id: "4" }, { id: "2" }])).toBe("5");
 });
 
-test("a panel draws a distribution of X alone, a scatter with Y, a 3D scatter with Z", () => {
+test("a panel draws a distribution of one column, a scatter of two, a 3D scatter of three", () => {
   expect(scatterKind({ id: "1", x: null, y: null, z: null })).toBe("empty");
   expect(scatterKind({ id: "1", x: "a", y: null, z: null })).toBe("distribution");
+  expect(scatterKind({ id: "1", x: null, y: null, z: "c" })).toBe("distribution");
   expect(scatterKind({ id: "1", x: "a", y: "b", z: null })).toBe("xy");
+  expect(scatterKind({ id: "1", x: null, y: "b", z: "c" })).toBe("xy");
   expect(scatterKind({ id: "1", x: "a", y: "b", z: "c" })).toBe("xyz");
 });
 
-test("unknown columns are dropped, and each coordinate needs the previous one", () => {
+test("the set axes are plotted in X, Y, Z order, whichever are None", () => {
+  expect(plottedColumns({ id: "1", x: null, y: "b", z: "c" })).toEqual(["b", "c"]);
+  expect(plottedColumns({ id: "1", x: "a", y: null, z: "c" })).toEqual(["a", "c"]);
+  expect(plottedColumns({ id: "1", x: null, y: "b", z: null })).toEqual(["b"]);
+  expect(plottedColumns({ id: "1", x: null, y: null, z: null })).toEqual([]);
+});
+
+test("unknown columns are dropped and the other axes keep their columns", () => {
   const columns = new Set(["a", "b", "c"]);
+  expect(normalizeScatterPanel({ id: "1", x: "gone", y: "b", z: "c" }, columns)).toEqual({
+    id: "1",
+    x: null,
+    y: "b",
+    z: "c",
+  });
   expect(normalizeScatterPanel({ id: "1", x: "a", y: "gone", z: "c" }, columns)).toEqual({
     id: "1",
     x: "a",
     y: null,
-    z: null,
+    z: "c",
   });
-  expect(normalizeScatterPanel({ id: "1", x: "a", y: "b", z: "c" }, columns).z).toBe("c");
 });
 
 describe("distribution plots saved by older pages", () => {
@@ -75,10 +90,11 @@ describe("distribution plots saved by older pages", () => {
     const panels = [
       { id: "1", x: "lr", y: "loss", z: null },
       { id: "2", x: "optimizer", y: null, z: null },
+      { id: "3", x: null, y: null, z: "seed" },
     ];
-    expect(withOneAxisPanels(panels, ["lr", "optimizer"])).toEqual([
+    expect(withOneAxisPanels(panels, ["lr", "optimizer", "seed"])).toEqual([
       ...panels,
-      { id: "3", x: "lr", y: null, z: null },
+      { id: "4", x: "lr", y: null, z: null },
     ]);
   });
 });

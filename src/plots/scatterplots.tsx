@@ -19,6 +19,7 @@ import {
   isScatterPanels,
   nextPanelId,
   normalizeScatterPanel,
+  plottedColumns,
   type ScatterPanel,
   scatterKind,
   withOneAxisPanels,
@@ -40,10 +41,12 @@ interface ScatterPlotsState {
 
 const KIND_LABELS = {
   empty: "Scatter",
-  distribution: "Distribution of X",
+  distribution: "Distribution",
   xy: "Scatter",
   xyz: "3D scatter",
 } as const;
+
+const AXES = ["x", "y", "z"] as const;
 
 const isStringOrNull = (value: unknown): value is string | null =>
   value === null || isString(value);
@@ -90,8 +93,9 @@ class Scatter3DPanel extends React.Component<
 
 /**
  * The scatter plots: any number of panels, each closable, with X, Y and Z
- * picked in its header. X alone shows its distribution, X and Y an XY
- * scatter, all three a 3D scatter. The list is kept with the page state.
+ * picked in its header, each a column or None. The columns set are plotted
+ * in that order: one shows its distribution, two an XY scatter (the first
+ * across), three a 3D scatter. The list is kept with the page state.
  */
 export class ScatterPlots extends React.Component<ScatterPlotsProps, ScatterPlotsState> {
   /** Page-lifetime state (heights) of each panel's XY plot. */
@@ -207,40 +211,43 @@ export class ScatterPlots extends React.Component<ScatterPlotsProps, ScatterPlot
   }
   private renderBody(panel: ScatterPanel): React.ReactNode {
     const close = () => this.closePanel(panel.id);
-    const { x, y, z } = panel;
-    if (x === null) {
+    const [first, second, third] = plottedColumns(panel);
+    if (first === undefined) {
       return (
-        <div className={style.empty}>
-          Pick X to see its distribution, add Y for a scatter plot and Z for a 3D scatter.
+        <div className={style.empty} data-testid="scatter-empty">
+          Pick a column on X, Y or Z: one shows its distribution, two a scatter plot, three a 3D
+          scatter.
         </div>
       );
     }
-    if (y === null) {
+    if (second === undefined) {
       return (
         <DistributionView
-          key={x}
+          key={first}
           {...this.props}
           nbins={this.oneAxisBins()}
           animateMs={0}
-          axis={x}
+          axis={first}
           onClose={close}
         />
       );
     }
-    if (z === null) {
+    if (third === undefined) {
       return (
         <PlotXY
-          key={`${x}\u0000${y}`}
+          key={`${first}\u0000${second}`}
           {...this.props}
-          axis_x={x}
-          axis_y={y}
+          axis_x={first}
+          axis_y={second}
           persistentState={this.props.persistentState.children(`panel${panel.id}`)}
           window_state={this.windowState(panel.id)}
           onClose={close}
         />
       );
     }
-    return <Scatter3DPanel {...this.props} axes={{ x, y, z }} onClose={close} />;
+    return (
+      <Scatter3DPanel {...this.props} axes={{ x: first, y: second, z: third }} onClose={close} />
+    );
   }
   render() {
     const columns = pickableColumns(this.props.params_def);
@@ -251,28 +258,15 @@ export class ScatterPlots extends React.Component<ScatterPlotsProps, ScatterPlot
           <div key={panel.id} className={style.panel} data-testid="scatter-panel">
             <PanelHeader name="scatter plot" onClose={() => this.closePanel(panel.id)}>
               <span className={style.panelKind}>{KIND_LABELS[scatterKind(panel)]}</span>
-              <ColumnSelect
-                axis="X"
-                columns={columns}
-                value={panel.x}
-                onChange={(column) => this.updatePanel(panel.id, "x", column)}
-              />
-              {panel.x !== null && (
+              {AXES.map((axis) => (
                 <ColumnSelect
-                  axis="Y"
+                  key={axis}
+                  axis={axis.toUpperCase()}
                   columns={columns}
-                  value={panel.y}
-                  onChange={(column) => this.updatePanel(panel.id, "y", column)}
+                  value={panel[axis]}
+                  onChange={(column) => this.updatePanel(panel.id, axis, column)}
                 />
-              )}
-              {panel.y !== null && (
-                <ColumnSelect
-                  axis="Z"
-                  columns={columns}
-                  value={panel.z}
-                  onChange={(column) => this.updatePanel(panel.id, "z", column)}
-                />
-              )}
+              ))}
             </PanelHeader>
             {this.renderBody(panel)}
           </div>

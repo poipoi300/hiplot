@@ -5,9 +5,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+import _ from "underscore";
+
 /**
- * The plots a display shows, as kept in the page state. A scatter panel is a
- * distribution of X alone, an XY scatter with Y, and a 3D scatter with Z too.
+ * The plots a display shows, as kept in the page state. Each of a scatter
+ * panel's X, Y and Z holds a column or none; the columns set, in that order,
+ * are what it plots (see `plottedColumns`).
  */
 export interface ScatterPanel {
   id: string;
@@ -71,7 +74,7 @@ export function withOneAxisPanels(
 ): ScatterPanel[] {
   const result = [...panels];
   for (const column of columns) {
-    if (!result.some((panel) => panel.x === column && panel.y === null)) {
+    if (!result.some((panel) => _.isEqual(plottedColumns(panel), [column]))) {
       result.push({ id: nextPanelId(result), x: column, y: null, z: null });
     }
   }
@@ -84,31 +87,30 @@ export function nextPanelId(panels: ReadonlyArray<{ id: string }>): string {
   return String(largest + 1);
 }
 
-/** What a scatter panel draws, from the columns it was given. */
-export type ScatterKind = "empty" | "distribution" | "xy" | "xyz";
-
-export function scatterKind(panel: ScatterPanel): ScatterKind {
-  if (panel.x === null) {
-    return "empty";
-  }
-  if (panel.y === null) {
-    return "distribution";
-  }
-  return panel.z === null ? "xy" : "xyz";
+/**
+ * The columns a panel plots: those of X, Y and Z that are set, in that
+ * order. The first runs along the horizontal axis and the second the
+ * vertical one, so X = None with Y and Z set draws Y across and Z up.
+ */
+export function plottedColumns(panel: ScatterPanel): string[] {
+  return [panel.x, panel.y, panel.z].filter((column) => column !== null);
 }
 
-/**
- * Columns of a panel that the experiment no longer has are dropped, and a
- * coordinate can only be set once the previous one is: Z needs Y, Y needs X.
- */
+/** What a scatter panel draws, from how many columns it plots. */
+export type ScatterKind = "empty" | "distribution" | "xy" | "xyz";
+
+const KINDS: ReadonlyArray<ScatterKind> = ["empty", "distribution", "xy", "xyz"];
+
+export function scatterKind(panel: ScatterPanel): ScatterKind {
+  return KINDS[plottedColumns(panel).length];
+}
+
+/** Columns of a panel that the experiment no longer has are dropped; the others stay put. */
 export function normalizeScatterPanel(
   panel: ScatterPanel,
   columns: ReadonlySet<string>,
 ): ScatterPanel {
   const known = (column: string | null): string | null =>
     column !== null && columns.has(column) ? column : null;
-  const x = known(panel.x);
-  const y = x === null ? null : known(panel.y);
-  const z = y === null ? null : known(panel.z);
-  return { id: panel.id, x, y, z };
+  return { id: panel.id, x: known(panel.x), y: known(panel.y), z: known(panel.z) };
 }
