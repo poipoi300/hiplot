@@ -34,6 +34,7 @@ import { type Datapoint, ParamType } from "../types";
 import {
   type AxisStyle,
   type AxisValue,
+  axisLineOffset,
   columnAxis,
   columnAxisStyle,
   formatTimestamp,
@@ -257,8 +258,7 @@ const TITLE_HIT_HEIGHT = 22;
 const TITLE_HIT_PADDING = 6;
 /** The drag grip sits between the axis top and its title. */
 const GRIP_OFFSET_Y = -9;
-/** The band brushes are drawn in, left and right of the axis line. */
-const BRUSH_LEFT = -23;
+/** Width of the band brushes are drawn in, centred on the axis line. */
 const BRUSH_WIDTH = 38;
 /** Height of the band along each brush edge that resizes it. */
 const BRUSH_HANDLE_PIXELS = 6;
@@ -1564,7 +1564,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       brushBands
         .append("rect")
         .classed("overlay", true)
-        .attr("x", BRUSH_LEFT)
         .attr("width", BRUSH_WIDTH)
         .append("title")
         .text("Drag up or down to add a brush on this axis");
@@ -1838,7 +1837,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     dimension: string,
     spans: ReadonlyArray<DrawnBrush>,
   ): void {
-    group.select(".overlay").attr("height", this.h);
+    // Placed on every draw: the axis line moves with the device pixel ratio.
+    const left = axisLineOffset(window.devicePixelRatio) - BRUSH_WIDTH / 2;
+    group.select(".overlay").attr("x", left).attr("height", this.h);
     const active = this.activeBrush(dimension);
     const bands = group
       .selectAll<SVGGElement, DrawnBrush>(".pplot-brush-band")
@@ -1852,7 +1853,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         band
           .append("rect")
           .classed("selection", true)
-          .attr("x", BRUSH_LEFT)
           .attr("width", BRUSH_WIDTH)
           .append("title")
           .text("Drag to move this brush, drag an edge to resize it, click to remove it");
@@ -1861,7 +1861,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             .append("rect")
             .classed("handle", true)
             .attr("data-edge", edge)
-            .attr("x", BRUSH_LEFT)
             .attr("width", BRUSH_WIDTH)
             .attr("height", BRUSH_HANDLE_PIXELS);
         }
@@ -1869,6 +1868,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       })
       .attr("data-brush-id", (span) => span.id)
       .classed(pstyle.brushActive, (span) => span.id === active);
+    bands.selectAll("rect").attr("x", left);
     bands
       .select(".selection")
       .attr("y", (span) => span.top)
@@ -1949,7 +1949,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       })
       .attr("data-edge", (label) => label.edge)
       .attr("data-inside", (label) => String(label.inside))
-      .attr("transform", (label) => `translate(0, ${label.y})`)
+      .attr(
+        "transform",
+        (label) => `translate(${axisLineOffset(window.devicePixelRatio)}, ${label.y})`,
+      )
       .classed(pstyle.tagActive, (label) => label.brush === active)
       .classed(pstyle.tagDimmed, (label) => active !== null && label.brush !== active);
     tags.filter((label) => label.brush === active).raise();

@@ -126,6 +126,16 @@ export function valueFormatter(
   return withOutlierBand(formatterFor(tickNotation(scale.ticks(tickCount), style.scientific)));
 }
 
+/**
+ * How far right of its group's origin an axis line is drawn: half a pixel at
+ * a device pixel ratio of 1, so that the one-pixel line covers whole pixels,
+ * as d3 does by default. What is centred on the axis line (brushes, their
+ * tags) is placed with the same offset.
+ */
+export function axisLineOffset(pixelRatio: number): number {
+  return pixelRatio > 1 ? 0 : 0.5;
+}
+
 /** The left axis of one column: tick count from its height, labels in the axis's style. */
 export function columnAxis(
   scale: ParamScale,
@@ -133,7 +143,10 @@ export function columnAxis(
   style: AxisStyle,
 ): d3.Axis<AxisValue> {
   const tickCount = tickCountFor(axisHeight);
-  const axis = d3.axisLeft<AxisValue>(scale).tickSizeOuter(0);
+  const axis = d3
+    .axisLeft<AxisValue>(scale)
+    .tickSizeOuter(0)
+    .offset(axisLineOffset(window.devicePixelRatio));
   if (scale.kind === "categorical") {
     const categories = scale.domain();
     const step = Math.max(1, Math.ceil((categories.length * PIXELS_PER_CATEGORY) / axisHeight));

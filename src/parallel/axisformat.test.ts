@@ -3,6 +3,7 @@ import { create_d3_scale, infertypes } from "../infertypes";
 import { PersistentStateInMemory } from "../lib/savedstate";
 import { type Datapoint, type DatapointValue, ParamType } from "../types";
 import {
+  axisLineOffset,
   axisStyle,
   columnAxis,
   columnAxisStyle,
@@ -134,5 +135,19 @@ describe("curve sampling", () => {
     expect(segmentSamples([{ x: 0 }, { x: 10 }], true)).toBe(8);
     expect(segmentSamples([{ x: 0 }, { x: 60 }, { x: 180 }], true)).toBe(21);
     expect(segmentSamples([{ x: 0 }, { x: 2000 }], true)).toBe(40);
+  });
+});
+
+describe("axis line", () => {
+  test("the axis line sits half a pixel in at a pixel ratio of 1 and on the origin above", () => {
+    expect(axisLineOffset(1)).toBe(0.5);
+    expect(axisLineOffset(1.5)).toBe(0);
+    expect(axisLineOffset(2)).toBe(0);
+  });
+
+  test("a column's axis draws its line at that offset", () => {
+    const scale = create_d3_scale(columnOf([1, 2, 3])).range([100, 0]);
+    const axis = columnAxis(scale, 100, columnAxisStyle(columnOf([1, 2, 3]), ParamType.NUMERIC, 5));
+    expect(axis.offset()).toBe(axisLineOffset(window.devicePixelRatio));
   });
 });
