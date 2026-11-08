@@ -78,10 +78,16 @@ test("hovering a line highlights it and names it", async ({ page }) => {
   if (box === null) {
     throw new Error("No plot");
   }
-  // Sweep down between two axes until the pointer meets a line.
+  // Sweep down halfway between two axes, clear of their brush bands, until the pointer meets a line.
+  const axes = await page
+    .locator("svg g.dimension .domain")
+    .evaluateAll((lines) =>
+      lines.map((line) => line.getBoundingClientRect().left).sort((a, b) => a - b),
+    );
+  const between = (axes[2] + axes[3]) / 2;
   const tooltip = page.getByTestId("line-tooltip");
   for (let fraction = 0.3; fraction < 0.95 && !(await tooltip.isVisible()); fraction += 0.02) {
-    await page.mouse.move(box.x + box.width * 0.33, box.y + box.height * fraction);
+    await page.mouse.move(between, box.y + box.height * fraction);
     await page.waitForTimeout(30);
   }
   await expect(tooltip).toBeVisible();

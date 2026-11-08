@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
+import { scrollAxesToEnd } from "./plot";
 
 async function loadDemo(page: Page): Promise<void> {
   await page.goto("/");
@@ -48,8 +49,8 @@ async function axisExtents(page: Page): Promise<{ axis: number; labelsLeft: numb
 
 test("many axes scroll sideways instead of crowding their tick labels", async ({ page }) => {
   await loadWideCsv(page, 40);
-  const frame = page.locator(".pplot-root");
-  const overflow = await frame.evaluate((element) => element.scrollWidth - element.clientWidth);
+  const scroller = page.getByTestId("pplot-scroller");
+  const overflow = await scroller.evaluate((element) => element.scrollWidth - element.clientWidth);
   expect(overflow).toBeGreaterThan(0);
   const axes = await axisExtents(page);
   // The uploaded columns, plus the uid HiPlot adds.
@@ -58,6 +59,22 @@ test("many axes scroll sideways instead of crowding their tick labels", async ({
     // Each axis's labels stay clear of the previous axis and its brush band.
     expect(axes[i].labelsLeft - axes[i - 1].axis).toBeGreaterThan(15);
   }
+});
+
+test("scrolling brings the far axes into view, wheel gestures included", async ({ page }) => {
+  await loadWideCsv(page, 40);
+  const svg = await page.locator("svg[aria-label='Parallel coordinates axes']").boundingBox();
+  if (svg === null) {
+    throw new Error("No plot");
+  }
+  const rightmost = async () => Math.max(...(await axisExtents(page)).map((axis) => axis.axis));
+  expect(await rightmost()).toBeGreaterThan(svg.x + svg.width);
+  await scrollAxesToEnd(page);
+  expect(await rightmost()).toBeLessThan(svg.x + svg.width);
+  const before = (await axisExtents(page))[0].axis;
+  await page.mouse.move(svg.x + svg.width / 2, svg.y + svg.height / 2);
+  await page.mouse.wheel(-300, 0);
+  await expect.poll(async () => (await axisExtents(page))[0].axis).toBeGreaterThan(before);
 });
 
 test("the last axis title is never cut", async ({ page }) => {
@@ -73,6 +90,15 @@ test("the last axis title is never cut", async ({ page }) => {
   );
   const last = titles[titles.length - 1];
   expect(last.text).toBe(last.dimension);
+  await scrollAxesToEnd(page);
+  const svg = await page.locator("svg[aria-label='Parallel coordinates axes']").boundingBox();
+  const title = await page
+    .locator(`.pplot-label[data-dimension='${last.dimension}']`)
+    .boundingBox();
+  if (svg === null || title === null) {
+    throw new Error("No plot or title");
+  }
+  expect(title.x + title.width).toBeLessThanOrEqual(svg.x + svg.width);
 });
 
 test.describe("column menu", () => {
@@ -162,7 +188,7 @@ test("a brush between two categories is tagged as selecting none", async ({ page
     .locator("svg g.dimension")
     .filter({ has: page.locator(".pplot-label[data-dimension='c']") });
   const overlay = dimension.locator(".pplot-brush rect.overlay");
-  await overlay.scrollIntoViewIfNeeded();
+  await scrollAxesToEnd(page);
   const box = await overlay.boundingBox();
   if (box === null) {
     throw new Error("No brush overlay");

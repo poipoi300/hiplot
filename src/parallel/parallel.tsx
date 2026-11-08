@@ -220,6 +220,9 @@ const BRUSH_TAG_HEIGHT = 18;
 const BRUSH_TAG_PADDING = 6;
 const BRUSH_TAG_GAP = 3;
 const BRUSH_TAG_MAX_PIXELS = 120;
+/** The tag font, as parallel.module.css sets it on .brushRange. */
+const BRUSH_TAG_FONT_PIXELS = 11.5;
+const BRUSH_TAG_FONT_WEIGHT = 600;
 
 /**
  * Horizontal layout. Tick labels sit `TICK_LABEL_OFFSET` left of their axis
@@ -267,6 +270,33 @@ function fitText(element: SVGTextElement, fullText: string, maxLength: number): 
   return element.getComputedTextLength();
 }
 
+/**
+ * Like `fitText`, with a measuring function instead of the DOM: brush tags
+ * change on every frame of a drag, and measuring SVG text forces a layout.
+ */
+export function fitWithMeasure(
+  fullText: string,
+  maxLength: number,
+  measure: (text: string) => number,
+): { text: string; width: number } {
+  const fullWidth = measure(fullText);
+  if (fullWidth <= maxLength) {
+    return { text: fullText, width: fullWidth };
+  }
+  let low = 0;
+  let high = fullText.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (measure(`${fullText.slice(0, middle)}…`) <= maxLength) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  const text = `${fullText.slice(0, low)}…`;
+  return { text, width: measure(text) };
+}
+
 /** A value tag at one end of a brush; `y` is the tag's vertical center. */
 interface BrushTag {
   edge: "top" | "bottom";
@@ -285,6 +315,8 @@ const HOVER_DISTANCE_PIXELS = 5;
 const CONTEXT_BIN = -1;
 /** "auto" switches to straight segments above this many rows, where curves blur into mush. */
 const STRAIGHT_LINES_ABOVE_ROWS = 10_000;
+/** Above this many rows, lines drawn during a drag are not anti-aliased. */
+const LIGHT_DRAG_ROWS = 20_000;
 /** Peak opacity of the deselected-rows layer per theme. */
 const CONTEXT_ALPHA_LIGHT = 0.28;
 const CONTEXT_ALPHA_DARK = 0.34;
@@ -305,6 +337,8 @@ const COUNT_FORMAT = new Intl.NumberFormat("en-US");
 const TOP_MARGIN_PIXELS = 120;
 const H_MARGIN_PIXELS = 20;
 export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlotState> {
+  /** Lays the plot out again, now (relayout) or once resizing settles (on_resize). */
+  relayout: (() => void) | null = null;
   on_resize: (() => void) | null = null;
   m = [
     TOP_MARGIN_PIXELS, // top
@@ -350,9 +384,20 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   tickLabelWidth = 40;
 
   // Rendering
-  /** The frame that scrolls sideways, and the plot inside it. */
   root_ref = React.createRef<HTMLDivElement>();
+  /**
+   * The plot scrolls virtually: it stays at the frame's width and draws the
+   * part of the axes in view, shifted by `scrollLeft`, so only what is on
+   * screen is painted and drawn. A scrollbar under it, over a spacer as wide
+   * as all the axes, sets the offset; so do horizontal wheel and trackpad
+   * gestures over the plot.
+   */
   plot_ref = React.createRef<HTMLDivElement>();
+  scroller_ref = React.createRef<HTMLDivElement>();
+  spacer_ref = React.createRef<HTMLDivElement>();
+  scrollLeft = 0;
+  /** Width of all the axes, in plot coordinates. */
+  contentW = 0;
   foreground_ref = React.createRef<HTMLCanvasElement>();
   foreground: CanvasRenderingContext2D | null = null;
   highlighted_ref = React.createRef<HTMLCanvasElement>();
@@ -454,6 +499,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     categoricalMaximumValues: 200,
   };
   componentWillUnmount() {
+    this.root_ref.current?.removeEventListener("wheel", this.onWheel);
     d3.select(this.svgg_ref.current).selectAll("*").remove();
     this.cancelDrawing();
     this.webgl?.dispose();
@@ -462,6 +508,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.cancelBrushMove();
     this.sendBrushExtents.cancel();
     this.fitTickLabelsAfterTransition.cancel();
+    if (this.scrollFrame !== null) {
+      cancelAnimationFrame(this.scrollFrame);
+    }
   }
   componentDidUpdate(prevProps: ParallelPlotData, prevState: ParallelPlotState) {
     if (prevState.height !== this.state.height || prevState.width !== this.state.width) {
@@ -575,7 +624,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
     this.props.window_state.height = this.state.height;
   }
+  /** Whether a brush or an axis is being dragged (see `antialiasedLines`). */
+  private interacting = false;
   onBrushStart = (): void => {
+    this.interacting = true;
     this.clearHover();
   };
   /** Brush moves are coalesced to one selection update per animation frame. */
@@ -590,6 +642,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     });
   };
   onBrushEnd = (): void => {
+    this.interacting = false;
     this.cancelBrushMove();
     this.sendBrushExtents();
     this.pplot?.brush(true);
@@ -678,7 +731,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
                 onMouseMove={this.onPointerMove}
                 onMouseLeave={this.clearHover}
               >
-                <g ref={this.svgg_ref} transform={`translate(${this.m[3]}, ${this.m[0]})`}></g>
+                <g ref={this.svgg_ref}></g>
               </svg>
               {this.state.hover !== null && (
                 <div
@@ -689,6 +742,14 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
                   {this.state.hover.text}
                 </div>
               )}
+            </div>
+            <div
+              ref={this.scroller_ref}
+              className={pstyle.scroller}
+              onScroll={this.onScroll}
+              data-testid="pplot-scroller"
+            >
+              <div ref={this.spacer_ref} className={pstyle.spacer} />
             </div>
           </div>
         </ResizableH>
@@ -799,7 +860,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     const row = geometry.rows[nearest];
     const value = row[this.props.colorby];
     const text = `${this.props.render_row_text(row)} · ${this.props.colorby} ${value === undefined ? "missing" : String(value)}`;
-    this.setState({ hover: { x: x + this.m[3], y: y + this.m[0], text } });
+    this.setState({ hover: { x: x + this.m[3] - this.scrollLeft, y: y + this.m[0], text } });
     if (row !== this.hoveredRow) {
       this.hoveredRow = row;
       this.props.setHighlighted([row]);
@@ -895,6 +956,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
     // Foreground canvas for the lines: WebGL2 when available, Canvas 2D otherwise
     const foregroundCanvas = mounted(this.foreground_ref);
+    // Not passive: a horizontal gesture over the plot scrolls the axes, not the page.
+    mounted(me.root_ref).addEventListener("wheel", me.onWheel, { passive: false });
     me.webgl = WebGLLineRenderer.create(foregroundCanvas);
     if (me.webgl === null) {
       const foreground = foregroundCanvas.getContext("2d");
@@ -922,6 +985,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
           .drag<SVGElement, string>()
           .container(() => mounted(me.svgg_ref))
           .on("start", (_event, d: string) => {
+            me.interacting = true;
             me.setState({
               dragging: {
                 col: d,
@@ -943,7 +1007,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
                 return {
                   dragging: {
                     col: d,
-                    pos: Math.min(me.w, Math.max(0, prevState.dragging.pos + eventdx)),
+                    pos: Math.min(me.contentW, Math.max(0, prevState.dragging.pos + eventdx)),
                     origin: prevState.dragging.origin,
                     dragging: true,
                   },
@@ -954,7 +1018,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
                 if (!me.state.dragging) {
                   return;
                 }
-                if (me.state.dragging.pos < 12 || me.state.dragging.pos > me.w - 12) {
+                if (me.state.dragging.pos < 12 || me.state.dragging.pos > me.contentW - 12) {
                   brushEl.style("fill", "red");
                 } else {
                   brushEl.style("fill", null);
@@ -970,6 +1034,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             me.dimensions_dom?.attr("transform", (dim) => `translate(${me.position(dim)})`);
           })
           .on("end", function (this: SVGElement, _event, d: string) {
+            me.interacting = false;
             if (!me.state.dragging) {
               d3.select(me.foreground_ref.current).style("opacity", null);
               return;
@@ -980,7 +1045,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
                 const extent = me.toggleInvertAxis(d);
                 me.update_ticks(d, extent);
               }
-            } else if (me.state.dragging.pos < 12 || me.state.dragging.pos > me.w - 12) {
+            } else if (me.state.dragging.pos < 12 || me.state.dragging.pos > me.contentW - 12) {
               // remove axis if dragged all the way left
               me.remove_axis(d);
             } else {
@@ -1205,8 +1270,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       });
     }
 
-    // scale to window size
-    this.on_resize = _.debounce(() => {
+    // Lays the plot out again for its size and the widest tick label.
+    this.relayout = () => {
       me.compute_dimensions();
 
       div
@@ -1224,7 +1289,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
       me.redrawLines();
       this.props.sendMessage("height_changed", () => null);
-    }, 100);
+    };
+    this.on_resize = _.debounce(this.relayout, 100);
 
     me.compute_dimensions();
     redraw_axis();
@@ -1348,8 +1414,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         widest = Math.max(widest, length);
       });
     if (Math.abs(widest - this.tickLabelWidth) > 0.5) {
+      // At once, so the first picture already has its final layout. The next
+      // pass measures the same labels, which ends the recursion.
       this.tickLabelWidth = widest;
-      this.on_resize?.();
+      this.relayout?.();
     }
   }
 
@@ -1433,13 +1501,15 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         })
         .attr("data-edge", (label) => label.edge)
         .attr("transform", (label) => `translate(0, ${label.y})`);
+      const measure = this.tagTextMeasure();
       tags.each(function (this: SVGGElement, label) {
         const text = d3.select(this).select<SVGTextElement>("text").node();
         if (text === null) {
           throw new Error("Brush tag lost its text");
         }
-        text.textContent = label.text;
-        const width = fitText(text, label.text, BRUSH_TAG_MAX_PIXELS) + 2 * BRUSH_TAG_PADDING;
+        const fitted = fitWithMeasure(label.text, BRUSH_TAG_MAX_PIXELS, measure);
+        text.textContent = fitted.text;
+        const width = fitted.width + 2 * BRUSH_TAG_PADDING;
         d3.select(this)
           .select("rect")
           .attr("x", -width / 2)
@@ -1449,18 +1519,74 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     });
   }
 
+  private tagMeasure: ((text: string) => number) | null = null;
+  /** Measures brush tag text on a canvas in the tags' font, without a DOM layout. */
+  private tagTextMeasure(): (text: string) => number {
+    if (this.tagMeasure !== null) {
+      return this.tagMeasure;
+    }
+    const context = document.createElement("canvas").getContext("2d");
+    if (context === null) {
+      throw new Error("Canvas 2D is not available");
+    }
+    const family = getComputedStyle(mounted(this.svg_ref)).fontFamily;
+    context.font = `${BRUSH_TAG_FONT_WEIGHT} ${BRUSH_TAG_FONT_PIXELS}px ${family}`;
+    this.tagMeasure = (text) => context.measureText(text).width;
+    return this.tagMeasure;
+  }
+
+  /** Shifts the axes by the scroll offset; lines follow on the next draw. */
+  placeAxes(): void {
+    mounted(this.svgg_ref).setAttribute(
+      "transform",
+      `translate(${this.m[3] - this.scrollLeft}, ${this.m[0]})`,
+    );
+  }
+  private scrollFrame: number | null = null;
+  /** Horizontal wheel and trackpad gestures, or shift+wheel, scroll the axes. */
+  onWheel = (event: WheelEvent): void => {
+    const scroller = mounted(this.scroller_ref);
+    const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY);
+    const delta = horizontal ? event.deltaX : event.shiftKey ? event.deltaY : 0;
+    if (delta === 0 || scroller.scrollWidth <= scroller.clientWidth) {
+      return;
+    }
+    event.preventDefault();
+    scroller.scrollLeft += delta;
+  };
+  onScroll = (): void => {
+    const left = mounted(this.scroller_ref).scrollLeft;
+    if (left === this.scrollLeft) {
+      return;
+    }
+    this.scrollLeft = left;
+    this.placeAxes();
+    this.clearHover();
+    if (this.scrollFrame === null) {
+      this.scrollFrame = requestAnimationFrame(() => {
+        this.scrollFrame = null;
+        this.redrawLines();
+      });
+    }
+  };
+
   compute_dimensions() {
     const layout = this.axisLayout();
-    const root = mounted(this.root_ref);
+    const scroller = mounted(this.scroller_ref);
     const plot = mounted(this.plot_ref);
-    plot.style.width = `${layout.contentWidth}px`;
-    // A horizontal scrollbar takes its height from the plot, inside the resizable frame.
-    plot.style.height = `${this.state.height}px`;
-    const scrollbar = root.offsetHeight - root.clientHeight;
+    mounted(this.spacer_ref).style.width = `${layout.contentWidth}px`;
+    // The scrollbar, when the axes need one, takes its height from the plot.
+    const overflows = layout.contentWidth > this.state.width;
+    scroller.style.display = overflows ? "block" : "none";
+    const scrollbar = overflows ? scroller.offsetHeight : 0;
     const height = this.state.height - scrollbar;
+    plot.style.width = `${this.state.width}px`;
     plot.style.height = `${height}px`;
-    d3.select(mounted(this.svg_ref)).attr("width", layout.contentWidth).attr("height", height);
-    this.w = layout.contentWidth - this.m[1] - this.m[3];
+    this.scrollLeft = overflows ? scroller.scrollLeft : 0;
+    d3.select(mounted(this.svg_ref)).attr("width", this.state.width).attr("height", height);
+    this.placeAxes();
+    this.w = this.state.width - this.m[1] - this.m[3];
+    this.contentW = layout.contentWidth - this.m[1] - this.m[3];
     this.h = height - this.m[0] - this.m[2];
     this.d3brush
       .extent([
@@ -1573,6 +1699,16 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return { r: parsed.r, g: parsed.g, b: parsed.b };
   }
 
+  /**
+   * Lines are anti-aliased except while a brush or an axis is dragged over
+   * more than LIGHT_DRAG_ROWS rows: anti-aliasing doubles the fragments of a
+   * frame, which then no longer fits the frame budget. The picture is
+   * anti-aliased again as soon as the drag ends.
+   */
+  antialiasedLines(): boolean {
+    return !this.interacting || this.props.rows_filtered.length <= LIGHT_DRAG_ROWS;
+  }
+
   /** Curves between axes unless the user chose straight lines, or "auto" meets many rows. */
   curvedLines(): boolean {
     if (this.state.lineShape === "auto") {
@@ -1595,7 +1731,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     webgl.setSelection(mask);
     webgl.draw({
       axes: this.state.dimensions.map((dimension) => ({
-        x: this.position(dimension),
+        x: this.position(dimension) - this.scrollLeft,
         pixels: geometry.pixels(
           dimension,
           this.yscale[dimension],
@@ -1607,6 +1743,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       lineWidth: LINE_WIDTH,
       pixelRatio: this.pixelRatio,
       curved: this.curvedLines(),
+      antialiased: this.antialiasedLines(),
       selectedCount,
       contextCount: mask.length - selectedCount,
       contextColor: this.contextColor(),
@@ -1693,7 +1830,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     const binning = this.props.color_binning;
     const bins = geometry.colorBins(binning, this.props.colorby);
     const axes = this.state.dimensions.map((dimension) => ({
-      x: this.xPosition(dimension),
+      x: this.xPosition(dimension) - this.scrollLeft,
       pixels: geometry.pixels(
         dimension,
         this.yscale[dimension],
@@ -1871,7 +2008,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         value === undefined ||
         ((value === "inf" || value === "-inf") && this.props.params_def[dimension].numeric);
       return {
-        x: this.xPosition(dimension),
+        x: this.xPosition(dimension) - this.scrollLeft,
         y: missing ? Number.NaN : this.yscale[dimension](value),
       };
     });

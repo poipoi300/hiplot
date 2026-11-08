@@ -236,6 +236,14 @@
   font: inherit;
   font-size: 12px;
   font-weight: 400;
+  text-align: left;
+}
+:is(.hip_thm--light, .hip_thm--dark)
+  .hiplot-table-panel
+  table.hiplot-table.dataTable
+  button.hiplot-column-filter {
+  color: var(--hip-muted);
+  cursor: text;
 }
 :is(.hip_thm--light, .hip_thm--dark)
   .hiplot-table-panel

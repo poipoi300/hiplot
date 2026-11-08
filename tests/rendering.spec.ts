@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
+import { scrollAxesToEnd } from "./plot";
 
 interface ParallelPlotHandle {
   webgl: unknown;
@@ -80,9 +81,9 @@ test("parallel lines fall back to Canvas 2D without WebGL2", async ({ page }) =>
   // Brushing still selects and redraws through the fallback.
   const countLine = page.getByTestId("selection-count");
   const before = await countLine.textContent();
+  // The first overlay is the rightmost axis, out of view when the axes scroll.
+  await scrollAxesToEnd(page);
   const overlay = page.locator("svg g.dimension .pplot-brush rect.overlay").first();
-  // Many axes scroll sideways: bring this one into view before pointing at it.
-  await overlay.scrollIntoViewIfNeeded();
   const box = await overlay.boundingBox();
   if (box === null) {
     throw new Error("No brush overlay");

@@ -172,7 +172,42 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
       this.columnQueries.set(column, String(input.val()));
       this.applyColumnFilters();
     });
+    input.on("blur", () => {
+      if (input.val() === "") {
+        input.replaceWith(this.filterControl(column));
+      }
+    });
     return input;
+  }
+  /**
+   * A column's filter until it is used: a button that turns into the input.
+   * Every text input is a scroll container to the browser, and dozens of
+   * them made each frame of a brush drag re-layerize the page.
+   */
+  filterControl(column: string): JQuery<HTMLButtonElement> {
+    const button = $<HTMLButtonElement>('<button type="button">')
+      .addClass("hiplot-column-filter")
+      .attr("aria-label", `Filter ${column}`)
+      .attr("title", FILTER_HINT)
+      .text("Filter");
+    const activate = (): void => {
+      const input = this.filterInput(column);
+      button.replaceWith(input);
+      input.trigger("focus");
+    };
+    button.on("mousedown", (event) => event.stopPropagation());
+    button.on("click", (event) => {
+      event.stopPropagation();
+      activate();
+    });
+    button.on("keydown", (event) => {
+      event.stopPropagation();
+      // A printable key starts typing: focus moves before the key's input lands.
+      if (event.key.length === 1) {
+        activate();
+      }
+    });
+    return button;
   }
   /** Shows the sort priority on every sorted column once more than one is. */
   markOrderPriorities(): void {
@@ -197,8 +232,11 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
       return;
     }
     const node = dt.buttons()[0].node;
-    const results = dt.rows({ search: "applied" }).count();
-    node.classList.toggle("d-none", !this.isSearching() || results === 0);
+    // Counting the rows a search kept walks all of them: only when searching.
+    node.classList.toggle(
+      "d-none",
+      !this.isSearching() || dt.rows({ search: "applied" }).count() === 0,
+    );
   }
   async mountDt() {
     if (!this.props.params_def.uid) {
@@ -246,7 +284,7 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
       titles.append(
         $("<th>").append($("<span />").attr("class", pd.label_css).html(pd.label_html)),
       );
-      filters.append($("<th>").append(this.filterInput(column)));
+      filters.append($("<th>").append(this.filterControl(column)));
     }
     dom.append($("<thead>").append(titles, filters));
     const columns: Array<ConfigColumns> = this.ordered_cols.map((x) => {
@@ -259,10 +297,14 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
       };
       if (x !== "" && pd.numeric) {
         // Shown rounded with the exact value in a tooltip; sorted and searched exactly.
-        column.render = (data: DatapointValue, type: string) =>
-          type === "display" && typeof data === "number"
-            ? `<span title="${data}">${formatTableNumber(data)}</span>`
-            : data;
+        // Only the display rendering is a function: sorting and searching
+        // read the value itself, without a call per row.
+        column.render = {
+          display: (data: DatapointValue) =>
+            typeof data === "number"
+              ? `<span title="${data}">${formatTableNumber(data)}</span>`
+              : data,
+        };
       }
       return column;
     });

@@ -11,18 +11,24 @@
   top: 0;
   left: 0;
 }
-/* The frame scrolls sideways when the axes need more room than it has. */
 .parallel-plot-chart {
   position: relative;
   margin-top: 4px;
-  overflow-x: auto;
-  overflow-y: hidden;
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
 }
 .plot {
   position: relative;
+  overflow: hidden;
+}
+/* The scrollbar of the axes, under the plot, when they need more room than it has. */
+.scroller {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.spacer {
+  height: 1px;
 }
 
 /* Brushes: a filled band in the accent color, its value range labelled at both ends. */
@@ -45,7 +51,8 @@
 }
 .brushTag rect {
   fill: var(--hip-brush-stroke);
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.25));
+  stroke: var(--hip-tick-halo);
+  stroke-width: 1.5px;
 }
 .brushRange {
   fill: var(--hip-bg);

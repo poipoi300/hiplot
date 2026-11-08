@@ -139,7 +139,8 @@ test("window.hiplot.render returns a HiPlot instance-compatible object", async (
 
 test("context menu opens on axis label right-click", async ({ page }) => {
   await loadDemo(page);
-  const label = page.locator(".pplot-label").first();
+  // Axes are drawn right to left: the last title is the leftmost axis, always in view.
+  const label = page.locator(".pplot-label").last();
   await expect(label).toBeVisible();
   await label.click({ button: "right" });
   await expect(page.locator(".context-menu.show")).toBeVisible();
@@ -253,7 +254,7 @@ test("hide and restore axis via context menu", async ({ page }) => {
   const countBefore = await dims.count();
   expect(countBefore).toBeGreaterThan(2);
 
-  const label = page.locator(".pplot-label").first();
+  const label = page.locator(".pplot-label").last();
   await label.click({ button: "right" });
   await expect(page.locator(".context-menu.show")).toBeVisible();
 
@@ -285,7 +286,8 @@ test("distribution switches axes on menu selection", async ({ page }) => {
       return textParts.join(" ").trim();
     }),
   );
-  const uniqueLabels = Array.from(new Set(labelTexts.filter((text) => text.length > 0)));
+  // The last titles are the leftmost axes, in view however wide the plot is.
+  const uniqueLabels = Array.from(new Set(labelTexts.filter((text) => text.length > 0))).reverse();
   expect(uniqueLabels.length).toBeGreaterThanOrEqual(2);
   const axis1 = uniqueLabels[0];
   const axis2 = uniqueLabels[1];

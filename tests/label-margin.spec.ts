@@ -1,4 +1,5 @@
 import { expect, test } from "./fixtures";
+import { scrollAxesToEnd } from "./plot";
 
 test.describe("Label Margin Tests", () => {
   test("labels should not be cut off with increased top margin", async ({ page }) => {
@@ -28,13 +29,21 @@ test.describe("Label Margin Tests", () => {
     const svg = page.locator("svg[aria-label='Parallel coordinates axes']");
     const svgBox = await svg.boundingBox();
     expect(svgBox).not.toBeNull();
+    // The axes scroll sideways when they need more room than the plot has.
+    // Scrolled to their end, every title in view (it starts inside the plot)
+    // lies entirely inside it: the right edge leaves room for the last one.
+    await scrollAxesToEnd(page);
+    const svgLeft = svgBox?.x ?? 0;
+    const svgRight = svgLeft + (svgBox?.width ?? 0);
     const boxes = await labels.evaluateAll((elements) =>
       elements.map((element) => {
         const rect = element.getBoundingClientRect();
         return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
       }),
     );
-    for (const box of boxes) {
+    const inView = boxes.filter((box) => box.left >= svgLeft - 1 && box.left < svgRight);
+    expect(inView.length).toBeGreaterThan(0);
+    for (const box of inView) {
       expect(box.top).toBeGreaterThanOrEqual((svgBox?.y ?? 0) - 1);
       expect(box.left).toBeGreaterThanOrEqual((svgBox?.x ?? 0) - 1);
       expect(box.right).toBeLessThanOrEqual((svgBox?.x ?? 0) + (svgBox?.width ?? 0) + 1);

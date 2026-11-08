@@ -34,6 +34,11 @@ export interface LineFrame {
   pixelRatio: number;
   /** Monotone splines through the axes, or straight segments. */
   curved: boolean;
+  /**
+   * Anti-aliased strips, or one-pixel lines: half the fragments, for the
+   * frames of a brush or axis drag over many rows (see ParallelPlot).
+   */
+  antialiased: boolean;
   /** Selected and deselected line counts, which set the density scale. */
   selectedCount: number;
   contextCount: number;
@@ -74,8 +79,9 @@ const DRAW_ALL = 2;
 /**
  * One instance per segment of a line. A segment is a triangle strip through
  * `u_samples` points along it, widened on both sides by the half line width
- * plus one device pixel; `v_across` is the signed distance from the center
- * line in device pixels, from which fragments take their coverage.
+ * plus half a device pixel, where coverage reaches zero; `v_across` is the
+ * signed distance from the center line in device pixels, from which
+ * fragments take their coverage.
  */
 const VERTEX_SHADER = `#version 300 es
 precision highp float;
@@ -94,6 +100,7 @@ uniform int u_rowsPerColumn;
 uniform int u_samples;
 uniform int u_keep;
 uniform bool u_curved;
+uniform bool u_antialiased;
 uniform vec2 u_deviceScale;
 uniform vec2 u_viewport;
 uniform float u_halfWidth;
@@ -180,8 +187,9 @@ void main() {
     yRight = yLeft;
   }
 
-  int point = gl_VertexID / 2;
-  float side = (gl_VertexID & 1) == 0 ? -1.0 : 1.0;
+  // Strips take two vertices per point, one on each side; plain lines one.
+  int point = u_antialiased ? gl_VertexID / 2 : gl_VertexID;
+  float side = !u_antialiased ? 0.0 : (gl_VertexID & 1) == 0 ? -1.0 : 1.0;
   float t = float(point) / float(u_samples - 1);
   float u = 1.0 - t;
   float handle = ${SPLINE_HANDLE.toFixed(6)} * (xRight - xLeft);
@@ -195,7 +203,7 @@ void main() {
   position *= u_deviceScale;
   tangent *= u_deviceScale;
   vec2 direction = dot(tangent, tangent) > 1e-12 ? normalize(tangent) : vec2(1.0, 0.0);
-  float extent = u_halfWidth + 1.0;
+  float extent = u_halfWidth + 0.5;
   position += vec2(-direction.y, direction.x) * side * extent;
   gl_Position = vec4(
     position.x / u_viewport.x * 2.0 - 1.0,
@@ -601,7 +609,8 @@ export class WebGLLineRenderer {
       gl.deleteTexture(this.density.selected);
       gl.deleteTexture(this.density.context);
     }
-    const target = (): WebGLTexture => {
+    // Selected lines need a color sum and a count; deselected ones a count only.
+    const target = (format: number): WebGLTexture => {
       const texture = gl.createTexture();
       if (texture === null) {
         throw new Error("Could not create a WebGL texture");
@@ -609,11 +618,11 @@ export class WebGLLineRenderer {
       gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA16F, width, height);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, format, width, height);
       return texture;
     };
-    const selected = target();
-    const context = target();
+    const selected = target(gl.RGBA16F);
+    const context = target(gl.R16F);
     const framebuffer = gl.createFramebuffer();
     if (framebuffer === null) {
       throw new Error("Could not create a WebGL framebuffer");
@@ -649,7 +658,12 @@ export class WebGLLineRenderer {
       gl.drawingBufferHeight / Math.max(1, frame.height),
     );
     gl.uniform2f(program.uniform("u_viewport"), gl.drawingBufferWidth, gl.drawingBufferHeight);
-    gl.uniform1f(program.uniform("u_halfWidth"), (frame.lineWidth * frame.pixelRatio) / 2);
+    gl.uniform1i(program.uniform("u_antialiased"), frame.antialiased ? 1 : 0);
+    // Plain lines cover their pixels fully: coverage() is 1 at v_across = 0.
+    gl.uniform1f(
+      program.uniform("u_halfWidth"),
+      frame.antialiased ? (frame.lineWidth * frame.pixelRatio) / 2 : 0.5,
+    );
     return samples;
   }
 
@@ -657,9 +671,9 @@ export class WebGLLineRenderer {
     const gl = this.gl;
     gl.bindVertexArray(this.vertexArray);
     gl.drawArraysInstanced(
-      gl.TRIANGLE_STRIP,
+      frame.antialiased ? gl.TRIANGLE_STRIP : gl.LINE_STRIP,
       0,
-      2 * samples,
+      frame.antialiased ? 2 * samples : samples,
       this.rowCount * segmentsPerLine(frame.axes.length),
     );
     gl.bindVertexArray(null);

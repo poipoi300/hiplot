@@ -16,6 +16,15 @@ const header = (page: Page, column: string) =>
 
 const info = (page: Page) => page.locator(".dt-info").textContent();
 
+/** A column's filter input, opening it from its button when it is not in use yet. */
+async function columnFilter(page: Page, column: string) {
+  const button = page.getByRole("button", { name: `Filter ${column}`, exact: true });
+  if ((await button.count()) > 0) {
+    await button.click();
+  }
+  return page.getByRole("textbox", { name: `Filter ${column}` });
+}
+
 test("sort indicators sit right of the title on text and numeric columns", async ({ page }) => {
   await loadDemo(page);
   for (const column of ["optimizer", "exp_metric"]) {
@@ -59,10 +68,10 @@ test("shift-click adds a secondary sort and numbers the priorities", async ({ pa
 test("column filters combine and their rows can be selected", async ({ page }) => {
   await loadDemo(page);
   const all = await info(page);
-  await page.getByRole("textbox", { name: "Filter optimizer" }).fill("adam");
+  await (await columnFilter(page, "optimizer")).fill("adam");
   await expect.poll(() => info(page)).not.toBe(all);
   const adam = await info(page);
-  await page.getByRole("textbox", { name: "Filter exp_metric" }).fill("<0.01");
+  await (await columnFilter(page, "exp_metric")).fill("<0.01");
   await expect.poll(() => info(page)).not.toBe(adam);
   const select = page.getByRole("button", { name: "Select results" });
   await expect(select).toBeVisible();
@@ -71,15 +80,15 @@ test("column filters combine and their rows can be selected", async ({ page }) =
   await expect(page.getByTestId("selection-count")).toHaveText(
     new RegExp(`^${shown.toLocaleString("en-US")} of`),
   );
-  await page.getByRole("textbox", { name: "Filter exp_metric" }).fill("");
-  await page.getByRole("textbox", { name: "Filter optimizer" }).fill("");
+  await (await columnFilter(page, "exp_metric")).fill("");
+  await (await columnFilter(page, "optimizer")).fill("");
   await expect(select).toBeHidden();
 });
 
 test("typing in a column filter does not sort the column", async ({ page }) => {
   await loadDemo(page);
-  const filter = page.getByRole("textbox", { name: "Filter exp_metric" });
-  await filter.click();
+  const filter = await columnFilter(page, "exp_metric");
+  await expect(filter).toBeFocused();
   await filter.press("Enter");
   await expect(header(page, "exp_metric")).not.toHaveClass(/dt-ordering-/);
 });
