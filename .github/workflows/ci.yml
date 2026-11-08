@@ -31,14 +31,16 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
+      # Tools only: installing the project needs the built JS bundle, which
+      # this job has no use for.
       - name: Install dev tools
-        run: uv sync --group dev
+        run: uv sync --group dev --no-install-project
       - name: ruff format (check only)
-        run: uv run ruff format --check .
+        run: uv run --no-sync ruff format --check .
       - name: ruff check
-        run: uv run ruff check .
+        run: uv run --no-sync ruff check .
       - name: mypy
-        run: uv run mypy .
+        run: uv run --no-sync mypy .
 
   web-lint-and-types:
     runs-on: ubuntu-latest
@@ -69,8 +71,10 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
       - name: Install dependencies
+        # The bundle comes first: the Python package force-includes it.
         run: |
           bun install --frozen-lockfile
+          bun run build
           uv sync --extra server
           bun run playwright install --with-deps chromium
       - name: Playwright against an instrumented bundle
