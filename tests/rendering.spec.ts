@@ -181,7 +181,8 @@ for (const deviceScaleFactor of [0.5, 1, 2]) {
       const bundle = names.map((_, i) => i % 2);
       const mirrored = names.map((_, i) => 1 - (i % 2));
       const rows = [...Array.from({ length: 200 }, () => bundle), mirrored];
-      await page.goto("/?provider=upload");
+      // The rows' uids, their index, would be an axis of their own, fanning the bundle out.
+      await page.goto(`/?provider=upload&hip.PARALLEL_PLOT.hide=${encodeURIComponent('["uid"]')}`);
       await page.locator("input[type=file]").setInputFiles({
         name: "bundle.csv",
         mimeType: "text/csv",
