@@ -146,10 +146,14 @@ class StepLearnToSlice extends React.Component<TutorialStepProps> {
         <p>
           Slicing along an axis allows to discover patterns in the data.{" "}
           <strong>Drag vertically along an axis</strong> to display only a subset of the data. You
-          also can do it on several axis at the same time.
+          also can do it on several axis at the same time. Drag on another part of the same axis to
+          add a second slice: the axis then keeps the lines that go through any of its slices.
         </p>
         <hr />
-        <p className="mb-0">To remove a slicing on an axis, click on the axis.</p>
+        <p className="mb-0">
+          Drag a slice to move it, or its top or bottom edge to resize it. To remove a slice, click
+          on it.
+        </p>
       </div>
     );
   }

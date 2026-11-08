@@ -14,8 +14,17 @@ This is the primary surface for slicing and filtering high-dimensional data.
 
 ## Core interactions
 
-- **Brush axis ranges**: drag vertically on an axis to filter by value interval.
-- **Clear brush**: click/tap outside the active brush on that axis.
+- **Brush axis ranges**: drag vertically on an empty part of an axis to filter by value
+  interval. Dragging on another part of the same axis adds a second brush: an axis keeps
+  the rows inside any of its brushes, and the axes combine, so a row is selected when it
+  passes every brushed axis. On a categorical axis a brush selects the categories inside it.
+- **Move and resize a brush**: drag inside a brush to move it, drag its top or bottom edge
+  to resize it. Brushes that overlap or touch merge into one when you release.
+- **Remove a brush**: click or tap it without dragging. "Clear brushes on this axis" in
+  the axis menu (right-click or long-press) removes all of one axis's brushes, and
+  **Reset brushes** removes every brush.
+- **Range tags**: each brush shows its range in a tag above and below it. A tag moves just
+  inside its brush when an axis end or a neighboring brush leaves no room outside.
 - **Reorder axes**: drag axis headers left/right.
 - **Invert axis**: toggle axis direction from the label/context menu.
 - **Hide axis**: remove columns from the display.
@@ -48,4 +57,5 @@ For the full schema, see `docs/plugins_reference.rst`.
 
 - Columns with a single effective value can disappear unless you force a range in parameter definitions.
 - High-cardinality categorical columns can be hidden automatically by `categoricalMaximumValues`.
-- Hidden/inverted/order state is persisted via persistent state and restored on reload.
+- Hidden/inverted/order state and the brushes are persisted via persistent state and restored on reload.
+- Keep and Exclude save the brushes of an axis as one filter that replays the union of their ranges.

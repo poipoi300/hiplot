@@ -78,6 +78,10 @@ After the visualization has loaded, and in another cell, python code can query i
 
     While all columns will have a :code:`type` and a brush extent (:code:`brush_extents_normalized`), only numeric columns have a :code:`range` field. Categorical fields have a list of selected values instead
 
+.. note::
+
+    An axis can hold several brushes; a row passes the axis when it is inside any of them. Each column also has a :code:`brushes` list with these same fields for every brush, from the top of the axis. The fields above span all the brushes of the column, from the highest to the lowest, including the gaps between them.
+
 
 .. warning::
 

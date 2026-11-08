@@ -42,8 +42,8 @@ answer about a sweep without writing plotting code.
 - Embedded in Jupyter (light or dark JupyterLab themes), Streamlit, or a
   browser tab next to the training code; often on a laptop screen, sometimes
   a 4K monitor. *(inferred)*
-- Long sessions of brushing and comparing; the page state (brushes aside)
-  lives in the URL so a view can be shared or reloaded.
+- Long sessions of brushing and comparing; the page state, brushes
+  included, lives in the URL so a view can be shared or reloaded.
 - Data arrives as Python dicts, CSV, or experiment fetchers; columns are
   numeric, log-scale numeric, categorical, timestamps, with NaN and inf.
 
