@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
+import { axisButton, pickColumn } from "./plot";
 
 async function loadDemo(page: Page): Promise<void> {
   await page.goto("/");
@@ -10,8 +11,8 @@ async function loadDemo(page: Page): Promise<void> {
 }
 
 const scatterPanels = (page: Page) => page.getByTestId("scatter-panel");
-const select = (page: Page, axis: string) =>
-  scatterPanels(page).last().getByLabel(axis, { exact: true });
+const pick = (page: Page, axis: string, column: string | null) =>
+  pickColumn(scatterPanels(page).last(), axis, column);
 
 async function reloadDemo(page: Page): Promise<void> {
   await page.reload();
@@ -28,21 +29,21 @@ test("a scatter plot grows from a distribution to an XY then a 3D scatter, and i
   const panel = scatterPanels(page).last();
   await expect(panel).toContainText("Pick X to see its distribution");
 
-  await select(page, "X").selectOption("lr");
+  await pick(page, "X", "lr");
   await expect(panel.locator("svg").first()).toBeVisible();
   await expect(panel).toContainText("Distribution of X");
 
-  await select(page, "Y").selectOption("exp_metric");
+  await pick(page, "Y", "exp_metric");
   await expect(panel.getByRole("img", { name: "XY scatter plot" })).toBeVisible();
 
-  await select(page, "Z").selectOption("r");
+  await pick(page, "Z", "r");
   const scatter3d = panel.getByRole("img", { name: /3D scatter plot/ });
   await expect(scatter3d).toBeVisible();
   await expect(panel.locator("[data-axis-label='z-name']")).toHaveText("r");
 
   await reloadDemo(page);
   await expect(scatterPanels(page)).toHaveCount(before + 1);
-  await expect(select(page, "Z")).toHaveValue("r");
+  await expect(axisButton(scatterPanels(page).last(), "Z")).toHaveAccessibleName("Z: r");
 });
 
 test("the 3D scatter turns when dragged and names the point under the pointer", async ({
@@ -50,9 +51,9 @@ test("the 3D scatter turns when dragged and names the point under the pointer", 
 }) => {
   await loadDemo(page);
   await page.getByRole("button", { name: "Add scatter plot" }).click();
-  await select(page, "X").selectOption("lr");
-  await select(page, "Y").selectOption("exp_metric");
-  await select(page, "Z").selectOption("r");
+  await pick(page, "X", "lr");
+  await pick(page, "Y", "exp_metric");
+  await pick(page, "Z", "r");
   const canvas = scatterPanels(page)
     .last()
     .getByRole("img", { name: /3D scatter plot/ });
@@ -99,7 +100,7 @@ test("there is no separate distributions section; the axis menu opens a one-axis
   await page.locator(".pplot-label[data-dimension='optimizer']").click({ button: "right" });
   await page.locator(".context-menu .dropdown-item", { hasText: "View distribution" }).click();
   await expect(scatterPanels(page)).toHaveCount(before + 1);
-  await expect(select(page, "X")).toHaveValue("optimizer");
+  await expect(axisButton(scatterPanels(page).last(), "X")).toHaveAccessibleName("X: optimizer");
   await expect(
     page.locator('[data-testid="distribution-plot"][data-axis="optimizer"]'),
   ).toBeVisible();
@@ -146,9 +147,9 @@ test("a row hovered elsewhere is marked in a one-axis plot", async ({ page }) =>
 async function open3D(page: Page) {
   await loadDemo(page);
   await page.getByRole("button", { name: "Add scatter plot" }).click();
-  await select(page, "X").selectOption("lr");
-  await select(page, "Y").selectOption("exp_metric");
-  await select(page, "Z").selectOption("r");
+  await pick(page, "X", "lr");
+  await pick(page, "Y", "exp_metric");
+  await pick(page, "Z", "r");
   const canvas = scatterPanels(page)
     .last()
     .getByRole("img", { name: /3D scatter plot/ });
@@ -246,11 +247,75 @@ test("the 3D scatter zooms only for wheel gestures that start on it", async ({ p
   expect(await page.evaluate(() => window.scrollY)).toBe(settled);
 });
 
+test("a scatter axis is picked from a filtered list, by keyboard or pointer, or set to None", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  await page.getByRole("button", { name: "Add scatter plot" }).click();
+  const panel = scatterPanels(page).last();
+  const x = axisButton(panel, "X");
+  await expect(x).toHaveAccessibleName("X: None");
+  await x.click();
+  const list = panel.getByRole("dialog", { name: "Column on X" });
+  await expect(list.getByRole("option", { name: "Select all" })).toHaveCount(0);
+  await expect(list.getByRole("button")).toHaveCount(0);
+  await expect(list.getByRole("option", { name: "None", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  const filter = list.getByRole("combobox", { name: "Filter columns" });
+  await expect(filter).toBeFocused();
+  await filter.fill("exp_met");
+  await filter.press("Enter");
+  await expect(list).toBeHidden();
+  await expect(x).toHaveAccessibleName("X: exp_metric");
+
+  await x.click();
+  await expect(list.getByRole("option", { name: "exp_metric", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(list.getByRole("option", { selected: true })).toHaveCount(1);
+  await list.getByRole("option", { name: "None", exact: true }).click();
+  await expect(x).toHaveAccessibleName("X: None");
+});
+
+test("an axis list near the bottom of the window opens above its button and closes on scroll", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  await page.getByRole("button", { name: "Add scatter plot" }).click();
+  const panel = scatterPanels(page).last();
+  const x = axisButton(panel, "X");
+  await x.scrollIntoViewIfNeeded();
+  const viewport = page.viewportSize();
+  const button = await x.boundingBox();
+  if (viewport === null || button === null) {
+    throw new Error("No viewport or button");
+  }
+  // Brings the button near the bottom of the window.
+  await page.evaluate(
+    (by) => window.scrollBy(0, by),
+    button.y + button.height - viewport.height + 20,
+  );
+  await x.click();
+  const list = panel.getByRole("dialog", { name: "Column on X" });
+  await expect(list).toBeVisible();
+  const [opened, placed] = [await x.boundingBox(), await list.boundingBox()];
+  if (opened === null || placed === null) {
+    throw new Error("No button or list");
+  }
+  expect(placed.y + placed.height).toBeLessThanOrEqual(opened.y);
+  expect(placed.y).toBeGreaterThanOrEqual(0);
+  await page.mouse.wheel(0, -120);
+  await expect(list).toBeHidden();
+});
+
 test("a scatter shows the correlations of the selection and fits it", async ({ page }) => {
   await loadDemo(page);
   await page.getByRole("button", { name: "Add scatter plot" }).click();
-  await select(page, "X").selectOption("lr");
-  await select(page, "Y").selectOption("exp_metric");
+  await pick(page, "X", "lr");
+  await pick(page, "Y", "exp_metric");
   const panel = scatterPanels(page).last();
   const stats = panel.getByTestId("scatter-stats");
   const table = stats.getByRole("table", { name: "Correlation of the selected rows" });
@@ -267,7 +332,7 @@ test("a scatter shows the correlations of the selection and fits it", async ({ p
   await expect(stats).toContainText("12 equal bins");
   await expect(panel.getByTestId("scatter-fit")).toHaveAttribute("d", /^M/);
 
-  await select(page, "X").selectOption("optimizer");
+  await pick(page, "X", "optimizer");
   await expect(panel.getByTestId("scatter-category-mean")).toHaveCount(3);
   await expect(stats).toContainText("per optimizer, with its 95% interval");
 });
@@ -277,8 +342,8 @@ test("a scatter's fit is clipped out of the band of inf, NaN and missing values"
 }) => {
   await loadDemo(page);
   await page.getByRole("button", { name: "Add scatter plot" }).click();
-  await select(page, "X").selectOption("lr");
-  await select(page, "Y").selectOption("special_values");
+  await pick(page, "X", "lr");
+  await pick(page, "Y", "special_values");
   const panel = scatterPanels(page).last();
   await expect(panel.getByTestId("scatter-fit")).toHaveAttribute("d", /^M/);
   const svg = panel.getByRole("img", { name: "XY scatter plot" });

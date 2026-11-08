@@ -7,6 +7,7 @@
 
 import type React from "react";
 import type { ParamDefMap } from "../infertypes";
+import type { PickableColumn } from "../lib/columnpicker";
 import controls from "../lib/controls.module.css";
 import { labelTextFromHtml } from "../lib/escape";
 import style from "./plots.module.css";
@@ -43,37 +44,12 @@ export function SectionBar({
   );
 }
 
-/** A labelled column picker; optional ones offer "None". */
-export function ColumnSelect({
-  label,
-  value,
-  params_def,
-  optional,
-  onChange,
-}: {
-  label: string;
-  value: string | null;
-  params_def: ParamDefMap;
-  optional: boolean;
-  onChange: (column: string | null) => void;
-}): React.ReactElement {
-  return (
-    <label className={style.columnSelect}>
-      <span>{label}</span>
-      <select
-        aria-label={label}
-        value={value ?? ""}
-        onChange={(event) => onChange(event.target.value === "" ? null : event.target.value)}
-      >
-        {(optional || value === null) && <option value="">{optional ? "None" : "Pick…"}</option>}
-        {Object.keys(params_def).map((column) => (
-          <option key={column} value={column}>
-            {labelTextFromHtml(params_def[column].label_html, column)}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
+/** Every column of an experiment, named as its label reads, for a column picker. */
+export function pickableColumns(params_def: ParamDefMap): PickableColumn[] {
+  return Object.keys(params_def).map((name) => ({
+    name,
+    label: labelTextFromHtml(params_def[name].label_html, name),
+  }));
 }
 
 /** The header of one plot: its controls, and a button that closes it. */

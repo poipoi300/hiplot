@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
+import { pickColumn } from "./plot";
 
 // The members of the live HiPlot objects (`window.hiplot_last_instance`) that the
 // page.evaluate bodies below reach into. They run in the browser, so these are
@@ -625,11 +626,7 @@ test("table keeps correct column-value mapping after column reorder and brush up
 
 test("plotxy timestamp axis labels are not scientific notation", async ({ page }) => {
   await loadDemo(page);
-  await page
-    .getByTestId("scatter-panel")
-    .first()
-    .getByLabel("X", { exact: true })
-    .selectOption("timestamp");
+  await pickColumn(page.getByTestId("scatter-panel").first(), "X", "timestamp");
   await expect(page.locator(".plotxy-label").filter({ hasText: "timestamp" })).toBeVisible();
   const result = await page.evaluate(async () => {
     const axisGroups = Array.from(document.querySelectorAll("svg .axis_render"));

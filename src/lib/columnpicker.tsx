@@ -125,6 +125,19 @@ export function filteredActive(options: ReadonlyArray<PickerOption>, query: stri
 const isChosen = (choice: ColumnChoice, name: string | null): boolean =>
   choice.kind === "several" ? name !== null && choice.chosen.has(name) : choice.chosen === name;
 
+const CHEVRON = (
+  <svg className={style.chevron} width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+    <path
+      d="M2 3.5 5 6.5 8 3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 const CHECK = (
   <svg className={style.check} width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
     <path
@@ -163,6 +176,13 @@ function ColumnList({ columns, choice, label, close }: ColumnListProps): React.R
   const listId = useId();
   const optionId = (index: number): string => `${listId}-option-${index}`;
   const listRef = useRef<HTMLDivElement>(null);
+  const filterRef = useRef<HTMLInputElement>(null);
+
+  // The panel opens to be typed into. Focusing must not scroll the page,
+  // which would close the panel.
+  useEffect(() => {
+    filterRef.current?.focus({ preventScroll: true });
+  }, []);
 
   useEffect(() => {
     if (keyboard && active !== null) {
@@ -209,6 +229,7 @@ function ColumnList({ columns, choice, label, close }: ColumnListProps): React.R
   return (
     <>
       <input
+        ref={filterRef}
         type="search"
         role="combobox"
         className={style.search}
@@ -219,8 +240,6 @@ function ColumnList({ columns, choice, label, close }: ColumnListProps): React.R
         aria-autocomplete="list"
         aria-activedescendant={active === null ? undefined : optionId(active)}
         value={query}
-        // biome-ignore lint/a11y/noAutofocus: the panel opens to be typed into.
-        autoFocus
         onChange={(event) => {
           const nextQuery = event.target.value;
           const nextActive = filteredActive(
@@ -332,6 +351,52 @@ export function ColumnPicker({
           columns={columns}
           choice={{ kind: "several", chosen: shown, onShow, onHide }}
           label="Columns"
+          close={close}
+        />
+      )}
+    </Popover>
+  );
+}
+
+interface ColumnSelectProps {
+  /** The axis the column goes on, as its label reads ("X"). */
+  axis: string;
+  columns: ReadonlyArray<PickableColumn>;
+  value: string | null;
+  onChange: (column: string | null) => void;
+}
+
+/** A button naming the column on an axis; it opens the list to pick another, or None. */
+export function ColumnSelect({
+  axis,
+  columns,
+  value,
+  onChange,
+}: ColumnSelectProps): React.ReactElement {
+  const shown =
+    value === null ? NONE_LABEL : (columns.find((column) => column.name === value)?.label ?? value);
+  return (
+    <Popover
+      trigger={
+        <>
+          <span className={style.axis}>{axis}</span>
+          <span className={value === null ? `${style.value} ${style.noValue}` : style.value}>
+            {shown}
+          </span>
+          {CHEVRON}
+        </>
+      }
+      buttonLabel={`${axis}: ${shown}`}
+      label={`Column on ${axis}`}
+      title={`Choose the column on ${axis}`}
+      align="start"
+      testId={`axis-picker-${axis.toLowerCase()}`}
+    >
+      {(close) => (
+        <ColumnList
+          columns={columns}
+          choice={{ kind: "one", chosen: value, onPick: onChange }}
+          label={`Columns for ${axis}`}
           close={close}
         />
       )}

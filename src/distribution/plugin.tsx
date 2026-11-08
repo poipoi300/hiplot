@@ -8,10 +8,11 @@
 import $ from "jquery";
 import React from "react";
 import _ from "underscore";
+import { ColumnSelect } from "../lib/columnpicker";
 import { fitColor } from "../lib/fitcolor";
 import { ResizableH } from "../lib/resizable";
 import { isString, readState } from "../lib/savedstate";
-import { ColumnSelect, PanelHeader, SectionBar } from "../plots/frame";
+import { PanelHeader, pickableColumns, SectionBar } from "../plots/frame";
 import { type DistributionPanel, isDistributionPanels, nextPanelId } from "../plots/panels";
 import pstyle from "../plots/plots.module.css";
 import type { HiPlotPluginData } from "../plugin";
@@ -202,10 +203,9 @@ export class HiPlotDistributionPlugin extends React.Component<
             <PanelHeader name="distribution" onClose={() => this.closePanel(panel.id)}>
               <span className={pstyle.panelKind}>Distribution</span>
               <ColumnSelect
-                label="Column"
+                axis="Column"
+                columns={pickableColumns(this.props.params_def)}
                 value={panel.axis}
-                params_def={this.props.params_def}
-                optional={false}
                 onChange={(axis) => this.updatePanel(panel.id, axis)}
               />
             </PanelHeader>

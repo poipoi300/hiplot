@@ -9,11 +9,12 @@ import $ from "jquery";
 import React from "react";
 import _ from "underscore";
 import { DistributionView } from "../distribution/plugin";
+import { ColumnSelect } from "../lib/columnpicker";
 import { ResizableH } from "../lib/resizable";
 import { isString, readState } from "../lib/savedstate";
 import { PlotXY, type PlotXYDisplayData } from "../plotxy";
 import { DefaultPlugins, type HiPlotPluginData, type PluginWindowState } from "../plugin";
-import { ColumnSelect, PanelHeader, SectionBar } from "./frame";
+import { PanelHeader, pickableColumns, SectionBar } from "./frame";
 import {
   isScatterPanels,
   nextPanelId,
@@ -242,6 +243,7 @@ export class ScatterPlots extends React.Component<ScatterPlotsProps, ScatterPlot
     return <Scatter3DPanel {...this.props} axes={{ x, y, z }} onClose={close} />;
   }
   render() {
+    const columns = pickableColumns(this.props.params_def);
     return (
       <section aria-label="Scatter plots" data-testid="scatter-plots">
         <SectionBar title="Scatter plots" addLabel="Add scatter plot" onAdd={this.addPanel} />
@@ -250,27 +252,24 @@ export class ScatterPlots extends React.Component<ScatterPlotsProps, ScatterPlot
             <PanelHeader name="scatter plot" onClose={() => this.closePanel(panel.id)}>
               <span className={style.panelKind}>{KIND_LABELS[scatterKind(panel)]}</span>
               <ColumnSelect
-                label="X"
+                axis="X"
+                columns={columns}
                 value={panel.x}
-                params_def={this.props.params_def}
-                optional={false}
                 onChange={(column) => this.updatePanel(panel.id, "x", column)}
               />
               {panel.x !== null && (
                 <ColumnSelect
-                  label="Y"
+                  axis="Y"
+                  columns={columns}
                   value={panel.y}
-                  params_def={this.props.params_def}
-                  optional={true}
                   onChange={(column) => this.updatePanel(panel.id, "y", column)}
                 />
               )}
               {panel.y !== null && (
                 <ColumnSelect
-                  label="Z"
+                  axis="Z"
+                  columns={columns}
                   value={panel.z}
-                  params_def={this.props.params_def}
-                  optional={true}
                   onChange={(column) => this.updatePanel(panel.id, "z", column)}
                 />
               )}

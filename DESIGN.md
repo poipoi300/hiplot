@@ -181,6 +181,17 @@ pills. Borders are 1 px hairlines in `--hip-rule`.
   stroked icons (sun, moon, monitor) and a tooltip naming each.
 - **Popover**: surface background, 8 px radius, floating shadow, opens below
   its control and closes on Escape or an outside press.
+- **Column picker** (`lib/columnpicker`): a popover with a 32 px filter
+  box over a list of 32 px rows in 14 px ink, inset 6 px inside the panel,
+  their text aligned with the filter's. A chosen row shows an accent
+  checkmark at its right and a faint accent tint; neighboring chosen rows
+  share one band. The row under the pointer or the arrow keys takes a
+  neutral tint, with a 2 px accent ring when the keyboard put it there.
+  Focus stays in the filter (a combobox over a listbox): the arrows and
+  PageUp/PageDown move, Enter picks. The Columns menu chooses several,
+  with Select all and Deselect all; a scatter axis chooses one column or
+  None and closes. A scatter axis's button is the control button with the
+  muted axis letter, the column and a chevron.
 - **Toast**: bottom-right, surface background, floating shadow, ink text;
   errors carry a red dot like Exclude. Disappears after a few seconds or on
   dismiss.

@@ -14,6 +14,25 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* A scatter axis's button: the axis letter, its column, a chevron. */
+.axis {
+  color: var(--hip-muted);
+  font-weight: 600;
+}
+.value {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 400;
+}
+.noValue {
+  color: var(--hip-muted);
+}
+.chevron {
+  flex: none;
+  color: var(--hip-muted);
+}
+
 .search {
   box-sizing: border-box;
   width: 100%;
@@ -78,6 +97,7 @@
 .list {
   display: flex;
   flex-direction: column;
+  min-height: 0;
   max-height: min(380px, 55vh);
   margin: 0 -4px;
   overflow-y: auto;
