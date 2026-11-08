@@ -2505,6 +2505,33 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       cancelAnimationFrame(this.drawingFrame);
       this.drawingFrame = null;
     }
+    this.cancelIdleRedraw();
+  }
+
+  /** The animation frame that checks whether the GPU is free for a deferred redraw. */
+  private idleRedraw: number | null = null;
+
+  /** Redraws on the first animation frame the GPU is free; later requests join this one. */
+  private redrawWhenGpuIdle(): void {
+    if (this.idleRedraw !== null) {
+      return;
+    }
+    const check = (): void => {
+      this.idleRedraw = null;
+      if (this.webgl?.busy) {
+        this.idleRedraw = requestAnimationFrame(check);
+        return;
+      }
+      this.redrawLines();
+    };
+    this.idleRedraw = requestAnimationFrame(check);
+  }
+
+  private cancelIdleRedraw(): void {
+    if (this.idleRedraw !== null) {
+      cancelAnimationFrame(this.idleRedraw);
+      this.idleRedraw = null;
+    }
   }
 
   /**
@@ -2521,6 +2548,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** Redraws the selected lines (all filtered rows before any selection exists). */
   redrawLines(): void {
     if (this.webgl !== null) {
+      // During a drag, a frame waits for the GPU to finish the last one, so a
+      // slow GPU drops frames instead of queueing them behind the pointer.
+      if (this.interacting && this.webgl.busy) {
+        this.redrawWhenGpuIdle();
+        return;
+      }
+      this.cancelIdleRedraw();
       this.drawWithWebGL(this.webgl);
       return;
     }

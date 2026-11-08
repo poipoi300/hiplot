@@ -63,6 +63,53 @@ test("parallel lines are drawn with WebGL when it is available", async ({ page }
   expect(await paintedPixels(page)).toBeGreaterThan(1000);
 });
 
+test("during a drag, frames wait for the GPU to finish the last one instead of queueing", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  const draws = await page.evaluate(async () => {
+    interface PacingProbe {
+      webgl: object;
+      interacting: boolean;
+      redrawLines: () => void;
+      drawWithWebGL: (webgl: object) => void;
+    }
+    const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
+      | (ParallelPlotHandle & PacingProbe)
+      | null;
+    if (!pp) {
+      throw new Error("No parallel plot");
+    }
+    let busy = true;
+    Object.defineProperty(pp.webgl, "busy", { get: () => busy });
+    let count = 0;
+    const draw = pp.drawWithWebGL.bind(pp);
+    pp.drawWithWebGL = (webgl) => {
+      count += 1;
+      draw(webgl);
+    };
+    const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    const counts: number[] = [];
+    pp.interacting = true;
+    for (let i = 0; i < 5; ++i) {
+      pp.redrawLines();
+    }
+    await nextFrame();
+    await nextFrame();
+    counts.push(count); // still busy: nothing drawn
+    busy = false;
+    await nextFrame();
+    await nextFrame();
+    counts.push(count); // the five requests drew once
+    busy = true;
+    pp.interacting = false;
+    pp.redrawLines();
+    counts.push(count); // outside a drag, a frame is drawn right away
+    return counts;
+  });
+  expect(draws).toEqual([0, 1, 2]);
+});
+
 test("parallel lines fall back to Canvas 2D without WebGL2", async ({ page }) => {
   await page.addInitScript(() => {
     const getContext = HTMLCanvasElement.prototype.getContext;

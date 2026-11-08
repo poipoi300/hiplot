@@ -710,6 +710,8 @@ export class WebGLLineRenderer {
   private uploadedPalette: ReadonlyArray<RGB> | null = null;
   private colorMapBins = 0;
   private uploadedSelection: Uint8Array | null = null;
+  /** Signals when the GPU has finished the last frame drawn. */
+  private inFlight: WebGLSync | null = null;
 
   /** A renderer on `canvas`, or null when WebGL2 is unavailable. */
   static create(canvas: HTMLCanvasElement): WebGLLineRenderer | null {
@@ -936,6 +938,24 @@ export class WebGLLineRenderer {
     this.gl.getExtension("WEBGL_lose_context")?.loseContext();
   }
 
+  /**
+   * Whether the GPU is still drawing the last frame. A software renderer
+   * (SwiftShader on machines without a GPU) can take far longer than a
+   * display frame; frames queued behind it delay input too.
+   */
+  get busy(): boolean {
+    const gl = this.gl;
+    if (this.inFlight === null) {
+      return false;
+    }
+    if (gl.getSyncParameter(this.inFlight, gl.SYNC_STATUS) !== gl.SIGNALED) {
+      return true;
+    }
+    gl.deleteSync(this.inFlight);
+    this.inFlight = null;
+    return false;
+  }
+
   /** Whether lines are tone-mapped from their density (float render targets available). */
   get densityRendering(): boolean {
     return this.densityPrograms !== null;
@@ -1052,7 +1072,18 @@ export class WebGLLineRenderer {
     gl.bindVertexArray(null);
   }
 
+  /** Draws a frame and marks it in flight until the GPU has finished it (see `busy`). */
   draw(frame: LineFrame): void {
+    const gl = this.gl;
+    this.drawFrame(frame);
+    if (this.inFlight !== null) {
+      gl.deleteSync(this.inFlight);
+    }
+    this.inFlight = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    gl.flush();
+  }
+
+  private drawFrame(frame: LineFrame): void {
     const gl = this.gl;
     const slots = this.slotsFor(frame.axes.map((axis) => axis.pixels));
     const axesTexels = new Float32Array(Math.max(1, frame.axes.length) * 4);
