@@ -167,7 +167,7 @@ interface BundleProbe {
   props: { rows_filtered: ReadonlyArray<Record<string, number>> };
 }
 
-for (const deviceScaleFactor of [1, 2]) {
+for (const deviceScaleFactor of [0.5, 1, 2]) {
   test.describe(`at device pixel ratio ${deviceScaleFactor}`, () => {
     test.use({ deviceScaleFactor });
 

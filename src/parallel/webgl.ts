@@ -84,10 +84,10 @@ const MITER_LIMIT = 4;
 
 /**
  * One instance per segment of a line. A segment is a triangle strip through
- * `u_samples` points along it, widened on both sides by the half line width
- * plus half a device pixel, where coverage reaches zero; `v_across` is the
- * signed distance from the center line in device pixels, from which
- * fragments take their coverage.
+ * `u_samples` points along it, widened on both sides by half the line's
+ * footprint (see COVERAGE) plus half a device pixel, where coverage reaches
+ * zero; `v_across` is the signed distance from the center line in device
+ * pixels, from which fragments take their coverage.
  *
  * The strip is a polyline of chords between the sampled points, so each
  * point is pushed out along the miter of its two chords: every chord then
@@ -263,7 +263,7 @@ void main() {
   float step = 1.0 / float(u_samples - 1);
   float t = float(point) * step;
   vec2 position = pointOf(current, t);
-  float extent = u_halfWidth + 0.5;
+  float extent = max(u_halfWidth, 0.5) + 0.5;
   if (u_antialiased) {
     // The chords into and out of this point; at a segment's end, from the
     // segment it joins (an axis the row has a value on).
@@ -309,12 +309,19 @@ void main() {
 }
 `;
 
-/** Coverage of a device pixel `v_across` from the center of a line `2 * u_halfWidth` wide. */
+/**
+ * Coverage of a device pixel `v_across` from the center of a line
+ * `2 * u_halfWidth` wide: the overlap of the pixel with the line, measured
+ * across it. A line narrower than a pixel keeps a one-pixel footprint and
+ * fades with its width, as Canvas 2D hairlines do, so its coverage summed
+ * across the line stays its width wherever it falls between pixel centers.
+ */
 const COVERAGE = `
 uniform float u_halfWidth;
 in float v_across;
 float coverage() {
-  return clamp(u_halfWidth + 0.5 - abs(v_across), 0.0, 1.0);
+  float halfFootprint = max(u_halfWidth, 0.5);
+  return clamp(halfFootprint + 0.5 - abs(v_across), 0.0, 1.0) * min(2.0 * u_halfWidth, 1.0);
 }
 `;
 
