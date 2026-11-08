@@ -24,6 +24,7 @@ export const MAX_FIT_VALUES = 5000;
 export interface ColumnFit {
   best: FittedDistribution;
   runnerUp: FittedDistribution | null;
+  /** In the units of x; its bandwidth is in ln(x) on a log axis. */
   kde: KernelDensity | null;
   /** Values fitted, and values the column had (more when a sample was fitted). */
   fitted: number;
@@ -39,8 +40,33 @@ export function evenSample(values: ReadonlyArray<number>, max: number): number[]
   return Array.from({ length: max }, (_, index) => values[Math.floor(index * step)]);
 }
 
-/** The best distribution for `values` by BIC, with a KDE to compare it to; null when none fits. */
-export function fitColumn(values: ReadonlyArray<number>): ColumnFit | null {
+/** How the axis a density is drawn on spaces its values. */
+export type AxisSpacing = "linear" | "log";
+
+/**
+ * A Gaussian KDE of ln(x), as a density in x: g(ln x) / x, the Jacobian of
+ * the log. On a log axis a kernel of fixed width in x is far too narrow where
+ * values are sparse in x (the upper decades) and too wide where they crowd;
+ * in ln(x) its bandwidth follows the axis. Values that are not positive have
+ * no place on a log axis and are left out, as the histogram leaves them out.
+ */
+function logKernelDensity(sample: ReadonlyArray<number>): KernelDensity | null {
+  const density = kernelDensity(sample.filter((value) => value > 0).map(Math.log));
+  if (density === null) {
+    return null;
+  }
+  return {
+    bandwidth: density.bandwidth,
+    pdf: (x) => (x > 0 ? density.pdf(Math.log(x)) / x : 0),
+  };
+}
+
+/**
+ * The best distribution for `values` by BIC, with a KDE to compare it to;
+ * null when none fits. The KDE smooths in the axis' spacing (see
+ * `logKernelDensity`); the candidates' own families cover log-scale data.
+ */
+export function fitColumn(values: ReadonlyArray<number>, spacing: AxisSpacing): ColumnFit | null {
   const finite = values.filter(Number.isFinite);
   const sample = evenSample(finite, MAX_FIT_VALUES);
   const fits = fitDistributions(sample);
@@ -50,7 +76,7 @@ export function fitColumn(values: ReadonlyArray<number>): ColumnFit | null {
   return {
     best: fits.best,
     runnerUp: fits.candidates[1] ?? null,
-    kde: kernelDensity(sample),
+    kde: spacing === "log" ? logKernelDensity(sample) : kernelDensity(sample),
     fitted: sample.length,
     total: finite.length,
   };

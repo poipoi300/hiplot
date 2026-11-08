@@ -373,7 +373,10 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
     }
     const axis = this.props.axis;
     const values = rows.map((row) => row[axis]).filter((value) => typeof value === "number");
-    const fit = fitColumn(values);
+    const fit = fitColumn(
+      values,
+      this.props.param_def.type === ParamType.NUMERICLOG ? "log" : "linear",
+    );
     this.fitCache = { rows, paramDef: this.props.param_def, fit };
     return fit;
   }
