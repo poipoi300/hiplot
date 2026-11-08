@@ -251,7 +251,7 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
             <div className={style.selectionCount} data-testid="selection-count" aria-live="polite">
               <strong>{COUNT_FORMAT.format(this.props.rows_selected.length)}</strong>
               <span>
-                of {COUNT_FORMAT.format(this.props.rows_filtered.length)}
+                {` of ${COUNT_FORMAT.format(this.props.rows_filtered.length)}`}
                 <span className={style.selectionWord}> selected</span>
               </span>
               <span className={style.selectionShare}>
