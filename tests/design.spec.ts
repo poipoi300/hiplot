@@ -346,3 +346,55 @@ test("an axis opens its menu from anywhere along it, and the plot never shows th
   });
   expect(nativeMenuPrevented).toBe(true);
 });
+
+test("categories next to a brush count the selected rows flowing through them", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  const order = await page.locator("svg g.dimension").evaluateAll((groups) =>
+    groups
+      .map((group) => ({
+        name: group.querySelector(".pplot-label")?.getAttribute("data-dimension") ?? "",
+        x: group.getBoundingClientRect().x,
+      }))
+      .sort((a, b) => a.x - b.x)
+      .map(({ name }) => name),
+  );
+  const neighbor = order[order.indexOf("optimizer") - 1];
+  const overlay = page
+    .locator("svg g.dimension")
+    .filter({ has: page.locator(`[data-dimension='${neighbor}']`) })
+    .locator(".pplot-brush rect.overlay");
+  const box = await overlay.boundingBox();
+  if (box === null) {
+    throw new Error("No brush overlay");
+  }
+  const optimizerAxis = page
+    .locator("svg g.dimension")
+    .filter({ has: page.locator("[data-dimension='optimizer']") });
+  const badges = optimizerAxis.getByTestId("flow-badge");
+  await expect(badges).toHaveCount(0);
+
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.1);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.6, { steps: 4 });
+  // Live: badges are drawn while the brush is still being dragged.
+  await expect(badges.first()).toBeVisible();
+  const counts = async () =>
+    (await badges.locator("text").allTextContents()).map((text) => Number(text.replace(/,/g, "")));
+  const during = await counts();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.3, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(counts).not.toEqual(during);
+
+  const selected = Number(
+    ((await page.getByTestId("selection-count").locator("strong").textContent()) ?? "").replace(
+      /,/g,
+      "",
+    ),
+  );
+  const total = (await counts()).reduce((sum, count) => sum + count, 0);
+  expect(total).toBeGreaterThan(0);
+  expect(total).toBeLessThanOrEqual(selected);
+  await expect(badges.first()).toHaveAttribute("data-from", "left");
+});

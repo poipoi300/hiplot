@@ -65,6 +65,31 @@
   letter-spacing: 0.01em;
 }
 
+/*
+ * Flow badges right of the categories next to a brush: quiet pills, so the
+ * lines beneath stay legible.
+ */
+.flowBadge {
+  pointer-events: none;
+}
+.flowBadge rect {
+  fill: var(--hip-bg);
+  fill-opacity: 0.82;
+  stroke: var(--hip-rule);
+  stroke-width: 1px;
+}
+.flowArrow {
+  fill: none;
+  stroke: var(--hip-muted);
+  stroke-width: 1.3px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.flowCount {
+  fill: var(--hip-fg);
+  font-size: 10.5px;
+  font-weight: 600;
+}
 .pplotLabel :global(.label-name) {
   transform-origin: top left;
 }

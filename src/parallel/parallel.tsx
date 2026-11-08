@@ -39,6 +39,7 @@ import {
   valueFormatter,
 } from "./axisformat";
 import { ColumnPicker, type PickableColumn } from "./columnpicker";
+import { categoryIndices, countByCategory, type FlowAxis, flowAxes } from "./flow";
 import { LineGeometry } from "./geometry";
 import pstyle from "./parallel.module.css";
 import { type AxisSelection, BrushMasks } from "./selection";
@@ -302,6 +303,29 @@ export function fitWithMeasure(
   }
   const text = `${fullText.slice(0, low)}…`;
   return { text, width: measure(text) };
+}
+
+/**
+ * Flow badges: on a categorical axis next to a brushed one, a pill right of
+ * each category with an arrow pointing the way the selection flows and the
+ * number of selected rows through the category.
+ */
+const FLOW_BADGE_HEIGHT = 16;
+const FLOW_BADGE_PADDING = 5;
+const FLOW_BADGE_OFFSET = 7;
+const FLOW_ARROW_WIDTH = 8;
+const FLOW_ARROW_GAP = 4;
+/** Badges closer than this to the one above are left out, so they never overlap. */
+const FLOW_BADGE_MIN_GAP = FLOW_BADGE_HEIGHT + 2;
+/** The badge font, as parallel.module.css sets it on .flowCount. */
+const FLOW_FONT_PIXELS = 10.5;
+const FLOW_FONT_WEIGHT = 600;
+
+interface FlowBadge {
+  category: string;
+  y: number;
+  count: number;
+  from: FlowAxis["from"];
 }
 
 /** A value tag at one end of a brush; `y` is the tag's vertical center. */
@@ -591,6 +615,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
       this.update_ticks();
       this.updateAxisTitlesAnglesAndFontSize();
+      // Which axes neighbor a brush changed with the order.
+      if (this.lastFlow !== null) {
+        this.updateFlowBadges(this.lastFlow.brushed, this.lastFlow.mask);
+      }
     }
     // Highlight polylines
     if (prevProps.rows_highlighted !== this.props.rows_highlighted && this.highlighted !== null) {
@@ -1310,6 +1338,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       const masks = me.brushMasks();
       const mask = masks.select(selections);
       const selected = masks.selectedRows(mask);
+      me.updateFlowBadges(new Set(actives), mask);
       me.drawnSelection = selected;
       if (masks.rows === me.geometry().rows) {
         me.maskMemo = { geometry: me.geometry(), rows: selected, mask };
@@ -1582,20 +1611,124 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     });
   }
 
-  private tagMeasure: ((text: string) => number) | null = null;
-  /** Measures brush tag text on a canvas in the tags' font, without a DOM layout. */
-  private tagTextMeasure(): (text: string) => number {
-    if (this.tagMeasure !== null) {
-      return this.tagMeasure;
+  /** The brushes and selection the flow badges were last drawn for. */
+  private lastFlow: { brushed: ReadonlySet<string>; mask: Uint8Array } | null = null;
+  /** Each row's category on a categorical axis, kept while the rows and categories are. */
+  private categoryIndexCache = new Map<
+    string,
+    { rows: ReadonlyArray<Datapoint>; categories: ReadonlyArray<string>; indices: Int32Array }
+  >();
+  private categoryIndicesOf(
+    dimension: string,
+    rows: ReadonlyArray<Datapoint>,
+    categories: ReadonlyArray<string>,
+  ): Int32Array {
+    const cached = this.categoryIndexCache.get(dimension);
+    if (cached !== undefined && cached.rows === rows && cached.categories === categories) {
+      return cached.indices;
+    }
+    const indices = categoryIndices(rows, dimension, categories);
+    this.categoryIndexCache.set(dimension, { rows, categories, indices });
+    return indices;
+  }
+
+  /**
+   * Flow badges on the categorical axes next to brushed ones: how many
+   * selected rows go through each category, and the way they flow from the
+   * brush. Updated with the selection on every frame of a brush drag.
+   */
+  private updateFlowBadges(brushed: ReadonlySet<string>, mask: Uint8Array): void {
+    this.lastFlow = { brushed, mask };
+    const flows = new Map(
+      flowAxes(
+        this.state.dimensions,
+        brushed,
+        (dimension) => this.yscale[dimension]?.kind === "categorical",
+      ).map((flow) => [flow.dimension, flow.from]),
+    );
+    const rows = this.brushMasks().rows;
+    const measure = this.textMeasure(FLOW_FONT_WEIGHT, FLOW_FONT_PIXELS);
+    this.dimensions_dom?.each((dimension, index, nodes) => {
+      const from = flows.get(dimension);
+      const scale = this.yscale[dimension];
+      const badges: FlowBadge[] = [];
+      if (from !== undefined && scale?.kind === "categorical" && mask.length === rows.length) {
+        const categories = scale.domain();
+        const counts = countByCategory(
+          this.categoryIndicesOf(dimension, rows, categories),
+          mask,
+          categories.length,
+        );
+        let previousY = Number.NEGATIVE_INFINITY;
+        categories.forEach((category, categoryIndex) => {
+          const y = scale(category);
+          if (counts[categoryIndex] === 0 || Math.abs(y - previousY) < FLOW_BADGE_MIN_GAP) {
+            return;
+          }
+          previousY = y;
+          badges.push({ category, y, count: counts[categoryIndex], from });
+        });
+      }
+      d3.select(nodes[index])
+        .selectAll<SVGGElement, FlowBadge>(`.${pstyle.flowBadge}`)
+        .data(badges, (badge) => badge.category)
+        .join((enter) => {
+          const badge = enter
+            .append("g")
+            .classed(pstyle.flowBadge, true)
+            .attr("data-testid", "flow-badge");
+          badge
+            .append("rect")
+            .attr("height", FLOW_BADGE_HEIGHT)
+            .attr("y", -FLOW_BADGE_HEIGHT / 2)
+            .attr("rx", FLOW_BADGE_HEIGHT / 2);
+          badge.append("path").classed(pstyle.flowArrow, true);
+          badge.append("text").classed(pstyle.flowCount, true).attr("dominant-baseline", "central");
+          return badge;
+        })
+        .attr("data-category", (badge) => badge.category)
+        .attr("data-from", (badge) => badge.from)
+        .attr("transform", (badge) => `translate(${FLOW_BADGE_OFFSET}, ${badge.y})`)
+        .each(function (this: SVGGElement, badge) {
+          const text = COUNT_FORMAT.format(badge.count);
+          const textWidth = measure(text);
+          const arrowLeft = FLOW_BADGE_PADDING;
+          const textLeft = arrowLeft + FLOW_ARROW_WIDTH + FLOW_ARROW_GAP;
+          const group = d3.select(this);
+          group.select("rect").attr("width", textLeft + textWidth + FLOW_BADGE_PADDING);
+          // An arrow pointing away from the brushed neighbor: the way the selection flows.
+          const [tail, tip] =
+            badge.from === "left"
+              ? [arrowLeft, arrowLeft + FLOW_ARROW_WIDTH]
+              : [arrowLeft + FLOW_ARROW_WIDTH, arrowLeft];
+          const head = tip + (badge.from === "left" ? -3.5 : 3.5);
+          group.select("path").attr("d", `M${tail} 0H${tip}M${head} -3.5L${tip} 0L${head} 3.5`);
+          group.select("text").attr("x", textLeft).text(text);
+        });
+    });
+  }
+
+  private textMeasures = new Map<string, (text: string) => number>();
+  /** Measures text on a canvas in the plot's font, without a DOM layout. */
+  private textMeasure(weight: number, pixels: number): (text: string) => number {
+    const key = `${weight} ${pixels}`;
+    const existing = this.textMeasures.get(key);
+    if (existing !== undefined) {
+      return existing;
     }
     const context = document.createElement("canvas").getContext("2d");
     if (context === null) {
       throw new Error("Canvas 2D is not available");
     }
     const family = getComputedStyle(mounted(this.svg_ref)).fontFamily;
-    context.font = `${BRUSH_TAG_FONT_WEIGHT} ${BRUSH_TAG_FONT_PIXELS}px ${family}`;
-    this.tagMeasure = (text) => context.measureText(text).width;
-    return this.tagMeasure;
+    context.font = `${weight} ${pixels}px ${family}`;
+    const measure = (text: string) => context.measureText(text).width;
+    this.textMeasures.set(key, measure);
+    return measure;
+  }
+  /** Measures brush tag text in the tags' font. */
+  private tagTextMeasure(): (text: string) => number {
+    return this.textMeasure(BRUSH_TAG_FONT_WEIGHT, BRUSH_TAG_FONT_PIXELS);
   }
 
   /** Shifts the axes by the scroll offset; lines follow on the next draw. */
