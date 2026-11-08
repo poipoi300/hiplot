@@ -318,18 +318,25 @@ float coverage() {
 }
 `;
 
-/** Accumulates line density: selected colors in target 0, deselected counts in target 1. */
+/**
+ * Accumulates line density. Color channels add up and alpha channels keep
+ * the maximum (see `draw`): target 0 holds the coverage-weighted color sum
+ * of the selected lines and their peak coverage; target 1 the coverage sums
+ * of the deselected (r) and selected (g) lines, and the deselected peak (a).
+ */
 const DENSITY_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
 ${COVERAGE}
 in vec3 v_rgb;
 in float v_selected;
 layout(location = 0) out vec4 selected;
-layout(location = 1) out vec4 context;
+layout(location = 1) out vec4 sums;
 void main() {
   float covered = coverage();
-  selected = vec4(v_rgb, 1.0) * v_selected * covered;
-  context = vec4(1.0 - v_selected) * covered;
+  float selectedCoverage = v_selected * covered;
+  float contextCoverage = (1.0 - v_selected) * covered;
+  selected = vec4(v_rgb * selectedCoverage, selectedCoverage);
+  sums = vec4(contextCoverage, selectedCoverage, 0.0, contextCoverage);
 }
 `;
 
@@ -363,24 +370,40 @@ void main() {
  * how many lines cross a pixel, relative to a reference density, and the color
  * is the average color of those lines. The selection is composited over the
  * faint deselected layer.
+ *
+ * Coverage is applied after the tone mapping, not inside it. N lines that
+ * coincide and cover a fraction c of a pixel are a line of density N drawn
+ * with coverage c. Tone-mapped as one density N * c, they saturate as soon
+ * as c exceeds a few lines' worth of the reference, which turns the
+ * anti-aliased edge of every bundle of identical segments into a hard step.
+ * The pixel's peak coverage stands for c: the density is the coverage sum
+ * over that peak, and the opacity is the peak times its tone mapping. A lone
+ * line or a bundle comes out exactly; where many lines cross a pixel at
+ * different offsets the peak nears 1 and the density is the plain sum.
  */
 const COMPOSITE_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
 uniform sampler2D u_selectedDensity;
-uniform sampler2D u_contextDensity;
+uniform sampler2D u_coverageSums;
 uniform float u_selectedReference;
 uniform float u_contextReference;
 uniform vec3 u_contextColor;
 uniform float u_contextAlpha;
 out vec4 color;
+float toneMapped(float coverageSum, float peakCoverage, float reference) {
+  if (peakCoverage <= 0.0) {
+    return 0.0;
+  }
+  float density = coverageSum / peakCoverage;
+  return peakCoverage * clamp(log(1.0 + density) / log(1.0 + reference), 0.0, 1.0);
+}
 void main() {
   ivec2 pixel = ivec2(gl_FragCoord.xy);
   vec4 selected = texelFetch(u_selectedDensity, pixel, 0);
-  float context = texelFetch(u_contextDensity, pixel, 0).r;
-  float selectedAlpha = clamp(log(1.0 + selected.a) / log(1.0 + u_selectedReference), 0.0, 1.0);
-  float contextAlpha =
-    u_contextAlpha * clamp(log(1.0 + context) / log(1.0 + u_contextReference), 0.0, 1.0);
-  vec3 selectedColor = selected.a > 0.0 ? selected.rgb / selected.a : vec3(0.0);
+  vec4 sums = texelFetch(u_coverageSums, pixel, 0);
+  float selectedAlpha = toneMapped(sums.g, selected.a, u_selectedReference);
+  float contextAlpha = u_contextAlpha * toneMapped(sums.r, sums.a, u_contextReference);
+  vec3 selectedColor = sums.g > 0.0 ? selected.rgb / sums.g : vec3(0.0);
   color = vec4(
     selectedColor * selectedAlpha + u_contextColor * contextAlpha * (1.0 - selectedAlpha),
     selectedAlpha + contextAlpha * (1.0 - selectedAlpha)
@@ -400,7 +423,7 @@ type SamplerName = keyof typeof LINE_SAMPLERS;
 const UNITS = LINE_SAMPLERS;
 /** Texture units of the density targets, read by the composite pass. */
 const SELECTED_DENSITY_UNIT = 6;
-const CONTEXT_DENSITY_UNIT = 7;
+const COVERAGE_SUMS_UNIT = 7;
 
 /**
  * Lines crossing a pixel at which the density reaches full opacity. Densities
@@ -455,11 +478,11 @@ class Program {
   }
 }
 
-/** Float render targets the line pass accumulates densities into. */
+/** Float render targets the line pass accumulates densities into (see DENSITY_FRAGMENT_SHADER). */
 interface DensityTargets {
   framebuffer: WebGLFramebuffer;
   selected: WebGLTexture;
-  context: WebGLTexture;
+  coverageSums: WebGLTexture;
   width: number;
   height: number;
 }
@@ -698,9 +721,8 @@ export class WebGLLineRenderer {
     if (this.density !== null) {
       gl.deleteFramebuffer(this.density.framebuffer);
       gl.deleteTexture(this.density.selected);
-      gl.deleteTexture(this.density.context);
+      gl.deleteTexture(this.density.coverageSums);
     }
-    // Selected lines need a color sum and a count; deselected ones a count only.
     const target = (format: number): WebGLTexture => {
       const texture = gl.createTexture();
       if (texture === null) {
@@ -713,17 +735,17 @@ export class WebGLLineRenderer {
       return texture;
     };
     const selected = target(gl.RGBA16F);
-    const context = target(gl.R16F);
+    const coverageSums = target(gl.RGBA16F);
     const framebuffer = gl.createFramebuffer();
     if (framebuffer === null) {
       throw new Error("Could not create a WebGL framebuffer");
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, selected, 0);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, context, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, coverageSums, 0);
     gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    this.density = { framebuffer, selected, context, width, height };
+    this.density = { framebuffer, selected, coverageSums, width, height };
     return this.density;
   }
 
@@ -810,6 +832,7 @@ export class WebGLLineRenderer {
       // Deselected lines first, then the selection over them.
       const program = this.directProgram;
       const samples = this.prepareLines(program, frame);
+      gl.blendEquation(gl.FUNC_ADD);
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       gl.uniform1f(
         program.uniform("u_alpha"),
@@ -834,6 +857,7 @@ export class WebGLLineRenderer {
     gl.viewport(0, 0, width, height);
     gl.clearBufferfv(gl.COLOR, 0, [0, 0, 0, 0]);
     gl.clearBufferfv(gl.COLOR, 1, [0, 0, 0, 0]);
+    gl.blendEquationSeparate(gl.FUNC_ADD, gl.MAX);
     gl.blendFunc(gl.ONE, gl.ONE);
     const samples = this.prepareLines(lines, frame);
     gl.uniform1i(lines.uniform("u_keep"), DRAW_ALL);
@@ -846,10 +870,10 @@ export class WebGLLineRenderer {
     gl.useProgram(composite.program);
     gl.activeTexture(gl.TEXTURE0 + SELECTED_DENSITY_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, targets.selected);
-    gl.activeTexture(gl.TEXTURE0 + CONTEXT_DENSITY_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, targets.context);
+    gl.activeTexture(gl.TEXTURE0 + COVERAGE_SUMS_UNIT);
+    gl.bindTexture(gl.TEXTURE_2D, targets.coverageSums);
     gl.uniform1i(composite.uniform("u_selectedDensity"), SELECTED_DENSITY_UNIT);
-    gl.uniform1i(composite.uniform("u_contextDensity"), CONTEXT_DENSITY_UNIT);
+    gl.uniform1i(composite.uniform("u_coverageSums"), COVERAGE_SUMS_UNIT);
     gl.uniform1f(
       composite.uniform("u_selectedReference"),
       densityReference(frame.selectedCount, frame.height),
@@ -866,7 +890,7 @@ export class WebGLLineRenderer {
     // Unbound so the next line pass, which renders into them, has no feedback loop.
     gl.activeTexture(gl.TEXTURE0 + SELECTED_DENSITY_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, null);
-    gl.activeTexture(gl.TEXTURE0 + CONTEXT_DENSITY_UNIT);
+    gl.activeTexture(gl.TEXTURE0 + COVERAGE_SUMS_UNIT);
     gl.bindTexture(gl.TEXTURE_2D, null);
   }
 }

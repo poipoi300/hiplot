@@ -162,3 +162,102 @@ test("a steep straight line keeps its width instead of breaking into dots", asyn
   expect(rowSums.length).toBeGreaterThan(40);
   expect(Math.min(...rowSums)).toBeGreaterThan(0.6 * Math.max(...rowSums));
 });
+
+interface BundleProbe {
+  props: { rows_filtered: ReadonlyArray<Record<string, number>> };
+}
+
+for (const deviceScaleFactor of [1, 2]) {
+  test.describe(`at device pixel ratio ${deviceScaleFactor}`, () => {
+    test.use({ deviceScaleFactor });
+
+    test("a bundle of identical steep lines keeps the anti-aliased edge of one line", async ({
+      page,
+    }) => {
+      // Two hundred identical rows zigzag from the bottom of each axis to the
+      // top of the next; one mirrored row gives every axis its range. The
+      // bundle is dense enough for the tone mapping to saturate.
+      const names = Array.from({ length: 12 }, (_, i) => `c${i}`);
+      const bundle = names.map((_, i) => i % 2);
+      const mirrored = names.map((_, i) => 1 - (i % 2));
+      const rows = [...Array.from({ length: 200 }, () => bundle), mirrored];
+      await page.goto("/?provider=upload");
+      await page.locator("input[type=file]").setInputFiles({
+        name: "bundle.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from([names, ...rows].map((row) => row.join(",")).join("\n")),
+      });
+      await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
+      await page.getByRole("button", { name: "Straight", exact: true }).click();
+
+      // Per pixel row, the bundle's opacity summed in a window around where it
+      // crosses the row, next to the same sum for Canvas 2D's anti-aliased
+      // stroke of one opaque line along the same segment.
+      const rowSums = await page.evaluate(() => {
+        const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
+          | (ParallelPlotHandle & CoverageProbe & BundleProbe)
+          | null;
+        const canvas = pp?.foreground_ref.current;
+        if (!pp || !canvas) {
+          throw new Error("No parallel plot");
+        }
+        pp.redrawLines();
+        const opacities = (draw: (context: CanvasRenderingContext2D) => void) => {
+          const copy = document.createElement("canvas");
+          copy.width = canvas.width;
+          copy.height = canvas.height;
+          const context = copy.getContext("2d");
+          if (context === null) {
+            throw new Error("No 2D context");
+          }
+          draw(context);
+          return context.getImageData(0, 0, copy.width, copy.height).data;
+        };
+        const [first, second] = pp.state.dimensions;
+        const row = pp.props.rows_filtered[0];
+        const ratio = pp.pixelRatio;
+        const start = [
+          (pp.position(first) - pp.scrollLeft) * ratio,
+          pp.yscale[first](row[first]) * ratio,
+        ];
+        const end = [
+          (pp.position(second) - pp.scrollLeft) * ratio,
+          pp.yscale[second](row[second]) * ratio,
+        ];
+        // Same task as the draw, so a WebGL buffer has not been presented and cleared yet.
+        const drawn = opacities((context) => context.drawImage(canvas, 0, 0));
+        const reference = opacities((context) => {
+          context.lineWidth = ratio;
+          context.strokeStyle = "#fff";
+          context.beginPath();
+          context.moveTo(start[0], start[1]);
+          context.lineTo(end[0], end[1]);
+          context.stroke();
+        });
+        // From 10% to 40% of the way along the segment, clear of the axes and
+        // of the mirrored line, which crosses the bundle halfway.
+        const sums: { drawn: number; reference: number }[] = [];
+        const [from, to] = [0.1, 0.4].map((t) => start[1] + t * (end[1] - start[1]));
+        for (let y = Math.ceil(Math.min(from, to)); y < Math.max(from, to); ++y) {
+          const t = (y + 0.5 - start[1]) / (end[1] - start[1]);
+          const crossing = Math.round(start[0] + t * (end[0] - start[0]));
+          const sum = { drawn: 0, reference: 0 };
+          for (let x = crossing - 4; x <= crossing + 4; ++x) {
+            const alpha = (y * canvas.width + x) * 4 + 3;
+            sum.drawn += drawn[alpha] / 255;
+            sum.reference += reference[alpha] / 255;
+          }
+          sums.push(sum);
+        }
+        return sums;
+      });
+      expect(rowSums.length).toBeGreaterThan(40 * deviceScaleFactor);
+      // A saturated bundle drawn without anti-aliasing covers two full pixels
+      // per row where the stroke covers one in total, spread over its edge.
+      for (const { drawn, reference } of rowSums) {
+        expect(drawn / reference).toBeGreaterThan(0.85);
+        expect(drawn / reference).toBeLessThan(1.15);
+      }
+    });
+  });
+}
