@@ -6,6 +6,7 @@ import { type DatapointValue, ParamType } from "../types";
 import {
   type AxisBrush,
   type AxisInterval,
+  coversWholeAxis,
   intervalPixels,
   isSavedBrushes,
   mergeBrushes,
@@ -63,6 +64,24 @@ describe("merging brushes", () => {
     const input = [brush(1, 0.1, 0.5), brush(2, 0.4, 0.6)];
     mergeBrushes(input, 0);
     expect(input).toEqual([brush(1, 0.1, 0.5), brush(2, 0.4, 0.6)]);
+  });
+});
+
+describe("whole-axis brushes", () => {
+  test("a brush covering the whole axis, in either direction of drawing, covers it", () => {
+    expect(coversWholeAxis({ start: 0, end: 1 })).toBe(true);
+    expect(coversWholeAxis(pixelInterval([400, 0], { top: 0, bottom: 400 }))).toBe(true);
+    expect(coversWholeAxis({ start: -0, end: 1 - 1e-12 })).toBe(true);
+  });
+
+  test("a brush leaving any part of the axis out does not", () => {
+    expect(coversWholeAxis(pixelInterval([400, 0], { top: 0, bottom: 399 }))).toBe(false);
+    expect(coversWholeAxis({ start: 0.001, end: 1 })).toBe(false);
+  });
+
+  test("brushes merging into the whole axis cover it", () => {
+    const [merged] = mergeBrushes([brush(0, 0, 0.5), brush(1, 0.5, 1)], 0);
+    expect(coversWholeAxis(merged)).toBe(true);
   });
 });
 
@@ -171,6 +190,17 @@ describe("brushes saved in values", () => {
     }
     expect(savedBrushIntervals(scale, { min: 0, max: 1, include_infnans: false })).toEqual([]);
     expect(savedBrushIntervals(numeric(tenths), { categories: ["a"] })).toEqual([]);
+  });
+
+  test("saved brushes selecting every value of an axis cover the whole axis on reload", () => {
+    const withBand = numeric([...tenths, "nan"]);
+    const [everyNumber] = savedBrushIntervals(withBand, { min: 0, max: 1, include_infnans: true });
+    expect(coversWholeAxis(everyNumber)).toBe(true);
+    const categorical = Object.assign(d3_scale_categorical(["a", "b", "c"]).range([400, 0]), {
+      paramType: ParamType.CATEGORICAL,
+    });
+    const [everyCategory] = savedBrushIntervals(categorical, { categories: ["c", "a", "b"] });
+    expect(coversWholeAxis(everyCategory)).toBe(true);
   });
 
   test("a brush that selects a value saves the values", () => {

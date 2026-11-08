@@ -75,6 +75,14 @@ export function mergeBrushes(brushes: Iterable<AxisBrush>, touching: number): Ax
   return merged;
 }
 
+/** Rounding left in positions computed from pixels or values at the axis ends. */
+const POSITION_EPSILON = 1e-9;
+
+/** Whether an interval covers its whole axis, so that a brush over it filters nothing. */
+export function coversWholeAxis(interval: AxisInterval): boolean {
+  return interval.start <= POSITION_EPSILON && interval.end >= 1 - POSITION_EPSILON;
+}
+
 /**
  * One brush saved for a reload, in data space, so that it selects the same
  * values when the rows or the axis layout changed: the values of a numeric

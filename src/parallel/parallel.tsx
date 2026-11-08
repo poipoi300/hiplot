@@ -43,6 +43,7 @@ import {
 } from "./axisformat";
 import {
   type AxisBrush,
+  coversWholeAxis,
   intervalPixels,
   isSavedBrushes,
   isSavedPositions,
@@ -875,16 +876,18 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   /**
-   * Replaces the brushes of an axis, merging those that overlap or touch;
-   * the axis is unbrushed when none is left.
+   * Replaces the brushes of an axis, merging those that overlap or touch and
+   * dropping one that covers the whole axis, which filters nothing; the axis
+   * is unbrushed when none is left.
    */
   private setAxisBrushes(dimension: string, brushes: ReadonlyArray<AxisBrush>): void {
-    if (brushes.length === 0) {
+    const touching = BRUSH_TOUCH_PIXELS / Math.max(1, this.h);
+    const kept = mergeBrushes(brushes, touching).filter((brush) => !coversWholeAxis(brush));
+    if (kept.length === 0) {
       this.brushes.delete(dimension);
       return;
     }
-    const touching = BRUSH_TOUCH_PIXELS / Math.max(1, this.h);
-    this.brushes.set(dimension, mergeBrushes(brushes, touching));
+    this.brushes.set(dimension, kept);
   }
 
   /**

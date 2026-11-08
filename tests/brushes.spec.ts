@@ -301,7 +301,8 @@ test("a brush that selects nothing is restored in place after a reload, still se
   await expect.poll(() => selected(page)).toBe(0);
 });
 
-test("brushes saved as axis positions by earlier versions still load", async ({ page }) => {
+/** Reloads the demo with `saved` as the saved brushes. */
+async function loadSavedBrushes(page: Page, saved: Record<string, unknown[]>): Promise<void> {
   await loadDemo(page);
   await brushAxis(page, "seed", 0.1, 0.3);
   await expect.poll(() => page.url()).toContain("brushes");
@@ -310,15 +311,67 @@ test("brushes saved as axis positions by earlier versions still load", async ({ 
   if (key === undefined) {
     throw new Error("No saved brushes in the URL");
   }
-  // From the bottom of the axis: 20 % to 40 % of its height.
-  url.searchParams.set(key, JSON.stringify({ seed: [[0.2, 0.4]] }));
+  url.searchParams.set(key, JSON.stringify(saved));
   await page.goto(url.toString());
   await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
+}
+
+test("brushes saved as axis positions by earlier versions still load", async ({ page }) => {
+  // From the bottom of the axis: 20 % to 40 % of its height.
+  await loadSavedBrushes(page, { seed: [[0.2, 0.4]] });
   await expect(bands(page, "seed")).toHaveCount(1);
   const overlay = await boxOf(axis(page, "seed").locator(".pplot-brush rect.overlay"));
   const band = await boxOf(bands(page, "seed"));
   expect(Math.abs(band.y - (overlay.y + overlay.height * 0.6))).toBeLessThanOrEqual(1);
   expect(Math.abs(band.height - overlay.height * 0.2)).toBeLessThanOrEqual(1);
+});
+
+test("a brush resized over a whole axis filters nothing and is removed on release", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  const total = (await counts(page)).total;
+  await brushAxis(page, "seed", 0.5, 1.2);
+  const overlay = await boxOf(axis(page, "seed").locator(".pplot-brush rect.overlay"));
+  const band = await boxOf(bands(page, "seed"));
+  const x = band.x + band.width / 2;
+  await page.mouse.move(x, band.y);
+  await page.mouse.down();
+  await page.mouse.move(x, overlay.y - 40, { steps: 8 });
+  // While the pointer is down the brush is drawn, over the whole axis.
+  // Its box takes in half the stroke.
+  await expect
+    .poll(async () => (await boxOf(bands(page, "seed"))).y)
+    .toBeLessThanOrEqual(overlay.y + 0.5);
+  await page.mouse.up();
+  await expect(bands(page, "seed")).toHaveCount(0);
+  await expect.poll(() => selected(page)).toBe(total);
+  await expect(page.getByRole("button", { name: "Reset brushes" })).toBeDisabled();
+});
+
+test("brushes that merge into the whole axis are removed", async ({ page }) => {
+  await loadDemo(page);
+  const total = (await counts(page)).total;
+  await brushAxis(page, "seed", 0.6, 1.2);
+  await brushAxis(page, "seed", 0.4, -0.2);
+  await expect(bands(page, "seed")).toHaveCount(2);
+  // Drag the upper brush's bottom edge into the lower brush.
+  const upper = await boxOf(bands(page, "seed").first());
+  const lower = await boxOf(bands(page, "seed").nth(1));
+  await drag(page, upper.x + upper.width / 2, upper.y + upper.height, lower.y + 20);
+  await expect(bands(page, "seed")).toHaveCount(0);
+  await expect.poll(() => selected(page)).toBe(total);
+});
+
+test("saved brushes covering a whole axis are not restored", async ({ page }) => {
+  await loadSavedBrushes(page, {
+    seed: [[0, 1]],
+    c: [{ categories: ["black", "green", "red"] }],
+    r: [{ min: 0.3, max: 0.5, include_infnans: false }],
+  });
+  await expect(bands(page, "r")).toHaveCount(1);
+  await expect(bands(page, "seed")).toHaveCount(0);
+  await expect(bands(page, "c")).toHaveCount(0);
 });
 
 test("Keep saves the brushes of an axis as one multi-range filter", async ({ page }) => {
