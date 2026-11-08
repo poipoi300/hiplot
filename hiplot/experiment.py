@@ -511,15 +511,18 @@ To render an experiment to HTML, use `experiment.to_html(file_name)` or `html_pa
     @staticmethod
     def from_csv(file: Path | str | tp.IO[str]) -> "Experiment":
         """
-        Creates a HiPlot experiment from a CSV file.
+        Creates a HiPlot experiment from a CSV file. Columns whose every cell spells
+        a number (``nan``, ``inf`` and blank cells included) hold numbers; the
+        others hold the text of their cells.
 
-        :param file: CSV file path
+        :param file: CSV file path or text handle
         """
+        from .csvvalues import typed_rows
+
         if isinstance(file, (Path, str)):
-            with Path(file).open(encoding="utf-8") as csvfile:
-                return Experiment.from_iterable(csv.DictReader(csvfile))
-        else:
-            return Experiment.from_iterable(csv.DictReader(file))
+            with Path(file).open(encoding="utf-8", newline="") as csvfile:
+                return Experiment.from_csv(csvfile)
+        return Experiment.from_iterable(typed_rows(csv.DictReader(file)))
 
     @staticmethod
     def from_dataframe(

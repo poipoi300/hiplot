@@ -3,7 +3,6 @@
 # LICENSE file in the root directory of this source tree.
 
 import ast
-import csv
 import importlib
 import importlib.util
 import itertools
@@ -126,8 +125,7 @@ def load_csv(uri: str) -> hip.Experiment:
     if not uri.endswith(".csv"):
         raise hip.ExperimentFetcherDoesntApply(f"Not a CSV file: {uri}")
     try:
-        with Path(uri).open(newline="", encoding="utf-8") as csvfile:
-            return hip.Experiment.from_iterable(csv.DictReader(csvfile))
+        return hip.Experiment.from_csv(uri)
     except FileNotFoundError as error:
         raise hip.ExperimentFetcherDoesntApply(f"No such file: {uri}") from error
 
