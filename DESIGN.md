@@ -189,6 +189,12 @@ pills. Borders are 1 px hairlines in `--hip-rule`.
   stroked icons (sun, moon, monitor) and a tooltip naming each.
 - **Popover**: surface background, 8 px radius, floating shadow, opens below
   its control and closes on Escape or an outside press.
+- **Color-map picker** (legend): the control button naming the color map
+  of a numeric color-by column, opening a popover of radio rows in
+  groups headed in 11 px/600 Pencil. "Overlapping lines" comes first:
+  Mean value (the default), Lowest on top, Highest on top. A mode other
+  than the mean is named on the button after a middle dot, in Pencil, since
+  it changes what the plot shows.
 - **Column picker** (`lib/columnpicker`): a popover with a 32 px filter
   box over a list of 32 px rows in 14 px ink, inset 6 px inside the panel,
   their text aligned with the filter's. A chosen row shows an accent

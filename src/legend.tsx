@@ -8,7 +8,9 @@
 import type React from "react";
 import style from "./hiplot.module.css";
 import {
+  COLOR_MODES,
   type ColorBinning,
+  type ColorMode,
   type ColorTheme,
   NUMERIC_COLOR_MAPS,
   type NumericColorMap,
@@ -37,16 +39,49 @@ const CHEVRON = (
   </svg>
 );
 
+/** How each color mode reads in the picker, and what it does. */
+const COLOR_MODE_LABELS: Record<ColorMode, { label: string; badge: string; title: string }> = {
+  mean: {
+    label: "Mean value",
+    badge: "",
+    title: "Where lines overlap, show the color of their mean value",
+  },
+  lowest: {
+    label: "Lowest on top",
+    badge: "lowest on top",
+    title: "Where lines overlap, show the line with the lowest value on top",
+  },
+  highest: {
+    label: "Highest on top",
+    badge: "highest on top",
+    title: "Where lines overlap, show the line with the highest value on top",
+  },
+};
+
 interface ColorMapPickerProps {
   /** The color map in effect, a d3 interpolator name. */
   colorMap: string;
+  /** What overlapping lines show. */
+  colorMode: ColorMode;
   theme: ColorTheme;
   onPick: (id: string) => void;
+  onPickMode: (mode: ColorMode) => void;
 }
 
-/** Picks the color map of numeric color-by columns, previewing each on the current theme. */
-function ColorMapPicker({ colorMap, theme, onPick }: ColorMapPickerProps): React.ReactElement {
+/**
+ * Picks the color map of numeric color-by columns, previewing each on the
+ * current theme, and what overlapping lines show. A mode other than the mean
+ * is named on the button, since it changes what the plot means.
+ */
+function ColorMapPicker({
+  colorMap,
+  colorMode,
+  theme,
+  onPick,
+  onPickMode,
+}: ColorMapPickerProps): React.ReactElement {
   const current = NUMERIC_COLOR_MAPS.find((map) => map.id === colorMap);
+  const badge = COLOR_MODE_LABELS[colorMode].badge;
   const option = (map: NumericColorMap, close: () => void) => {
     const colorAt = themedColorMap(map.id, theme);
     if (colorAt === null) {
@@ -73,24 +108,50 @@ function ColorMapPicker({ colorMap, theme, onPick }: ColorMapPickerProps): React
       trigger={
         <>
           {current?.label ?? "Custom"}
+          {badge !== "" && <span className={style.colorModeBadge}>· {badge}</span>}
           {CHEVRON}
         </>
       }
       label="Color map"
-      title="Choose the color map of numeric columns"
+      title="Choose the color map of numeric columns and what overlapping lines show"
       align="start"
       testId="color-map-button"
     >
-      {(close) =>
-        (["sequential", "diverging"] as const).map((kind) => (
-          <fieldset key={kind} className={style.colorMapGroup}>
-            <legend className={style.colorMapKind}>
-              {kind === "sequential" ? "Sequential" : "Diverging"}
-            </legend>
-            {NUMERIC_COLOR_MAPS.filter((map) => map.kind === kind).map((map) => option(map, close))}
+      {(close) => (
+        <>
+          <fieldset className={style.colorMapGroup}>
+            <legend className={style.colorMapKind}>Overlapping lines</legend>
+            {COLOR_MODES.map((mode) => (
+              <label
+                key={mode}
+                className={style.colorMapOption}
+                title={COLOR_MODE_LABELS[mode].title}
+              >
+                <input
+                  type="radio"
+                  name="hiplot-color-mode"
+                  checked={mode === colorMode}
+                  onChange={() => {
+                    onPickMode(mode);
+                    close();
+                  }}
+                />
+                {COLOR_MODE_LABELS[mode].label}
+              </label>
+            ))}
           </fieldset>
-        ))
-      }
+          {(["sequential", "diverging"] as const).map((kind) => (
+            <fieldset key={kind} className={style.colorMapGroup}>
+              <legend className={style.colorMapKind}>
+                {kind === "sequential" ? "Sequential" : "Diverging"}
+              </legend>
+              {NUMERIC_COLOR_MAPS.filter((map) => map.kind === kind).map((map) =>
+                option(map, close),
+              )}
+            </fieldset>
+          ))}
+        </>
+      )}
     </Popover>
   );
 }
@@ -106,6 +167,9 @@ interface ColorLegendProps {
   colorMap: string;
   theme: ColorTheme;
   onPickColorMap: (id: string) => void;
+  /** What overlapping lines show for a numeric column, and where a picked mode goes. */
+  colorMode: ColorMode;
+  onPickColorMode: (mode: ColorMode) => void;
 }
 
 /** What color means: the color-by column with its categories or its value range. */
@@ -117,6 +181,8 @@ export function ColorLegend({
   colorMap,
   theme,
   onPickColorMap,
+  colorMode,
+  onPickColorMode,
 }: ColorLegendProps): React.ReactElement {
   const legend = binning.legend;
   const title = labelTextFromHtml(labelHtml, column);
@@ -160,7 +226,13 @@ export function ColorLegend({
             }}
           />
           <span>{formatterFor(columnNotation(legend.domain))(legend.domain[1])}</span>
-          <ColorMapPicker colorMap={colorMap} theme={theme} onPick={onPickColorMap} />
+          <ColorMapPicker
+            colorMap={colorMap}
+            colorMode={colorMode}
+            theme={theme}
+            onPick={onPickColorMap}
+            onPickMode={onPickColorMode}
+          />
         </span>
       )}
       {hasMissing && (

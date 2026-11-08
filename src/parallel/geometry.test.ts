@@ -64,6 +64,30 @@ describe("cached colors", () => {
     expect(geometry.colorBins(colorBinning(params.x, null), "x")).not.toBe(bins);
   });
 
+  test("the lowest or highest values are drawn last, missing values first", () => {
+    const geometry = new LineGeometry(rows);
+    // Bins of a three-bin color map, then the missing bin 3.
+    const bins = Uint32Array.from([2, 0, 1, 3, 0]);
+    const valuesInOrder = (mode: "lowest" | "highest") =>
+      Array.from(geometry.colorOrder(bins, 3, mode), (row) => bins[row]);
+    expect(valuesInOrder("highest")).toEqual([3, 0, 0, 1, 2]);
+    expect(valuesInOrder("lowest")).toEqual([3, 2, 1, 0, 0]);
+    expect(geometry.colorOrder(bins, 3, "highest")).toBe(geometry.colorOrder(bins, 3, "highest"));
+  });
+
+  test("rows of one color keep their shuffled order", () => {
+    const geometry = new LineGeometry(rows);
+    const bins = new Uint32Array(rows.length);
+    expect(Array.from(geometry.colorOrder(bins, 3, "highest"))).toEqual(Array.from(geometry.order));
+  });
+
+  test("the mean mode and categorical columns keep the shuffled order", () => {
+    const geometry = new LineGeometry(rows);
+    const bins = Uint32Array.from([2, 0, 1, 3, 0]);
+    expect(geometry.colorOrder(bins, 3, "mean")).toBe(geometry.order);
+    expect(geometry.colorOrder(bins, 0, "highest")).toBe(geometry.order);
+  });
+
   test("rows of another dataset are rejected", () => {
     expect(() => new LineGeometry(rows).indexOf({ uid: "z", from_uid: null })).toThrow(
       "not part of the plotted rows",

@@ -410,3 +410,85 @@ Reading it:
   1,194 ms, within the drift between sessions.
 - Drag frames stay at 8 ms median and p95 with no stall; the 17 ms max at
   100k × 30 is one late frame in one of three loads, as in round 5.
+
+## Ninth round: line rendering quality
+
+The ninth round fixed three artifacts of dense line bundles: beading
+between categorical axes, banded fans, and muddy colors where numeric lines
+overlap. All three traced to the density pass:
+
+- **Beading.** The density targets were half floats, which hold 11
+  significant bits. A bundle of thousands of identical segments (100,000
+  rows between batch_size and width: about 5,000 per segment) sums
+  thousands of coverages per pixel, and a half-float sum stops growing once
+  its spacing exceeds twice the added coverage, at a point that depends on
+  that coverage. The color sum and the coverage sum it is divided by stall
+  at different points, so the color swung by up to 30 levels from pixel to
+  pixel along the bundle, and past 1 at its edges (saturated cyan). Read
+  back from the targets, a pixel of such a bundle held 2048 in every
+  channel. The sums a color is divided by are now single floats.
+- **Bands.** The hard bands in fans such as best_epoch → val_accuracy were
+  the same stalls, along each arm of the fan. What remains in a smooth fan
+  of 30,000 lines is 8-bit rounding: opacity holds each level for 4.6
+  pixels on average. The composite adds half a level of interleaved
+  gradient noise, which brings it to 2.0.
+- **Muddy colors.** Overlapping lines averaged their RGB colors, which for
+  distant values gives colors the color map does not have (viridis's ends
+  average to a brown). A numeric color-by column now sums values and shows
+  the color map at their mean, or the line with the lowest or highest value
+  on top (a new choice in the color-map popover).
+
+Coverage is now the exact area of a pixel inside the line instead of a
+tent over its distance: across a column of pixels it sums to the line's
+area, so a line's intensity no longer swings with its offset between pixel
+centers (by up to 18% at 45 degrees before; under 0.25% in the targets
+now, and under 2% once rounded to 8 bits).
+
+Deduplicating identical segments into one weighted instance was measured
+and not adopted: with exact sums it no longer changes the picture, it
+would cut the 100,000-row page's 1.4 million segments by 32% only, and
+aggregating them takes at least 200 ms in JavaScript, on every selection
+change of a brush drag.
+
+"Before" is `5f811ff`, the branch this round forked from; "after" is the
+round's last commit. Same harness and machine, medians of three page
+loads, in one session.
+
+| Size | HTML MB | decode ms | DOM ready ms | initial drawn ms | full redraw ms | drag frame p50 / p95 / max ms | stalls | brush end → lines ms | brush end → table ms | JS heap MB |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5k × 20, before | 2.6 | 2 | 94 | 161 | 2 | 8 / 8 / 9 | 0/120 | 2 | 15 | 33 |
+| 5k × 20, after | 2.6 | 3 | 94 | 156 | 2 | 8 / 8 / 9 | 0/120 | 2 | 16 | 33 |
+| 20k × 30, before | 7.8 | 11 | 253 | 347 | 4 | 8 / 8 / 9 | 0/120 | 2 | 23 | 117 |
+| 20k × 30, after | 7.8 | 16 | 344 | 472 | 4 | 8 / 8 / 9 | 0/120 | 3 | 34 | 172 |
+| 50k × 50, before | 27.3 | 59 | 1173 | 1487 | 7 | 8 / 8 / 9 | 0/120 | 3 | 70 | 312 |
+| 50k × 50, after | 27.3 | 68 | 1232 | 1556 | 7 | 8 / 8 / 9 | 0/120 | 3 | 87 | 259 |
+| 100k × 30, before | 32.8 | 80 | 1384 | 1694 | 13 | 8 / 8 / 9 | 0/120 | 3 | 84 | 350 |
+| 100k × 30, after | 32.8 | 79 | 1366 | 1668 | 9 | 8 / 8 / 9 | 0/120 | 2 | 96 | 350 |
+
+The harness times the CPU side of a draw. The GPU time of one redraw,
+waited for with a one-pixel read-back (median of 20, 1600 × 1000, all rows
+selected):
+
+| Size | draft frame (plain lines), before / after | final frame (anti-aliased), before / after |
+|---|---|---|
+| 20k × 30 | 2.9 / 8.0 ms | 2.9 / 7.9 ms |
+| 100k × 30 | 7.8 / 8.1 ms | 12.8 / 35.8 ms |
+
+Reading it:
+
+- Drag frames stay at 8 ms median and 9 ms max at every size. A first
+  version summed everything in single floats with one blend equation per
+  target: the line pass is bound by blending into the targets, and at
+  100,000 rows it took 30 ms per draft frame, so drags ran at 17 ms per
+  frame. Single-float targets alone took 3.4 times as long as half floats,
+  and per-target blend equations another 18%. Now every target shares one
+  equation, and draft frames (a drag over more than 20,000 rows) sum in
+  half floats, as close to the old cost as measured; they may bead dense
+  bundles until the drag ends.
+- Final frames sum the coverages a color is divided by in single floats:
+  at 100,000 rows the GPU takes 36 ms instead of 13 for one, on a brush
+  release, a recolor or a scroll. Drags over 20,000 rows or fewer draw
+  final frames, which now take 8 ms on the GPU at 20,000 rows: inside the
+  8.3 ms frame on this machine, with no margin on a slower GPU.
+- Load columns move within the drift between sessions seen in earlier
+  rounds; the JS heap is one sample after the run.

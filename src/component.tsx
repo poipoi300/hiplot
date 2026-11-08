@@ -32,8 +32,10 @@ import { ColorLegend } from "./legend";
 import { setupBrowserCompat } from "./lib/browsercompat";
 import {
   type ColorBinning,
+  type ColorMode,
   colorBinning,
   effectiveColorMap,
+  isColorMode,
   NUMERIC_COLOR_MAPS,
 } from "./lib/colors";
 import { experimentRows } from "./lib/compress";
@@ -67,6 +69,7 @@ import {
   ParamType,
   PSTATE_COLOR_BY,
   PSTATE_COLOR_MAP,
+  PSTATE_COLOR_MODE,
   PSTATE_FILTERS,
   PSTATE_PARAMS,
 } from "./types";
@@ -223,6 +226,8 @@ interface HiPlotState extends IDatasets {
   colormap: string | null;
   /** The numeric color map picked in the legend; null until one is. */
   pickedColorMap: string | null;
+  /** What overlapping lines of a numeric color-by column show, picked in the legend. */
+  colorMode: ColorMode;
 
   rows_filtered_filters: Array<Filter>; // `rows_all` -> `rows_filtered`
   rows_selected_filter: Filter | null; // `rows_filtered` -> `rows_selected`
@@ -356,6 +361,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       experiment: null,
       colormap: null,
       pickedColorMap: readState(persistentState, PSTATE_COLOR_MAP, isNumericColorMap, null),
+      colorMode: readState(persistentState, PSTATE_COLOR_MODE, isColorMode, "mean"),
       loadStatus: HiPlotLoadStatus.None,
       loadPromise: null,
       error: null,
@@ -658,6 +664,11 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
   onPickColorMap = (id: string): void => {
     this.setState({ pickedColorMap: id });
     this.state.persistentState.set(PSTATE_COLOR_MAP, id);
+  };
+  /** A color mode picked in the legend, remembered with the page state. */
+  onPickColorMode = (mode: ColorMode): void => {
+    this.setState({ colorMode: mode });
+    this.state.persistentState.set(PSTATE_COLOR_MODE, mode);
   };
   getColorForRow(trial: Datapoint, alpha: number): string {
     const colorby = this.state.colorby;
@@ -964,6 +975,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
         sendMessage: this.sendMessage.bind(this),
         get_color_for_row: this.getColorForRow.bind(this),
         color_binning: this.colorBinning(),
+        color_mode: this.state.colorMode,
         dark: this.state.dark,
         experiment,
         params_def: this.state.params_def,
@@ -1012,6 +1024,8 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
                   )}
                   theme={this.state.dark ? "dark" : "light"}
                   onPickColorMap={this.onPickColorMap}
+                  colorMode={this.state.colorMode}
+                  onPickColorMode={this.onPickColorMode}
                 />
               )
             }
