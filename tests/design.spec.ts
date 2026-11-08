@@ -312,3 +312,37 @@ test("a numeric color map can be picked and is remembered", async ({ page }) => 
   await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
   await expect(page.getByTestId("color-map-button")).toHaveText("Magma");
 });
+
+test("an axis opens its menu from anywhere along it, and the plot never shows the browser's", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  const axis = page
+    .locator("svg g.dimension")
+    .filter({ has: page.locator("[data-dimension='lr']") });
+  const line = await axis.locator(".domain").boundingBox();
+  if (line === null) {
+    throw new Error("No axis line");
+  }
+  // On the axis line, away from the title.
+  await page.mouse.click(line.x + 2, line.y + line.height * 0.6, { button: "right" });
+  const menu = page.locator(".context-menu.show");
+  await expect(menu).toBeVisible();
+  await expect(menu).toContainText("Hide axis");
+  await menu.locator(".dropdown-item", { hasText: "Close menu" }).click();
+
+  // Beside the title's letters, inside the band that takes the pointer.
+  const hit = await axis.locator(".pplot-label-hit").boundingBox();
+  expect(hit).not.toBeNull();
+  const title = await axis.locator(".pplot-label").boundingBox();
+  expect((hit?.height ?? 0) * (hit?.width ?? 0)).toBeGreaterThan(
+    (title?.height ?? 0) * (title?.width ?? 0),
+  );
+
+  const nativeMenuPrevented = await page.locator(".pplot-root").evaluate((root) => {
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    root.querySelector("canvas")?.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(nativeMenuPrevented).toBe(true);
+});

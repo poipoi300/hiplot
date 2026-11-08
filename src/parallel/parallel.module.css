@@ -93,6 +93,14 @@
   stroke-width: 3px;
   stroke-linejoin: round;
 }
+/* The band along each axis title that takes the pointer. */
+.titleHit {
+  fill: transparent;
+  cursor: grab;
+}
+.titleHit:active {
+  cursor: grabbing;
+}
 .axis text.pplotLabel {
   fill: var(--hip-fg);
   font-size: 12px;

@@ -138,6 +138,12 @@ interface LinePoint {
   y: number;
 }
 
+/**
+ * Right-click opens the column menu over axes; elsewhere over the plot it
+ * opens nothing, rather than the browser's menu.
+ */
+const preventNativeMenu = (event: MouseEvent): void => event.preventDefault();
+
 /** Length of the horizontal stub at each end of a line, and around missing values. */
 const STUB_PIXELS = 15;
 
@@ -208,6 +214,9 @@ const TITLE_ANGLE_DEGREES = 35;
 const TITLE_START_X = 4;
 const TITLE_START_Y = -18;
 const TITLE_MAX_PIXELS = 150;
+/** The band around a title that takes the pointer: its height, and its reach past the text. */
+const TITLE_HIT_HEIGHT = 22;
+const TITLE_HIT_PADDING = 6;
 /** The drag grip sits between the axis top and its title. */
 const GRIP_OFFSET_Y = -9;
 /**
@@ -524,6 +533,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   };
   componentWillUnmount() {
     this.root_ref.current?.removeEventListener("wheel", this.onWheel);
+    this.root_ref.current?.removeEventListener("contextmenu", preventNativeMenu);
     d3.select(this.svgg_ref.current).selectAll("*").remove();
     this.cancelDrawing();
     this.webgl?.dispose();
@@ -988,6 +998,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     const foregroundCanvas = mounted(this.foreground_ref);
     // Not passive: a horizontal gesture over the plot scrolls the axes, not the page.
     mounted(me.root_ref).addEventListener("wheel", me.onWheel, { passive: false });
+    mounted(me.root_ref).addEventListener("contextmenu", preventNativeMenu);
     me.webgl = WebGLLineRenderer.create(foregroundCanvas);
     if (me.webgl === null) {
       const foreground = foregroundCanvas.getContext("2d");
@@ -1133,12 +1144,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             .append("title")
             .text(`${labelTextFromHtml(pd.label_html, pd.name)} (${hint})`);
         })
-        .on("contextmenu", (event: MouseEvent, dim: string) => {
-          if (me.showContextMenu(event.pageX, event.pageY, dim)) {
-            event.preventDefault();
-            event.stopPropagation();
-          }
-        })
         .on("touchstart", function (this: SVGTextElement, event: TouchEvent, dim: string) {
           if (!me.props.context_menu_ref?.current) {
             return;
@@ -1180,8 +1185,32 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             }
           },
         );
+      // A transparent band along each title, wider than its letters: the
+      // title is easy to grab, drag and right-click.
+      dimensions_dom
+        .select<SVGGElement>(`.${pstyle.axis}`)
+        .insert("rect", ".pplot-label")
+        .classed(pstyle.titleHit, true)
+        .classed("pplot-label-hit", true)
+        .attr("x", -TITLE_HIT_PADDING)
+        .attr("y", -TITLE_HIT_HEIGHT / 2 - 4)
+        .attr("height", TITLE_HIT_HEIGHT)
+        .attr(
+          "transform",
+          `translate(${TITLE_START_X}, ${TITLE_START_Y}) rotate(${-TITLE_ANGLE_DEGREES})`,
+        );
       me.updateAxisTitlesAnglesAndFontSize();
-      dimensions_dom.selectAll<SVGElement, string>(".pplot-label").call(create_drag_beh());
+      dimensions_dom
+        .selectAll<SVGElement, string>(".pplot-label, .pplot-label-hit")
+        .call(create_drag_beh());
+      // Right-clicking anywhere on an axis's column (title, grip, ticks,
+      // brush band) opens its menu.
+      dimensions_dom.on("contextmenu", (event: MouseEvent, dim: string) => {
+        if (me.showContextMenu(event.pageX, event.pageY, dim)) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      });
 
       // A grip above each axis: a second, more visible handle to drag it by.
       const grips = dimensions_dom
@@ -1191,7 +1220,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       grips
         .append("title")
         .text("Drag to move this axis, or out of the plot to hide it; click to invert it");
-      grips.append("rect").attr("x", -7).attr("y", -6).attr("width", 14).attr("height", 12);
+      grips.append("rect").attr("x", -11).attr("y", -8).attr("width", 22).attr("height", 16);
       for (const cx of [-2.5, 2.5]) {
         for (const cy of [-3.5, 0, 3.5]) {
           grips.append("circle").attr("cx", cx).attr("cy", cy).attr("r", 1.1);
@@ -1423,7 +1452,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         "transform",
         `translate(${TITLE_START_X}, ${TITLE_START_Y}) rotate(${-TITLE_ANGLE_DEGREES})`,
       );
-      fitText(this, fullText, maxLength);
+      const length = fitText(this, fullText, maxLength);
+      const hit = this.previousElementSibling;
+      if (hit instanceof SVGRectElement && hit.classList.contains("pplot-label-hit")) {
+        hit.setAttribute("width", String(length + 2 * TITLE_HIT_PADDING));
+      }
     });
   }
 
