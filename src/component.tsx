@@ -642,9 +642,12 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       return cached.binning;
     }
     const binning = colorBinning(pd, colormap, dark ? "dark" : "light", pickedColorMap);
+    // Rows without the value, and on numeric columns NaN and infinities, take the
+    // missing color; categories all have their own.
     const hasMissing =
       pd.optional ||
-      pd.distinct_values.some((value) => binning.binOf(value) === binning.missingBin);
+      (pd.numeric &&
+        pd.distinct_values.some((value) => typeof value !== "number" || !Number.isFinite(value)));
     this.cachedColorBinning = { pd, colormap, pickedColorMap, dark, binning, hasMissing };
     return binning;
   }

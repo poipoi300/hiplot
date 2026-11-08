@@ -224,6 +224,22 @@ vec2 chordNormal(vec2 from, vec2 to) {
   return vec2(-direction.y, direction.x);
 }
 
+/**
+ * Straight lines only: the far end of the segment that joins this one at axis
+ * \`joint\`, toward axis \`far\` (the next point, or the end of a stub where
+ * the row has no value), in device pixels. One texel fetch where the
+ * general \`segmentOf\` takes two.
+ */
+vec2 straightNeighbor(int joint, int far, int row, float jointY, float direction) {
+  if (far >= 0 && far < u_axisCount) {
+    float y = pixelY(far, row);
+    if (y > ${MISSING_THRESHOLD}) {
+      return vec2(axis(far).x, y) * u_deviceScale;
+    }
+  }
+  return vec2(axis(joint).x + direction * 15.0, jointY) * u_deviceScale;
+}
+
 void main() {
   int segments = u_axisCount + 1;
   int line = gl_InstanceID / segments;
@@ -258,12 +274,16 @@ void main() {
     if (point > 0) {
       before = pointOf(current, t - step);
     } else if (hasBefore) {
-      before = pointOf(segmentOf(segment - 1, row), 1.0 - step);
+      before = u_curved
+        ? pointOf(segmentOf(segment - 1, row), 1.0 - step)
+        : straightNeighbor(segment - 1, segment - 2, row, current.p0.y, -1.0);
     }
     if (point < u_samples - 1) {
       after = pointOf(current, t + step);
     } else if (hasAfter) {
-      after = pointOf(segmentOf(segment + 1, row), step);
+      after = u_curved
+        ? pointOf(segmentOf(segment + 1, row), step)
+        : straightNeighbor(segment, segment + 1, row, current.p3.y, 1.0);
     }
     vec2 normalIn = chordNormal(before, position);
     vec2 normalOut = chordNormal(position, after);
