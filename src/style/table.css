@@ -441,3 +441,15 @@
   outline: 2px solid var(--hip-accent);
   outline-offset: 1px;
 }
+/* Numbers at one width per column (see fixedWidthFormatter): right-aligned
+   tabular figures line the decimal points and exponents up. */
+:is(.hip_thm--light, .hip_thm--dark)
+  .hiplot-table-panel
+  table.hiplot-table.dataTable
+  > tbody
+  > tr
+  > td.hiplot-number {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

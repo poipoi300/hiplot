@@ -44,6 +44,7 @@ interface Magnitudes {
   smallest: number;
   allIntegers: boolean;
   any: boolean;
+  anyZero: boolean;
 }
 
 function magnitudes(values: Iterable<number>): Magnitudes {
@@ -51,6 +52,7 @@ function magnitudes(values: Iterable<number>): Magnitudes {
   let smallest = Number.POSITIVE_INFINITY;
   let allIntegers = true;
   let any = false;
+  let anyZero = false;
   for (const value of values) {
     if (!Number.isFinite(value)) {
       continue;
@@ -60,10 +62,12 @@ function magnitudes(values: Iterable<number>): Magnitudes {
     largest = Math.max(largest, magnitude);
     if (magnitude > 0) {
       smallest = Math.min(smallest, magnitude);
+    } else {
+      anyZero = true;
     }
     allIntegers &&= Number.isInteger(value);
   }
-  return { largest, smallest, allIntegers, any };
+  return { largest, smallest, allIntegers, any, anyZero };
 }
 
 /** Whether nonzero magnitudes from `smallest` to `largest` read best in scientific notation. */
@@ -78,7 +82,10 @@ function needsScientific({ largest, smallest }: Magnitudes): boolean {
  * three significant digits.
  */
 export function columnNotation(values: Iterable<number>): Notation {
-  const found = magnitudes(values);
+  return notationOf(magnitudes(values));
+}
+
+function notationOf(found: Magnitudes): Notation {
   if (!found.any || (found.allIntegers && found.largest < LARGEST_FIXED)) {
     return { kind: "integer" };
   }
@@ -136,6 +143,44 @@ export function formatterFor(notation: Notation): (value: number) => string {
       return value === 0 ? "0" : format(value).replace("e+", "e");
     }
     return format(notation.kind === "integer" ? Math.round(value) : value);
+  };
+}
+
+/** The decimal exponent `value` is written with at `digits` significant digits. */
+function exponentAt(value: number, digits: number): number {
+  return Number(value.toExponential(digits - 1).split("e")[1]);
+}
+
+/**
+ * A formatter writing every value of a column at one width, for a table
+ * whose numbers are right-aligned in tabular figures: the column's notation
+ * (see `columnNotation`), and in scientific notation, exponents zero-padded
+ * to the same number of digits and signed on every value when the column's
+ * exponents have both signs. The decimal points then line up, and so do the
+ * exponents. Zero is written in the column's notation too.
+ */
+export function fixedWidthFormatter(values: Iterable<number>): (value: number) => string {
+  const found = magnitudes(values);
+  const notation = notationOf(found);
+  if (notation.kind !== "scientific") {
+    return formatterFor(notation);
+  }
+  const exponents = [
+    exponentAt(found.largest, notation.digits),
+    ...(Number.isFinite(found.smallest) ? [exponentAt(found.smallest, notation.digits)] : []),
+    ...(found.anyZero ? [0] : []),
+  ];
+  const signed = Math.min(...exponents) < 0 && Math.max(...exponents) >= 0;
+  const width = Math.max(...exponents.map((exponent) => String(Math.abs(exponent)).length));
+  const format = plainLocale.format(`.${notation.digits - 1}e`);
+  return (value) => {
+    if (!Number.isFinite(value)) {
+      return String(value);
+    }
+    const [mantissa, exponentText] = format(value).split("e");
+    const exponent = Number(exponentText);
+    const sign = exponent < 0 ? "-" : signed ? "+" : "";
+    return `${mantissa}e${sign}${String(Math.abs(exponent)).padStart(width, "0")}`;
   };
 }
 

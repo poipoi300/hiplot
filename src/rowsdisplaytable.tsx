@@ -43,7 +43,8 @@ import {
 } from "./filters";
 import style from "./hiplot.module.css";
 import controls from "./lib/controls.module.css";
-import { columnNotation, formatterFor } from "./lib/numberformat";
+import { parse_numeric } from "./lib/d3_scales";
+import { fixedWidthFormatter } from "./lib/numberformat";
 import { mounted } from "./lib/refs";
 import type { HiPlotPluginData } from "./plugin";
 import type { Datapoint, DatapointValue } from "./types";
@@ -296,18 +297,21 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
         orderable: x !== "", // Don't allow to sort by color
       };
       if (x !== "" && pd.numeric) {
-        // Shown rounded, in one notation for the whole column, with the exact
-        // value in a tooltip; sorted and searched exactly. Only the display
-        // rendering is a function: sorting and searching read the value
-        // itself, without a call per row.
-        const format = formatterFor(
-          columnNotation(
-            pd.distinct_values.filter((value): value is number => typeof value === "number"),
-          ),
+        // Shown rounded at one width for the whole column, with the exact
+        // value in a tooltip; sorted and searched exactly. The format is
+        // decided from every row of the experiment, so filtering, searching
+        // and paging never change it. Only the display rendering is a
+        // function: sorting and searching read the value itself, without a
+        // call per row.
+        const format = fixedWidthFormatter(
+          me.props.params_def_unfiltered[x].distinct_values.map(parse_numeric),
         );
+        column.className = "hiplot-number";
         column.render = {
-          display: (data: DatapointValue) =>
-            typeof data === "number" ? `<span title="${data}">${format(data)}</span>` : data,
+          display: (data: DatapointValue) => {
+            const value = parse_numeric(data);
+            return Number.isFinite(value) ? `<span title="${data}">${format(value)}</span>` : data;
+          },
         };
       }
       return column;
