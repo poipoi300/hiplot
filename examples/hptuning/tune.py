@@ -36,9 +36,14 @@ import hiplot as hip
 
 
 def write_page(experiment: hip.Experiment, out: Path) -> None:
-    """Writes the trials as a HiPlot page: log axes for rates and losses, colored by accuracy."""
+    """Writes the trials as a HiPlot page: log axes for rates and losses, colored by accuracy.
+
+    The uid is the trial's index in the search, shown as a number next to the
+    accuracy: how many trials it took to get close to the best.
+    """
     for log_column in ("lr", "weight_decay", "val_loss", "best_val_loss", "train_loss"):
         experiment.parameters_definition[log_column].type = hip.ValueType.NUMERIC_LOG
+    experiment.parameters_definition["uid"].type = hip.ValueType.NUMERIC
     experiment.colorby = "val_accuracy"
     experiment.display_data(hip.Displays.PARALLEL_PLOT).update(
         {
@@ -57,9 +62,10 @@ def write_page(experiment: hip.Experiment, out: Path) -> None:
                 "train_loss",
                 "val_loss",
                 "val_accuracy",
+                "uid",
                 "diverged",
             ],
-            "hide": ["uid", "params", "wall_time_s", "best_val_loss"],
+            "hide": ["params", "wall_time_s", "best_val_loss"],
         }
     )
     experiment.display_data(hip.Displays.XY).update({"axis_x": "lr", "axis_y": "val_accuracy"})
