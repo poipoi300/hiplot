@@ -41,7 +41,8 @@
 .hip_thm--dark {
   --hip-bg: #15181c;
   --hip-fg: #e4e7eb;
-  --hip-muted: #9ba3ad;
+  /* 8.3:1 on --hip-bg: secondary text stays well above WCAG AA. */
+  --hip-muted: #a9b1bb;
   --hip-axis: #5e666f;
   --hip-tick-text: #d5dae0;
   --hip-tick-halo: rgba(21, 24, 28, 0.92);

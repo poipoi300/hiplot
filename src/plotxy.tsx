@@ -15,9 +15,11 @@ import { create_d3_scale, type ParamDef, type ParamScale } from "./infertypes";
 import { IS_MOBILE } from "./lib/browsercompat";
 import { getLogScaleTickValues, type Scale } from "./lib/d3_scales";
 import { labelTextFromHtml } from "./lib/escape";
+import { powerOfTenLabels } from "./lib/numberformat";
 import { mounted } from "./lib/refs";
 import { ResizableH } from "./lib/resizable";
 import { isString, readState } from "./lib/savedstate";
+import { valueFormatter } from "./parallel/axisformat";
 import type { HiPlotPluginData } from "./plugin";
 import { type Datapoint, type DatapointValue, ParamType } from "./types";
 
@@ -104,6 +106,27 @@ function brushRectangle(selection: d3.BrushSelection): [[number, number], [numbe
     throw new Error("Expected the 2D selection of a brush on both axes");
   }
   return [first, second];
+}
+
+/** Room left of the y tick labels, and their offsets from the axis line. */
+const Y_LABEL_PADDING = 8;
+const Y_AXIS_OFFSET = 10;
+const Y_TICK_LABEL_OFFSET = 9;
+/** The tick font, as `.plotxy-graph-svg` sets it. */
+const TICK_FONT_PIXELS = 11;
+/** The y tick labels never take more than this share of the plot's width. */
+const MAX_LABEL_SHARE = 0.4;
+
+let tickMeasureContext: CanvasRenderingContext2D | null = null;
+/** The width of the widest of `labels` in the tick font, measured without a layout. */
+function widestLabel(labels: ReadonlyArray<string>, fontFamily: string): number {
+  tickMeasureContext ??= document.createElement("canvas").getContext("2d");
+  if (tickMeasureContext === null) {
+    throw new Error("Canvas 2D is not available");
+  }
+  tickMeasureContext.font = `${TICK_FONT_PIXELS}px ${fontFamily}`;
+  const context = tickMeasureContext;
+  return labels.reduce((widest, label) => Math.max(widest, context.measureText(label).width), 0);
 }
 
 function axisGenerator<Domain extends d3.AxisDomain>(
@@ -268,6 +291,7 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
     const highlights = canvas2dContext(mounted(this.canvas_highlighted_ref));
     highlights.globalCompositeOperation = "destination-over";
 
+    // The left margin follows the widest y tick label (see recompute_scale).
     const margin = { top: 40, right: 20, bottom: 70, left: 75 };
     let x_scale: ParamScale;
     let y_scale: ParamScale;
@@ -286,34 +310,37 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
       scale.range(range);
       return scale;
     }
-    function getTickFormatter(param: string, scale: Scale): NumberFormatter | null {
+    /**
+     * One notation for every tick of an axis, as the parallel plot writes
+     * the same column: powers of ten alike on log axes, one fixed or
+     * scientific notation on linear ones.
+     */
+    function getTickFormatter(
+      param: string,
+      scale: ParamScale,
+      tickValues: number[] | null,
+      tickCount: number,
+    ): NumberFormatter | null {
       const paramDef = me.props.params_def[param];
-      if (!paramDef) {
+      if (scale.kind !== "continuous" || paramDef.type === ParamType.TIMESTAMP) {
         return null;
       }
-      if (paramDef.type === ParamType.TIMESTAMP) {
-        return null;
+      const values = valueFormatter(scale, tickCount);
+      if (paramDef.type !== ParamType.NUMERICLOG || tickValues === null) {
+        return values;
       }
-      if (paramDef.ticks_format) {
-        return d3.format(paramDef.ticks_format);
+      const powerLabels = powerOfTenLabels(tickValues);
+      const labels = new Map(tickValues.map((power, index) => [power, powerLabels[index]]));
+      return (value) => labels.get(value) ?? values(value);
+    }
+    /** The y tick labels as drawn, to size the left margin to the widest. */
+    function yTickLabels(scale: ParamScale, ticks: AxisTicks): string[] {
+      if (scale.kind !== "continuous") {
+        return scale.domain().map(String);
       }
-      const isNumericLike =
-        paramDef.type === ParamType.NUMERIC ||
-        paramDef.type === ParamType.NUMERICLOG ||
-        paramDef.type === ParamType.NUMERICPERCENTILE;
-      if (!isNumericLike || scale.kind !== "continuous") {
-        return null;
-      }
-      const maxAbsDomain = d3.max(
-        scale
-          .domain()
-          .map((v) => Math.abs(v))
-          .filter((v) => Number.isFinite(v)),
-      );
-      if (maxAbsDomain === undefined || maxAbsDomain < 1e6) {
-        return null;
-      }
-      return d3.format(".3~e");
+      const values = ticks.values ?? scale.ticks(ticks.count);
+      const format = ticks.format ?? scale.tickFormat(ticks.count);
+      return values.map((value) => format(value));
     }
     function getTickValues(param: string, scale: Scale, approxTickCount: number): number[] | null {
       const paramDef = me.props.params_def[param];
@@ -393,27 +420,39 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
         me.props.dots_highlighed_thickness,
         0,
       );
+      y_scale = create_scale(axes.y, [
+        me.state.height - margin.bottom - insideGraphMargin,
+        margin.top + insideGraphMargin,
+      ]);
+      const yTickCount = 1 + me.state.height / 40;
+      const yTickValues = getTickValues(axes.y, y_scale, yTickCount);
+      const yTicks: AxisTicks = {
+        count: yTickCount,
+        values: yTickValues,
+        format: getTickFormatter(axes.y, y_scale, yTickValues, yTickCount),
+      };
+      const widest = widestLabel(
+        yTickLabels(y_scale, yTicks),
+        getComputedStyle(mounted(me.root_ref)).fontFamily,
+      );
+      margin.left = Math.ceil(
+        Math.min(
+          me.state.width * MAX_LABEL_SHARE,
+          widest + Y_TICK_LABEL_OFFSET + Y_AXIS_OFFSET + Y_LABEL_PADDING,
+        ),
+      );
       x_scale = create_scale(axes.x, [
         margin.left + insideGraphMargin,
         me.state.width - margin.right - insideGraphMargin,
       ]);
       x_scale_orig = x_scale;
-      y_scale = create_scale(axes.y, [
-        me.state.height - margin.bottom - insideGraphMargin,
-        margin.top + insideGraphMargin,
-      ]);
       y_scale_orig = y_scale;
-      const yTickCount = 1 + me.state.height / 40;
       const xTickCount = 1 + me.state.width / 80;
-      const yTicks: AxisTicks = {
-        count: yTickCount,
-        values: getTickValues(axes.y, y_scale, yTickCount),
-        format: getTickFormatter(axes.y, y_scale),
-      };
+      const xTickValues = getTickValues(axes.x, x_scale, xTickCount);
       const xTicks: AxisTicks = {
         count: xTickCount,
-        values: getTickValues(axes.x, x_scale, xTickCount),
-        format: getTickFormatter(axes.x, x_scale),
+        values: xTickValues,
+        format: getTickFormatter(axes.x, x_scale, xTickValues, xTickCount),
       };
       zoom_brush = d3
         .brush()
@@ -425,7 +464,7 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
 
       yAxis = (g) => {
         const pd = me.props.params_def[me.requireAxes().y];
-        g.attr("transform", `translate(${margin.left - 10},0)`)
+        g.attr("transform", `translate(${margin.left - Y_AXIS_OFFSET},0)`)
           .call(buildAxis("left", y_scale, yTicks, margin.left + margin.right - me.state.width))
           .call((axisGroup) => axisGroup.select(".domain").remove())
           .call((axisGroup) => append_axis_label(axisGroup, pd, { x: 13, y: 25, anchor: "start" }))
@@ -533,11 +572,8 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
 
       dot.append("circle").attr("r", 2.5);
 
-      dot
-        .append("text")
-        .style("font", "10px sans-serif")
-        .attr("text-anchor", "middle")
-        .attr("y", -8);
+      dot.append("text").classed(style.plotxyHoverText, true).attr("text-anchor", "middle");
+      dot.select("text").attr("y", -8);
 
       if ("ontouchstart" in document)
         hoverTarget

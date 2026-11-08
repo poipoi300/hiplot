@@ -15,6 +15,9 @@ import { HiPlotLoadStatus, type LoadURIPromise, type LoadURIPromiseResult } from
 
 export const PSTATE_LOAD_URI = "load_uri";
 
+/** Height of the experiment input while it is not being edited: one header control. */
+const MINIMIZED_HEIGHT_PIXELS = 28;
+
 interface TextAreaProps {
   onSubmit: (content: string) => void;
   enabled: boolean;
@@ -45,7 +48,7 @@ export class RunsSelectionTextArea extends React.Component<TextAreaProps, TextAr
       elem.style.height = `${elem.scrollHeight}px`;
       return;
     }
-    elem.style.height = "55px";
+    elem.style.height = `${MINIMIZED_HEIGHT_PIXELS}px`;
   }
   onKeyDown(evt: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (evt.which === 13 && !evt.shiftKey) {
@@ -70,7 +73,12 @@ export class RunsSelectionTextArea extends React.Component<TextAreaProps, TextAr
   render() {
     return (
       <textarea
-        style={{ height: "55px", flex: 1, minWidth: "100px" }}
+        style={{
+          height: `${MINIMIZED_HEIGHT_PIXELS}px`,
+          // Once loaded it shares the header row; before, it is the row.
+          flex: this.props.minimizeWhenOutOfFocus ? "0 1 160px" : "1 1 auto",
+          minWidth: "100px",
+        }}
         ref={this.textarea}
         className={style.runsSelectionTextarea}
         disabled={!this.props.enabled}

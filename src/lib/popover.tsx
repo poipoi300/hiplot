@@ -24,9 +24,21 @@ interface PopoverProps {
   testId?: string;
 }
 
+/** Where the open panel sits in the viewport, from its button's edges. */
+interface PanelPlacement {
+  top: number;
+  left?: number;
+  right?: number;
+}
+
+/** Gap between the button and its panel. */
+const PANEL_GAP_PIXELS = 6;
+
 /**
- * A button that opens a panel below it. The panel closes on Escape (focus
- * returns to the button), on a pointer press outside it, and from its content.
+ * A button that opens a panel below it. The panel is fixed to the viewport,
+ * so a toolbar that clips its content (the header row) cannot clip it. It
+ * closes on Escape (focus returns to the button), on a pointer press outside
+ * it, when the page scrolls or resizes under it, and from its content.
  */
 export function Popover({
   trigger,
@@ -36,7 +48,22 @@ export function Popover({
   children,
   testId,
 }: PopoverProps): React.ReactElement {
-  const [open, setOpen] = useState(false);
+  const [placement, setPlacement] = useState<PanelPlacement | null>(null);
+  const open = placement !== null;
+  const setOpen = (next: boolean): void => {
+    const button = buttonRef.current;
+    if (!next || button === null) {
+      setPlacement(null);
+      return;
+    }
+    const rect = button.getBoundingClientRect();
+    const top = rect.bottom + PANEL_GAP_PIXELS;
+    setPlacement(
+      align === "end"
+        ? { top, right: document.documentElement.clientWidth - rect.right }
+        : { top, left: rect.left },
+    );
+  };
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelId = useId();
@@ -47,20 +74,31 @@ export function Popover({
     }
     const onPointerDown = (event: PointerEvent): void => {
       if (event.target instanceof Node && !rootRef.current?.contains(event.target)) {
-        setOpen(false);
+        setPlacement(null);
       }
     };
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {
-        setOpen(false);
+        setPlacement(null);
         buttonRef.current?.focus();
       }
     };
+    const onMove = (event: Event): void => {
+      // Scrolling inside the panel (a long column list) keeps it open.
+      if (event.target instanceof Node && rootRef.current?.contains(event.target)) {
+        return;
+      }
+      setPlacement(null);
+    };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
     };
   }, [open]);
 
@@ -79,14 +117,15 @@ export function Popover({
       >
         {trigger}
       </button>
-      {open && (
+      {placement !== null && (
         <div
           id={panelId}
           role="dialog"
           aria-label={label}
-          className={`${style.panel} ${align === "end" ? style.alignEnd : style.alignStart}`}
+          className={style.panel}
+          style={placement}
         >
-          {children(() => setOpen(false))}
+          {children(() => setPlacement(null))}
         </div>
       )}
     </div>

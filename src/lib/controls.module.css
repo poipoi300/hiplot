@@ -1,19 +1,24 @@
 /*
- * The small controls of HiPlot's toolbars: quiet outlined buttons and
- * segmented choices, shared so every toolbar speaks the same vocabulary.
+ * The controls of HiPlot's toolbars: quiet outlined buttons and segmented
+ * choices, one 28 px control shared so every toolbar speaks the same
+ * vocabulary (see DESIGN.md). `button.button` outranks the scoped Bootstrap
+ * reboot, which makes buttons inherit the page's font size.
  */
-.button {
+button.button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  box-sizing: border-box;
+  height: 28px;
   font: inherit;
-  font-size: 12px;
-  line-height: 22px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 26px;
   padding: 0 10px;
   border: 1px solid var(--hip-rule);
   border-radius: 6px;
   background: transparent;
-  color: var(--hip-muted);
+  color: var(--hip-fg);
   cursor: pointer;
   white-space: nowrap;
   transition:
@@ -23,8 +28,8 @@
 }
 .button:hover:not(:disabled),
 .button[aria-expanded="true"] {
-  color: var(--hip-fg);
   border-color: var(--hip-axis);
+  background: var(--hip-brush-fill);
 }
 .button:disabled {
   opacity: 0.45;
@@ -33,6 +38,9 @@
 
 .segmented {
   display: inline-flex;
+  flex: none;
+  box-sizing: border-box;
+  height: 28px;
   min-width: 0;
   margin: 0;
   padding: 0;
@@ -41,9 +49,12 @@
   overflow: hidden;
 }
 .segmented button {
+  display: inline-flex;
+  align-items: center;
   font: inherit;
-  font-size: 12px;
-  line-height: 22px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 26px;
   padding: 0 10px;
   border: 0;
   background: transparent;
@@ -52,6 +63,13 @@
   transition:
     color 150ms ease-out,
     background-color 150ms ease-out;
+}
+/* Segments that are icons: square, the icon centered. */
+.iconSegmented button,
+.segmented button.iconSegment {
+  justify-content: center;
+  width: 30px;
+  padding: 0;
 }
 .segmented button + button {
   border-left: 1px solid var(--hip-rule);

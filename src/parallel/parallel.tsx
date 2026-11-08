@@ -11,6 +11,7 @@
 import * as d3 from "d3";
 import $ from "jquery";
 import React from "react";
+import { createPortal } from "react-dom";
 import _ from "underscore";
 import { type Filter, FilterType } from "../filters";
 import style from "../hiplot.module.css";
@@ -86,10 +87,7 @@ export interface ParallelPlotDisplayData {
 }
 // DISPLAYS_DATA_DOC_END
 
-export interface ParallelPlotData extends HiPlotPluginData, ParallelPlotDisplayData {
-  // Callback to notify parent when hidden columns change
-  onHiddenColumnsChange?: (count: number) => void;
-}
+export interface ParallelPlotData extends HiPlotPluginData, ParallelPlotDisplayData {}
 
 type BrushExtents = { [dimension: string]: [number, number] | null };
 /** An axis title being long-pressed on a touch screen. */
@@ -322,6 +320,32 @@ const CONTEXT_ALPHA_LIGHT = 0.28;
 const CONTEXT_ALPHA_DARK = 0.34;
 
 export type LineShape = "auto" | "curved" | "straight";
+
+/** The line shapes a user picks, drawn as the lines they make. */
+const LINE_SHAPE_ICONS = {
+  curved: (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M1.5 12.5C7 12.5 9 3.5 14.5 3.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  ),
+  straight: (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M1.5 12.5 14.5 3.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  ),
+} as const;
 const isLineShape = (value: unknown): value is LineShape =>
   value === "auto" || value === "curved" || value === "straight";
 
@@ -557,8 +581,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
       this.update_ticks();
       this.updateAxisTitlesAnglesAndFontSize();
-      // Dimensions affect which columns can be restored
-      this.props.onHiddenColumnsChange?.(this.getRestorableColumnsCount());
     }
     // Highlight polylines
     if (prevProps.rows_highlighted !== this.props.rows_highlighted && this.highlighted !== null) {
@@ -618,7 +640,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
     if (prevState.hide !== this.state.hide) {
       this.props.persistentState.set("hide", Array.from(this.state.hide));
-      this.props.onHiddenColumnsChange?.(this.getRestorableColumnsCount());
     }
     if (prevState.lineShape !== this.state.lineShape) {
       this.props.persistentState.set("lineShape", this.state.lineShape);
@@ -668,56 +689,67 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   render() {
     const limit = COUNT_FORMAT.format(STRAIGHT_LINES_ABOVE_ROWS);
-    const shapes: { shape: LineShape; label: string; title: string }[] = [
-      {
-        shape: "auto",
-        label: "Auto",
-        title: `Curves up to ${limit} rows; straight beyond, where curves blur into one mass`,
-      },
-      { shape: "curved", label: "Curved", title: "Smooth monotone splines through the axes" },
-      { shape: "straight", label: "Straight", title: "Straight segments between axes" },
-    ];
     const rows = COUNT_FORMAT.format(this.props.rows_filtered.length);
+    const shapes: { shape: LineShape; label: string; title: string; icon?: React.ReactElement }[] =
+      [
+        {
+          shape: "auto",
+          label: "Auto",
+          title: this.curvedLines()
+            ? `Auto: curved for ${rows} rows (straight above ${limit}, where curves blur into one mass)`
+            : `Auto: straight for ${rows} rows (curved up to ${limit})`,
+        },
+        {
+          shape: "curved",
+          label: "Curved",
+          title: "Curved: smooth monotone splines through the axes",
+          icon: LINE_SHAPE_ICONS.curved,
+        },
+        {
+          shape: "straight",
+          label: "Straight",
+          title: "Straight: straight segments between axes",
+          icon: LINE_SHAPE_ICONS.straight,
+        },
+      ];
+    const toolbar = (
+      <div className={pstyle.toolbar}>
+        <fieldset className={controls.segmented} aria-label="Line shape">
+          {shapes.map(({ shape, label, title, icon }) => (
+            <button
+              key={shape}
+              type="button"
+              title={title}
+              aria-label={label}
+              aria-pressed={this.state.lineShape === shape}
+              className={icon === undefined ? undefined : controls.iconSegment}
+              onClick={() => this.setState({ lineShape: shape })}
+            >
+              {icon ?? label}
+            </button>
+          ))}
+        </fieldset>
+        <ColumnPicker
+          columns={this.pickableColumns()}
+          shown={new Set(this.state.dimensions)}
+          onShow={(names) => this.setColumnsShown(names, true)}
+          onHide={(names) => this.setColumnsShown(names, false)}
+        />
+        <button
+          type="button"
+          className={controls.button}
+          disabled={!this.state.brushed}
+          title="Clear every brush and select all rows"
+          onClick={() => this.brush_clear_all()}
+        >
+          Reset brushes
+        </button>
+      </div>
+    );
+    const slot = this.props.header_toolbar;
     return (
       <>
-        <div className={pstyle.toolbar}>
-          <span>Lines</span>
-          <fieldset className={controls.segmented} aria-label="Line shape">
-            {shapes.map(({ shape, label, title }) => (
-              <button
-                key={shape}
-                type="button"
-                title={title}
-                aria-pressed={this.state.lineShape === shape}
-                onClick={() => this.setState({ lineShape: shape })}
-              >
-                {label}
-              </button>
-            ))}
-          </fieldset>
-          {this.state.lineShape === "auto" && (
-            <span className={pstyle.hint} data-testid="line-shape-hint">
-              {this.curvedLines()
-                ? `Curved for ${rows} rows (straight above ${limit})`
-                : `Straight for ${rows} rows (curved up to ${limit})`}
-            </span>
-          )}
-          <ColumnPicker
-            columns={this.pickableColumns()}
-            shown={new Set(this.state.dimensions)}
-            onShow={(names) => this.setColumnsShown(names, true)}
-            onHide={(names) => this.setColumnsShown(names, false)}
-          />
-          <button
-            type="button"
-            className={controls.button}
-            disabled={!this.state.brushed}
-            title="Clear every brush and select all rows"
-            onClick={() => this.brush_clear_all()}
-          >
-            Reset brushes
-          </button>
-        </div>
+        {slot === undefined ? toolbar : slot !== null && createPortal(toolbar, slot)}
         <ResizableH initialHeight={this.state.height} onResize={this.onResize}>
           <div
             ref={this.root_ref}
@@ -917,11 +949,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     );
 
     this.props.context_menu_ref?.current?.addCallback(this.columnContextMenu.bind(this), this);
-    // Notify parent of initial hidden columns count
-    const count = this.getRestorableColumnsCount();
-    if (count > 0) {
-      this.props.onHiddenColumnsChange?.(count);
-    }
   }
   columnContextMenu(column: string, cm: HTMLDivElement) {
     if (!this.can_restore_axis(column)) {
@@ -1936,26 +1963,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       };
     });
   }
-  restore_all_columns(): void {
-    const toRestore = Array.from(this.state.hide).filter((d) => this.can_restore_axis(d));
-    if (toRestore.length === 0) {
-      return;
-    }
-    this.setState((prevState) => {
-      const newHide = new Set(prevState.hide);
-      const newDimensions = prevState.dimensions.slice();
-      toRestore.forEach((d) => {
-        newHide.delete(d);
-        if (newDimensions.indexOf(d) === -1) {
-          newDimensions.push(d);
-        }
-      });
-      return {
-        hide: newHide,
-        dimensions: newDimensions,
-      };
-    });
-  }
   /** Every column that can be an axis, in the order of the experiment's columns. */
   pickableColumns(): PickableColumn[] {
     return Object.keys(this.props.params_def_unfiltered)
@@ -2007,9 +2014,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
     }
-  }
-  getRestorableColumnsCount(): number {
-    return Array.from(this.state.hide).filter((d) => this.can_restore_axis(d)).length;
   }
 
   can_hide_axis(d: string): boolean {

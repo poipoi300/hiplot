@@ -11,6 +11,7 @@ import { create_d3_scale_without_outliers, type ParamDefMap } from "../infertype
 import type { ColorBinning, RGB } from "../lib/colors";
 import { is_special_numeric } from "../lib/d3_scales";
 import { labelTextFromHtml } from "../lib/escape";
+import { columnNotation, formatterFor } from "../lib/numberformat";
 import { mounted } from "../lib/refs";
 import type { Datapoint } from "../types";
 import {
@@ -66,9 +67,9 @@ function axisEnds(params_def: ParamDefMap, column: string): [string, string] {
   if (scale.kind === "categorical") {
     return [String(domain[0]), String(domain[domain.length - 1])];
   }
-  const format = d3.format("~r");
-  const value = (number: number) => format(Number(number.toPrecision(3)));
-  return [value(Number(domain[0])), value(Number(domain[domain.length - 1]))];
+  const ends = [Number(domain[0]), Number(domain[domain.length - 1])];
+  const format = formatterFor(columnNotation(ends));
+  return [format(ends[0]), format(ends[1])];
 }
 
 type Point3 = [number, number, number];

@@ -17,6 +17,7 @@ import {
   type Scale,
 } from "../lib/d3_scales";
 import { labelTextFromHtml } from "../lib/escape";
+import { powerOfTenLabels } from "../lib/numberformat";
 import { mounted } from "../lib/refs";
 import { type Datapoint, ParamType } from "../types";
 
@@ -113,12 +114,11 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
       return;
     }
     const tickValues = getLogScaleTickValues(dataScale.domain(), tickCount);
-    if (tickValues) {
-      axis.tickValues(tickValues);
+    if (tickValues === null) {
+      return;
     }
-    if (this.props.param_def.ticks_format) {
-      axis.tickFormat(d3.format(this.props.param_def.ticks_format));
-    }
+    const labels = powerOfTenLabels(tickValues);
+    axis.tickValues(tickValues).tickFormat((_value, index) => labels[index]);
   }
   createDataAxis(dataScale: Scale | d3.ScalePoint<string>, animate: boolean): void {
     if ("kind" in dataScale && dataScale.kind === "continuous") {

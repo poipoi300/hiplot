@@ -36,9 +36,13 @@
   display: block;
 }
 
-/* Search, with a drawn magnifier. */
+/*
+ * Search, with a drawn magnifier inside the right end of the input. It gives
+ * way to the browser's clear button once something is typed.
+ */
 :is(.hip_thm--light, .hip_thm--dark) .hiplot-table-panel .dt-search {
   position: relative;
+  width: fit-content;
 }
 :is(.hip_thm--light, .hip_thm--dark) .hiplot-table-panel .dt-search label:empty {
   display: none;
@@ -47,7 +51,7 @@
   content: "";
   position: absolute;
   top: 50%;
-  left: 9px;
+  right: 11px;
   width: 13px;
   height: 13px;
   transform: translateY(-50%);
@@ -56,6 +60,11 @@
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'%3E%3Ccircle cx='5.5' cy='5.5' r='4.25' fill='none' stroke='black' stroke-width='1.5'/%3E%3Cpath d='M8.6 8.6 12 12' stroke='black' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E")
     center / contain no-repeat;
   pointer-events: none;
+}
+:is(.hip_thm--light, .hip_thm--dark)
+  .hiplot-table-panel
+  .dt-search:has(input:not(:placeholder-shown))::before {
+  display: none;
 }
 :is(.hip_thm--light, .hip_thm--dark) .hiplot-table-panel .dt-search input,
 :is(.hip_thm--light, .hip_thm--dark) .hiplot-table-panel .dt-length select {
@@ -72,7 +81,7 @@
 }
 :is(.hip_thm--light, .hip_thm--dark) .hiplot-table-panel .dt-search input {
   width: 260px;
-  padding: 0 10px 0 29px;
+  padding: 0 32px 0 10px;
 }
 :is(.hip_thm--light, .hip_thm--dark) .hiplot-table-panel .dt-search input::placeholder,
 :is(.hip_thm--light, .hip_thm--dark) .hiplot-table .hiplot-column-filter::placeholder {

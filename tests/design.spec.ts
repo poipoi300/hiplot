@@ -24,15 +24,19 @@ async function brushAxis(page: Page, index: number): Promise<void> {
 
 const countText = (page: Page) => page.getByTestId("selection-count").textContent();
 
-test("the legend names the color-by column and its categories", async ({ page }) => {
+test("the legend names the color-by column, its categories and missing values", async ({
+  page,
+}) => {
   await loadDemo(page);
   const legend = page.getByTestId("color-legend");
   await expect(legend).toContainText("Color");
-  await expect(legend).toContainText("missing");
+  // Every row has a value of `c`: no entry for missing values.
+  await expect(legend).not.toContainText("missing");
   await page.locator(".pplot-label[data-dimension='optimizer']").click({ button: "right" });
   await page.locator(".context-menu .dropdown-item", { hasText: "Use for coloring" }).click();
   await expect(legend).toContainText("optimizer");
   await expect(legend.locator("li")).toHaveText(["adam", "adamw", "sgd"]);
+  await expect(legend).toContainText("missing");
 });
 
 test("brushing labels the brush ends and enables Reset brushes", async ({ page }) => {
@@ -161,13 +165,84 @@ test.describe("line highlight around brushes", () => {
 
 test("Auto names the line shape it chose and why", async ({ page }) => {
   await loadDemo(page);
-  const hint = page.getByTestId("line-shape-hint");
-  await expect(hint).toHaveText(/^Curved for [\d,]+ rows \(straight above 10,000\)$/);
-  await page
+  const auto = page
     .getByRole("group", { name: "Line shape" })
-    .getByRole("button", { name: "Curved" })
-    .click();
-  await expect(hint).toBeHidden();
+    .getByRole("button", { name: "Auto", exact: true });
+  await expect(auto).toHaveAttribute(
+    "title",
+    /^Auto: curved for [\d,]+ rows \(straight above 10,000, where curves blur into one mass\)$/,
+  );
+});
+
+test("the top panel is one row of same-size controls with the theme at its right end", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await loadDemo(page);
+  await page.locator(".pplot-label[data-dimension='lr']").click({ button: "right" });
+  await page.locator(".context-menu .dropdown-item", { hasText: "Use for coloring" }).click();
+  const header = page.getByTestId("header-toolbar").locator("..");
+  const box = await header.boundingBox();
+  if (box === null) {
+    throw new Error("No header");
+  }
+  expect(box.height).toBeLessThanOrEqual(48);
+  const centers = await header.evaluate((row) =>
+    Array.from(row.children)
+      .filter((child) => child instanceof HTMLElement && child.offsetWidth > 0)
+      .map((child) => {
+        const rect = child.getBoundingClientRect();
+        return rect.top + rect.height / 2;
+      }),
+  );
+  const middle = box.y + box.height / 2;
+  for (const center of centers) {
+    expect(Math.abs(center - middle)).toBeLessThanOrEqual(3);
+  }
+  expect(await header.evaluate((row) => row.scrollWidth <= row.clientWidth)).toBe(true);
+  const theme = await page.getByRole("group", { name: "Theme" }).boundingBox();
+  expect(theme).not.toBeNull();
+  expect(box.x + box.width - ((theme?.x ?? 0) + (theme?.width ?? 0))).toBeLessThanOrEqual(24);
+
+  const controls = [
+    page.getByRole("button", { name: "Keep" }),
+    page.getByRole("button", { name: "Export" }),
+    page.getByTestId("color-map-button"),
+    page.getByTestId("columns-button"),
+    page.getByRole("button", { name: "Reset brushes" }),
+    page.getByRole("group", { name: "Line shape" }),
+    page.getByRole("group", { name: "Theme" }),
+  ];
+  for (const control of controls) {
+    const looks = await control.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const button = element.querySelector("button") ?? element;
+      return {
+        height: element.getBoundingClientRect().height,
+        fontSize: getComputedStyle(button).fontSize,
+        radius: style.borderTopLeftRadius,
+      };
+    });
+    expect(looks).toEqual({ height: 28, fontSize: "13px", radius: "6px" });
+  }
+});
+
+test("the table search shows its magnifier inside the right end of the input", async ({ page }) => {
+  await loadDemo(page);
+  const search = page.locator(".hiplot-table-panel .dt-search");
+  const icon = await search.evaluate((element) => {
+    const input = element.querySelector("input");
+    if (input === null) {
+      throw new Error("No search input");
+    }
+    const before = getComputedStyle(element, "::before");
+    return {
+      right: before.right,
+      inputPaddingRight: getComputedStyle(input).paddingRight,
+      gapToInputEnd: element.getBoundingClientRect().right - input.getBoundingClientRect().right,
+    };
+  });
+  expect(icon).toEqual({ right: "11px", inputPaddingRight: "32px", gapToInputEnd: 0 });
 });
 
 test("axis titles keep their full name in the tooltip", async ({ page }) => {

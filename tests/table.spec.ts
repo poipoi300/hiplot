@@ -93,13 +93,33 @@ test("typing in a column filter does not sort the column", async ({ page }) => {
   await expect(header(page, "exp_metric")).not.toHaveClass(/dt-ordering-/);
 });
 
-test("numbers show six significant digits with the exact value in a tooltip", async ({ page }) => {
+test("a column writes all its numbers in one notation, the exact value in a tooltip", async ({
+  page,
+}) => {
   await loadDemo(page);
-  const cell = page.locator("table.sample-rows-table tbody td span[title]").first();
-  const exact = Number(await cell.getAttribute("title"));
-  const shown = Number(await cell.textContent());
-  expect(Number.isFinite(shown)).toBe(true);
-  expect(Math.abs(shown - exact)).toBeLessThanOrEqual(Math.abs(exact) * 1e-5);
+  const columns = await page.locator("table.sample-rows-table tbody tr").evaluateAll((rows) => {
+    const byColumn = new Map<number, { shown: string; exact: number }[]>();
+    for (const row of rows) {
+      row.querySelectorAll("td").forEach((cell, index) => {
+        const span = cell.querySelector("span[title]");
+        if (span === null) {
+          return;
+        }
+        const cells = byColumn.get(index) ?? [];
+        cells.push({ shown: span.textContent ?? "", exact: Number(span.getAttribute("title")) });
+        byColumn.set(index, cells);
+      });
+    }
+    return Array.from(byColumn.values());
+  });
+  expect(columns.length).toBeGreaterThan(3);
+  for (const cells of columns) {
+    const scientific = cells.filter(({ shown }) => /e-?\d+$/.test(shown)).length;
+    expect([0, cells.length]).toContain(scientific);
+    for (const { shown, exact } of cells) {
+      expect(Math.abs(Number(shown) - exact)).toBeLessThanOrEqual(Math.abs(exact) * 5e-3 + 1e-9);
+    }
+  }
 });
 
 test("a column filter is a button until used and turns back into one when emptied", async ({

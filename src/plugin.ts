@@ -53,6 +53,12 @@ export interface HiPlotPluginDataWithoutDatasets {
 
   setSelected: (new_selected: Array<Datapoint>, filter: Filter | null) => void;
   setHighlighted: (new_highlighted: Array<Datapoint>) => void;
+  /**
+   * The header row's slot for a display's controls: null until it is
+   * mounted, undefined where the display is used outside HiPlot's layout
+   * (it then shows its controls itself).
+   */
+  header_toolbar?: HTMLElement | null;
   /** Tells the user, in a toast, about something refused or recovered from. */
   notify: (message: string) => void;
 

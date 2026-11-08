@@ -8,6 +8,7 @@
 import * as d3 from "d3";
 import type { ParamScale } from "../infertypes";
 import { getLogScaleTickValues } from "../lib/d3_scales";
+import { columnNotation, formatterFor, powerOfTenLabels, tickNotation } from "../lib/numberformat";
 import { ParamType } from "../types";
 
 /** A tick value on a column axis: a number, or a category. */
@@ -20,17 +21,6 @@ const PIXELS_PER_CATEGORY = 14;
 /** Label of the band holding inf, NaN and missing values. */
 export const OUTLIER_TICK_LABEL = "nan/inf/null";
 
-const formatSI = d3.format("~s");
-
-/** A power of ten, written out between 0.01 and 1000 and as 1eN beyond. */
-export function formatPowerOfTen(value: number): string {
-  const exponent = Math.round(Math.log10(value));
-  if (exponent >= -2 && exponent <= 3) {
-    return d3.format("~r")(10 ** exponent);
-  }
-  return `1e${exponent}`;
-}
-
 /** A full date and time, for values picked out of a timestamp axis (brush ends). */
 export function formatTimestamp(seconds: number): string {
   return d3.timeFormat("%Y-%m-%d %H:%M")(new Date(seconds * 1000));
@@ -40,28 +30,29 @@ export function tickCountFor(axisHeight: number): number {
   return Math.max(2, Math.round(axisHeight / PIXELS_PER_TICK));
 }
 
-/** Formats values of a continuous axis: SI prefixes for large magnitudes, plain otherwise. */
+/** `format`, writing NaN (the outlier band) as its label. */
+const withOutlierBand =
+  (format: (value: number) => string) =>
+  (value: number): string =>
+    Number.isNaN(value) ? OUTLIER_TICK_LABEL : format(value);
+
+/**
+ * Formats values of a continuous axis in one notation for the whole axis
+ * (see `tickNotation`): its ticks, and values picked out of it such as
+ * brush ends. Log axes read their notation from the domain, as their ticks
+ * are powers of ten (see `columnAxis`).
+ */
 export function valueFormatter(scale: ParamScale, tickCount: number): (value: number) => string {
   if (scale.kind !== "continuous") {
     return (value) => String(value);
   }
+  if (scale.paramType === ParamType.TIMESTAMP) {
+    return scale.tickFormat(tickCount);
+  }
   if (scale.paramType === ParamType.NUMERICLOG) {
-    const base = d3.format("~r");
-    return (value) =>
-      Number.isNaN(value) ? OUTLIER_TICK_LABEL : base(Number(value.toPrecision(3)));
+    return withOutlierBand(formatterFor(columnNotation(scale.domain())));
   }
-  const fallback = scale.tickFormat(tickCount);
-  if (scale.paramType === ParamType.NUMERICPERCENTILE) {
-    const compact = d3.format(".3~g");
-    return (value) => (Number.isNaN(value) ? OUTLIER_TICK_LABEL : compact(value));
-  }
-  if (scale.paramType !== ParamType.NUMERIC) {
-    return fallback;
-  }
-  const largest = Math.max(...scale.domain().map((v) => Math.abs(v)));
-  return largest >= 1e4
-    ? (value) => (Number.isNaN(value) ? OUTLIER_TICK_LABEL : formatSI(value))
-    : fallback;
+  return withOutlierBand(formatterFor(tickNotation(scale.ticks(tickCount))));
 }
 
 /** The left axis of one column: tick count from its height, compact labels. */
@@ -80,11 +71,13 @@ export function columnAxis(scale: ParamScale, axisHeight: number): d3.Axis<AxisV
     const powers = getLogScaleTickValues(scale.domain(), tickCount);
     if (powers !== null) {
       const values: AxisValue[] = scale.hasOutlierBand ? [...powers, Number.NaN] : powers;
+      const powerLabels = powerOfTenLabels(powers);
+      const labels = new Map(powers.map((power, index) => [power, powerLabels[index]]));
       return axis
         .tickValues(values)
         .tickFormat((value) =>
           typeof value === "number" && !Number.isNaN(value)
-            ? formatPowerOfTen(value)
+            ? (labels.get(value) ?? String(value))
             : OUTLIER_TICK_LABEL,
         );
     }

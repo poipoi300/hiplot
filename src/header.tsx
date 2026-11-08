@@ -27,13 +27,44 @@ import { type Datapoint, HiPlotLoadStatus, type IDatasets, type LoadURIPromise }
 
 const COUNT_FORMAT = new Intl.NumberFormat("en-US");
 
+/** Stroked 16 px icons of the theme choices, in the controls' line weight. */
+const THEME_ICONS: { [choice in ThemeChoice]: React.ReactElement } = {
+  light: (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <g fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+        <circle cx="8" cy="8" r="2.9" />
+        <path d="M8 1.2v1.6M8 13.2v1.6M1.2 8h1.6M13.2 8h1.6M3.2 3.2l1.1 1.1M11.7 11.7l1.1 1.1M3.2 12.8l1.1-1.1M11.7 4.3l1.1-1.1" />
+      </g>
+    </svg>
+  ),
+  dark: (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M13.4 10.1A5.8 5.8 0 0 1 5.9 2.6a5.8 5.8 0 1 0 7.5 7.5Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+    </svg>
+  ),
+  system: (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <g fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+        <rect x="1.7" y="2.5" width="12.6" height="8.6" rx="1.4" />
+        <path d="M5.5 14h5M8 11.1V14" />
+      </g>
+    </svg>
+  ),
+};
+
 const THEME_LABELS: { [choice in ThemeChoice]: { label: string; title: string } } = {
   light: { label: "Light", title: "Light theme" },
   dark: { label: "Dark", title: "Dark theme" },
   system: { label: "System", title: "Follow the system's light or dark setting" },
 };
 
-/** Light / Dark / System: the theme, remembered across pages. */
+/** Light / Dark / System as icons: the theme, remembered across pages. */
 function ThemeToggle({
   choice,
   onChange,
@@ -42,16 +73,20 @@ function ThemeToggle({
   onChange: (choice: ThemeChoice) => void;
 }): React.ReactElement {
   return (
-    <fieldset className={`${controls.segmented} ${style.themeToggle}`} aria-label="Theme">
+    <fieldset
+      className={`${controls.segmented} ${controls.iconSegmented} ${style.themeToggle}`}
+      aria-label="Theme"
+    >
       {THEME_CHOICES.map((option) => (
         <button
           key={option}
           type="button"
           title={THEME_LABELS[option].title}
+          aria-label={THEME_LABELS[option].label}
           aria-pressed={choice === option}
           onClick={() => onChange(option)}
         >
-          {THEME_LABELS[option].label}
+          {THEME_ICONS[option]}
         </button>
       ))}
     </fieldset>
@@ -69,9 +104,10 @@ interface HeaderBarProps extends IDatasets, HiPlotDataControlProps {
   onThemeChoice: (choice: ThemeChoice) => void;
   dataProvider: DataProviderClass;
 
-  // Optional: restore hidden columns in parallel plot
-  restorableColumnsCount?: number;
-  onRestoreColumns?: () => void;
+  /** The color legend, shown in the row once an experiment is loaded. */
+  legend: React.ReactNode;
+  /** Where displays put their controls in the row (see HiPlotPluginData.header_toolbar). */
+  onToolbarSlot: (slot: HTMLDivElement | null) => void;
 }
 
 interface HeaderBarState {
@@ -172,79 +208,70 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
       onFocusChange: (hasFocus: boolean) => this.setState({ isTextareaFocused: hasFocus }),
       onLoadExperiment: this.props.onLoadExperiment,
     };
+    const showControls =
+      this.props.loadStatus === HiPlotLoadStatus.Loaded && !this.state.isTextareaFocused;
     return (
       <React.Fragment>
         {React.createElement(this.props.dataProvider, dataProviderProps)}
 
-        {this.props.loadStatus === HiPlotLoadStatus.Loaded && !this.state.isTextareaFocused && (
+        {showControls && (
           <React.Fragment>
             <div className={style.controlGroup}>
               <RestoreDataBtn {...this.props} />
               <KeepDataBtn {...this.props} />
               <ExcludeDataBtn {...this.props} />
-              {this.dataProviderRef.current?.refresh && (
-                <button
-                  type="button"
-                  title="Refresh"
-                  className="btn btn-sm btn-light"
-                  onClick={this.onRefresh.bind(this)}
-                >
-                  Refresh
-                </button>
-              )}
-              <ExportDataCSVBtn {...this.props} />
+            </div>
+            <div className={style.selectionCount} data-testid="selection-count" aria-live="polite">
+              <strong>{COUNT_FORMAT.format(this.props.rows_selected.length)}</strong>
+              <span> of {COUNT_FORMAT.format(this.props.rows_filtered.length)} selected</span>
+              <span className={style.selectionShare}>
+                {this.props.weightColumn
+                  ? `${this.state.selectedPctWeighted}% weighted`
+                  : `${this.state.selectedPct}%`}
+              </span>
+            </div>
+            {this.props.legend}
+          </React.Fragment>
+        )}
+        {/* Kept mounted, so controls portalled here survive a focused textarea. */}
+        <div
+          ref={this.props.onToolbarSlot}
+          className={style.toolbarSlot}
+          hidden={!showControls}
+          data-testid="header-toolbar"
+        />
+        {showControls && (
+          <div className={style.controlGroup}>
+            {this.dataProviderRef.current?.refresh && (
               <button
                 type="button"
-                title="Start HiPlot tutorial"
-                className="btn btn-sm btn-light"
-                onClick={this.onToggleTutorial.bind(this)}
+                title="Load the experiment again"
+                className={controls.button}
+                onClick={this.onRefresh.bind(this)}
               >
-                Help
+                Refresh
               </button>
-              {this.props.restorableColumnsCount !== undefined &&
-                this.props.restorableColumnsCount > 0 &&
-                this.props.onRestoreColumns && (
-                  <button
-                    type="button"
-                    title="Restore hidden columns in parallel plot"
-                    className="btn btn-sm btn-light"
-                    onClick={this.props.onRestoreColumns}
-                  >
-                    Restore {this.props.restorableColumnsCount} column
-                    {this.props.restorableColumnsCount > 1 ? "s" : ""}
-                  </button>
-                )}
-
-              <div style={{ clear: "both" }}></div>
-            </div>
-            <div className={style.controlGroup}>
-              <div
-                className={style.selectionCount}
-                data-testid="selection-count"
-                aria-live="polite"
-              >
-                <strong>{COUNT_FORMAT.format(this.props.rows_selected.length)}</strong>
-                <span> of {COUNT_FORMAT.format(this.props.rows_filtered.length)} selected</span>
-                <span className={style.selectionShare}>
-                  {this.props.weightColumn
-                    ? `${this.state.selectedPctWeighted}% weighted`
-                    : `${this.state.selectedPct}%`}
-                </span>
-              </div>
-            </div>
-          </React.Fragment>
+            )}
+            <ExportDataCSVBtn {...this.props} />
+            <button
+              type="button"
+              title="Start HiPlot tutorial"
+              className={controls.button}
+              onClick={this.onToggleTutorial.bind(this)}
+            >
+              Help
+            </button>
+          </div>
         )}
       </React.Fragment>
     );
   }
   render() {
     return (
-      <div ref={this.controls_root_ref} className={`container-fluid ${style.header}`}>
-        <div className={"d-flex flex-wrap"}>
-          <img style={{ height: "55px" }} src={this.props.dark ? IconSVGW : IconSVG} alt="HiPlot" />
-          {this.renderControls()}
-          <ThemeToggle choice={this.props.themeChoice} onChange={this.props.onThemeChoice} />
-        </div>
+      <div ref={this.controls_root_ref} className={style.header}>
+        <img className={style.logo} src={this.props.dark ? IconSVGW : IconSVG} alt="HiPlot" />
+        {this.renderControls()}
+        <ThemeToggle choice={this.props.themeChoice} onChange={this.props.onThemeChoice} />
         {this.state.hasTutorial && (
           <HiPlotTutorial
             navbarRoot={this.controls_root_ref}

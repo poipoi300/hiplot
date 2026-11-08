@@ -88,10 +88,11 @@ test.describe("parallel plot log-scale tick labels", () => {
     expect(dimIndex).toBeGreaterThanOrEqual(0);
     const labels = await getTickLabels(page, dimIndex);
     expect(labels.length).toBeGreaterThan(0);
-    // Powers of ten, written out from 0.01 to 1000 and as 1eN beyond (e.g. "1e-5")
-    for (const label of labels) {
-      expect(label).toMatch(/^(1e-?\d+|0\.0?1|10{0,3})$/);
-    }
+    // Powers of ten, all written out (0.01 to 1000) or all as 10 with a superscript exponent.
+    const superscript = labels.filter((label) => /^10[⁻⁰¹²³⁴⁵⁶⁷⁸⁹]+$/.test(label));
+    const written = labels.filter((label) => /^(0\.0?1|10{0,3})$/.test(label));
+    expect([0, labels.length]).toContain(superscript.length);
+    expect(superscript.length + written.length).toBe(labels.length);
   });
 
   test("log-scale tick labels do not overlap", async ({ page }) => {
@@ -135,7 +136,7 @@ test.describe("parallel plot log-scale tick labels", () => {
 });
 
 test.describe("distribution plot log-scale tick labels", () => {
-  test("log-scale distribution axis uses scientific notation and does not overlap", async ({
+  test("log-scale distribution axis writes its powers of ten alike, without overlap", async ({
     page,
   }) => {
     await loadDemo(page);
@@ -179,7 +180,7 @@ test.describe("distribution plot log-scale tick labels", () => {
         })
         .filter((t) => t.text.length > 0)
         .sort((a, b) => a.left - b.left);
-      const sciCount = tickData.filter((l) => /e[+-]?\d+/i.test(l.text)).length;
+      const sciCount = tickData.filter((l) => /^10[⁻⁰¹²³⁴⁵⁶⁷⁸⁹]+$/.test(l.text)).length;
       // Check horizontal overlap for bottom axis
       let overlapCount = 0;
       for (let i = 0; i < tickData.length - 1; i++) {
@@ -196,7 +197,7 @@ test.describe("distribution plot log-scale tick labels", () => {
     });
     expect(result.error).toBeUndefined();
     expect(result.count).toBeGreaterThan(1);
-    // All labels should be scientific notation
+    // remaining_grams spans more decades than 0.01 to 1000: every label is 10 to a power.
     expect(result.sciCount).toBe(result.count);
     // No overlapping labels
     expect(result.overlapCount).toBe(0);

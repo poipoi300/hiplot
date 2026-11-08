@@ -27,7 +27,6 @@ export interface ParamDef extends HiPlotValueDef {
   numeric: boolean;
   distinct_values: Array<DatapointValue>;
   type_options: Array<ParamType>;
-  ticks_format?: string;
   label_css: string;
   label_html: string;
 }
@@ -252,7 +251,6 @@ export function infertypes(
       numeric,
       distinct_values,
       type_options,
-      ticks_format: type === ParamType.NUMERICLOG ? ".1e" : undefined,
       type,
       colors: hint?.colors ?? null,
       colormap: hint?.colormap ?? null,

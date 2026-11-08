@@ -92,40 +92,17 @@
   height: 24px;
   line-height: 24px;
 }
-/* Header actions: quiet outlined buttons; Keep and Exclude carry their meaning in a dot. */
-.header button:global(.btn) {
-  --bs-btn-bg: transparent;
-  --bs-btn-color: var(--hip-fg);
-  --bs-btn-border-color: var(--hip-rule);
-  --bs-btn-hover-bg: var(--hip-brush-fill);
-  --bs-btn-hover-color: var(--hip-fg);
-  --bs-btn-hover-border-color: var(--hip-rule);
-  --bs-btn-active-bg: var(--hip-brush-fill);
-  --bs-btn-active-color: var(--hip-fg);
-  --bs-btn-active-border-color: var(--hip-accent);
-  --bs-btn-disabled-bg: transparent;
-  --bs-btn-disabled-color: var(--hip-muted);
-  --bs-btn-disabled-border-color: var(--hip-rule);
-  --bs-btn-padding-x: 0.65rem;
-  --bs-btn-padding-y: 0;
-  --bs-btn-font-size: 13px;
-  --bs-btn-line-height: 26px;
-  margin-right: 6px;
-  border-radius: 6px;
-  font-weight: 500;
-}
-.header button:global(.btn-success)::before,
-.header button:global(.btn-danger)::before {
+/* Keep and Exclude carry their meaning in a dot before the label. */
+.keep::before,
+.exclude::before {
   content: "";
-  display: inline-block;
+  flex: none;
   width: 7px;
   height: 7px;
-  margin-right: 6px;
   border-radius: 50%;
-  vertical-align: 1px;
   background: #2e9e5b;
 }
-.header button:global(.btn-danger)::before {
+.exclude::before {
   background: #d1453b;
 }
 
@@ -156,6 +133,23 @@
 
 .plotxy-graph-svg :global(.tick) line {
   color: #9a9a9a26;
+}
+.plotxy-graph-svg :global(.tick) text {
+  fill: var(--hip-tick-text);
+  font-size: 11px;
+}
+.plotxy-graph-svg :global(.plotxy-label) {
+  font-size: 12px;
+  font-weight: 600;
+}
+/* The name of the point under the pointer, over the dots. */
+.plotxyHoverText {
+  fill: var(--hip-fg);
+  font-size: 11px;
+  paint-order: stroke;
+  stroke: var(--hip-tick-halo);
+  stroke-width: 3px;
+  stroke-linejoin: round;
 }
 .distr-graph-svg :global(.tick) line {
   color: #9a9a9a26;
@@ -218,41 +212,78 @@
   border-radius: 6px;
 }
 
-/* Axis label text - no hover effects to avoid Safari foreignObject bugs */
+/* Axis titles read as ink in both themes, like the parallel plot's. */
 .axisLabelText {
-  color: var(--hip-muted);
+  color: var(--hip-fg);
 }
 
-.runsSelectionTextarea {
+textarea.runsSelectionTextarea {
+  box-sizing: border-box;
   width: 100%;
-  height: 50px;
-  font-family: monospace;
-  font-size: 12pt;
+  padding: 3px 8px;
+  border: 1px solid var(--hip-rule);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--hip-fg);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 13px;
+  line-height: 20px;
   resize: none;
   overflow: hidden;
 }
 
+/*
+ * The top panel: one row of logo, data actions with the selection count,
+ * the color legend, the displays' controls, app actions and the theme.
+ * Only the legend gives way when the row is short of room.
+ */
 .header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 7px 20px;
   border-bottom: 1px solid var(--hip-rule);
   background: var(--hip-bg);
-  padding: 8px 24px 6px;
-  line-height: 24px;
+  white-space: nowrap;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
-.header h1 {
-  display: inline-block;
-  margin: 0px 14px 0 0;
+.header > * {
+  flex: none;
 }
-.header button {
-  vertical-align: top;
+.logo {
+  height: 28px;
 }
-
-.controlGroup {
-  margin-left: 5px;
-  margin-right: 5px;
+.controlGroup,
+.toolbarSlot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.toolbarSlot {
+  gap: 10px;
+  margin-left: auto;
+}
+.toolbarSlot[hidden] {
+  display: none;
 }
 .themeToggle {
-  align-self: center;
-  margin-left: auto;
+  margin-left: 4px;
+}
+/* Short of room, the row drops the selection share and narrows its gaps, then scrolls. */
+@media (max-width: 1680px) {
+  .header {
+    gap: 8px;
+  }
+  .header .selectionShare {
+    display: none;
+  }
+}
+@media (max-width: 900px) {
+  .header {
+    flex-wrap: wrap;
+  }
 }
 
 /* dark theme */
@@ -271,8 +302,8 @@
   display: flex;
   align-items: baseline;
   gap: 0.35em;
-  font-size: 14px;
-  line-height: 31px;
+  font-size: 13px;
+  line-height: 28px;
   color: var(--hip-muted);
 }
 
@@ -291,13 +322,19 @@
   line-height: 20px;
 }
 
-/* Color legend for the color-by column, under the header. */
+/*
+ * Color legend for the color-by column, in the header row. Its list of
+ * categories is what gives way first; the title, the scale and the map
+ * picker always show.
+ */
 .legend {
+  flex: 0 1 auto;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 6px 18px;
-  padding: 8px 24px 0;
+  gap: 14px;
+  min-width: min-content;
+  padding-left: 16px;
+  border-left: 1px solid var(--hip-rule);
   font-size: 12px;
   color: var(--hip-muted);
 }
@@ -311,11 +348,19 @@
 }
 .legend .legendCategories {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
+  gap: 14px;
+  min-width: 0;
   margin: 0;
-  padding: 0;
+  /* The fade covers only this padding, so it shows only when categories overflow. */
+  padding: 0 16px 0 0;
+  overflow: hidden;
   list-style: none;
+  mask-image: linear-gradient(to left, transparent, #000 16px);
+}
+.legendTitle,
+.legendScale,
+.legendMissing {
+  flex: none;
 }
 .legendCategories li,
 .legendMissing {
@@ -339,7 +384,7 @@
 }
 .legendGradient {
   display: inline-block;
-  width: 160px;
+  width: 96px;
   height: 10px;
   border-radius: 3px;
 }

@@ -5,7 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import * as d3 from "d3";
 import type React from "react";
 import style from "./hiplot.module.css";
 import {
@@ -17,15 +16,13 @@ import {
   themedColorMap,
 } from "./lib/colors";
 import { labelTextFromHtml } from "./lib/escape";
+import { columnNotation, formatterFor } from "./lib/numberformat";
 import { Popover } from "./lib/popover";
 
 /** Categories listed before the legend summarizes the rest. */
-const MAX_LISTED_CATEGORIES = 12;
+const MAX_LISTED_CATEGORIES = 8;
 /** Color stops of the numeric gradient; the bins are finer than the eye can tell apart. */
 const GRADIENT_STOPS = 16;
-
-const formatValue = (value: number): string =>
-  Math.abs(value) >= 1e4 ? d3.format("~s")(value) : d3.format("~r")(Number(value.toPrecision(3)));
 
 const css = ({ r, g, b }: RGB): string => `rgb(${r}, ${g}, ${b})`;
 
@@ -100,6 +97,8 @@ function ColorMapPicker({ colorMap, theme, onPick }: ColorMapPickerProps): React
 
 interface ColorLegendProps {
   binning: ColorBinning;
+  /** Whether some rows are drawn in the missing color, which then gets an entry. */
+  hasMissing: boolean;
   /** The color-by column's name and its HTML label. */
   column: string;
   labelHtml: string;
@@ -112,6 +111,7 @@ interface ColorLegendProps {
 /** What color means: the color-by column with its categories or its value range. */
 export function ColorLegend({
   binning,
+  hasMissing,
   column,
   labelHtml,
   colorMap,
@@ -144,7 +144,7 @@ export function ColorLegend({
         </ul>
       ) : (
         <span className={style.legendScale}>
-          <span>{formatValue(legend.domain[0])}</span>
+          <span>{formatterFor(columnNotation(legend.domain))(legend.domain[0])}</span>
           <span
             className={style.legendGradient}
             style={{
@@ -159,17 +159,19 @@ export function ColorLegend({
               ).join(", ")})`,
             }}
           />
-          <span>{formatValue(legend.domain[1])}</span>
+          <span>{formatterFor(columnNotation(legend.domain))(legend.domain[1])}</span>
           <ColorMapPicker colorMap={colorMap} theme={theme} onPick={onPickColorMap} />
         </span>
       )}
-      <span className={style.legendMissing}>
-        <span
-          className={style.legendSwatch}
-          style={{ background: css(binning.palette[binning.missingBin]) }}
-        />
-        missing
-      </span>
+      {hasMissing && (
+        <span className={style.legendMissing}>
+          <span
+            className={style.legendSwatch}
+            style={{ background: css(binning.palette[binning.missingBin]) }}
+          />
+          missing
+        </span>
+      )}
     </div>
   );
 }

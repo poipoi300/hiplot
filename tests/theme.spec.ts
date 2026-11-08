@@ -59,3 +59,34 @@ test("the dark theme fills the page down to the bottom of the viewport", async (
   });
   expect(bottom).toBe("rgb(21, 24, 28)");
 });
+
+test("axis labels in the dark theme meet WCAG AA contrast", async ({ page }) => {
+  await loadDemo(page, "?hip.theme=dark");
+  const ratios = await page.evaluate(() => {
+    const luminance = (color: string): number => {
+      const [r, g, b] = (color.match(/[\d.]+/g) ?? []).map(Number).map((value) => {
+        const channel = value / 255;
+        return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const root = document.querySelector(".hip_thm--dark");
+    if (root === null) {
+      throw new Error("Not in the dark theme");
+    }
+    const background = luminance(getComputedStyle(root).backgroundColor);
+    const labels = document.querySelectorAll(
+      "svg g.dimension text, .plotxy-label, [aria-label='XY scatter plot'] .tick text",
+    );
+    return Array.from(labels, (label) => {
+      const foreground = luminance(getComputedStyle(label).fill);
+      return {
+        text: label.textContent ?? "",
+        ratio:
+          (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05),
+      };
+    });
+  });
+  expect(ratios.length).toBeGreaterThan(10);
+  expect(ratios.filter(({ ratio }) => ratio < 4.5)).toEqual([]);
+});

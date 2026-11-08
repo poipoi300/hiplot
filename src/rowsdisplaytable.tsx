@@ -43,7 +43,7 @@ import {
 } from "./filters";
 import style from "./hiplot.module.css";
 import controls from "./lib/controls.module.css";
-import { formatTableNumber } from "./lib/numberformat";
+import { columnNotation, formatterFor } from "./lib/numberformat";
 import { mounted } from "./lib/refs";
 import type { HiPlotPluginData } from "./plugin";
 import type { Datapoint, DatapointValue } from "./types";
@@ -296,14 +296,18 @@ export class RowsDisplayTable extends React.Component<TablePluginProps, RowsDisp
         orderable: x !== "", // Don't allow to sort by color
       };
       if (x !== "" && pd.numeric) {
-        // Shown rounded with the exact value in a tooltip; sorted and searched exactly.
-        // Only the display rendering is a function: sorting and searching
-        // read the value itself, without a call per row.
+        // Shown rounded, in one notation for the whole column, with the exact
+        // value in a tooltip; sorted and searched exactly. Only the display
+        // rendering is a function: sorting and searching read the value
+        // itself, without a call per row.
+        const format = formatterFor(
+          columnNotation(
+            pd.distinct_values.filter((value): value is number => typeof value === "number"),
+          ),
+        );
         column.render = {
           display: (data: DatapointValue) =>
-            typeof data === "number"
-              ? `<span title="${data}">${formatTableNumber(data)}</span>`
-              : data,
+            typeof data === "number" ? `<span title="${data}">${format(data)}</span>` : data,
         };
       }
       return column;

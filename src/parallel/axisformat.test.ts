@@ -4,7 +4,6 @@ import { PersistentStateInMemory } from "../lib/savedstate";
 import { type Datapoint, type DatapointValue, ParamType } from "../types";
 import {
   columnAxis,
-  formatPowerOfTen,
   formatTimestamp,
   OUTLIER_TICK_LABEL,
   tickCountFor,
@@ -22,21 +21,19 @@ const range = (n: number, map: (i: number) => number) =>
   Array.from({ length: n }, (_, i) => map(i));
 
 describe("tick formats", () => {
-  test("powers of ten are written out near 1 and as 1eN beyond", () => {
-    expect([1e-3, 0.01, 1, 1000, 1e4].map(formatPowerOfTen)).toEqual([
-      "1e-3",
-      "0.01",
-      "1",
-      "1000",
-      "1e4",
-    ]);
+  test("a log axis writes all its powers of ten the same way", () => {
+    const wide = columnAxis(scaleOf(range(40, (i) => 10 ** (i / 5 - 4))), 400);
+    const format = wide.tickFormat();
+    const labels = (wide.tickValues() ?? []).map((value) => format?.(value, 0));
+    expect(labels).toContain("10⁻²");
+    expect(labels.every((label) => label?.startsWith("10"))).toBe(true);
   });
 
-  test("large linear values use SI prefixes, small ones stay plain", () => {
-    const large = valueFormatter(scaleOf(range(30, (i) => i * 10_000)), 5);
-    expect(large(120_000)).toBe("120k");
+  test("a linear axis writes every tick in one notation", () => {
+    const large = valueFormatter(scaleOf(range(30, (i) => i * 100_000)), 5);
+    expect([0, 1_000_000, 2_500_000].map(large)).toEqual(["0", "1.0e6", "2.5e6"]);
     const small = valueFormatter(scaleOf(range(30, (i) => i / 10)), 5);
-    expect(small(1.5)).toBe("1.5");
+    expect([0.5, 1.5, 2].map(small)).toEqual(["0.5", "1.5", "2.0"]);
   });
 
   test("percentile axes use three significant digits, the outlier band its own label", () => {

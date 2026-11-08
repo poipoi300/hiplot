@@ -57,7 +57,6 @@ describe("type inference", () => {
       range(40, (i) => 10 ** (i / 5 - 4)),
     );
     expect(pd.type).toBe(ParamType.NUMERICLOG);
-    expect(pd.ticks_format).toBe(".1e");
   });
 
   test("a forced minimum at zero turns a would-be log axis into a percentile axis", () => {

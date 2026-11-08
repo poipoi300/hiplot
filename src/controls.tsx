@@ -8,6 +8,7 @@
 import * as d3 from "d3";
 import React from "react";
 import style from "./hiplot.module.css";
+import controls from "./lib/controls.module.css";
 import { mounted } from "./lib/refs";
 import type { IDatasets } from "./types";
 
@@ -28,7 +29,8 @@ export abstract class KeepOrExcludeDataBtn extends React.Component<
   abstract readonly keep: boolean;
   abstract readonly title: string;
   abstract readonly label: string;
-  abstract readonly style: string;
+  /** Class of the dot before the label that says what the action does to the rows. */
+  abstract readonly tone: string;
   constructor(props: HiPlotDataControlProps) {
     super(props);
     this.state = {
@@ -55,7 +57,7 @@ export abstract class KeepOrExcludeDataBtn extends React.Component<
         type="button"
         title={this.title}
         ref={this.btnRef}
-        className={`btn btn-sm btn-${this.style}`}
+        className={`${controls.button} ${this.tone}`}
         disabled={!this.state.btnEnabled}
         onClick={this.onClick.bind(this)}
       >
@@ -69,14 +71,14 @@ export class KeepDataBtn extends KeepOrExcludeDataBtn {
   readonly keep = true;
   readonly title = "Zoom in on selected data";
   readonly label = "Keep";
-  readonly style = "success";
+  readonly tone = style.keep;
 }
 
 export class ExcludeDataBtn extends KeepOrExcludeDataBtn {
   readonly keep = false;
   readonly title = "Remove selected data";
   readonly label = "Exclude";
-  readonly style = "danger";
+  readonly tone = style.exclude;
 }
 
 function downloadURL(url: string, filename: string) {
@@ -108,8 +110,8 @@ export class ExportDataCSVBtn extends React.Component<
     return (
       <button
         type="button"
-        title="Export data as CSV"
-        className="btn btn-sm btn-light"
+        title="Export the selected rows as CSV"
+        className={controls.button}
         onClick={this.onClick.bind(this)}
       >
         Export
@@ -146,7 +148,7 @@ export class RestoreDataBtn extends React.Component<
       <button
         type="button"
         title="Remove all applied filters"
-        className="btn btn-sm btn-sm btn-info"
+        className={controls.button}
         disabled={!this.state.btnEnabled}
         onClick={this.onClick.bind(this)}
       >

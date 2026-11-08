@@ -151,10 +151,7 @@ class PluginBoundary extends React.Component<PluginBoundaryProps, PluginBoundary
   }
 }
 
-type PluginProps = HiPlotPluginData &
-  React.RefAttributes<React.Component<HiPlotPluginData>> & {
-    onHiddenColumnsChange?: (count: number) => void;
-  };
+type PluginProps = HiPlotPluginData & React.RefAttributes<React.Component<HiPlotPluginData>>;
 
 // Makes a Promise cancelable
 interface CancelablePromise {
@@ -227,9 +224,9 @@ interface HiPlotState extends IDatasets {
   darkModeSetting: HiPlotDarkMode;
   dataProvider: DataProviderClass;
 
-  // Track hidden columns count for header button
-  restorableColumnsCount: number;
   toasts: Toast[];
+  /** The header row's slot for display controls, once mounted. */
+  headerToolbar: HTMLDivElement | null;
 }
 
 function detectIsDarkTheme(): boolean {
@@ -369,8 +366,8 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       darkModeSetting,
       persistentState,
       dataProvider: this.props.dataProvider ? this.props.dataProvider : StaticDataProvider,
-      restorableColumnsCount: 0,
       toasts: [],
+      headerToolbar: null,
     };
     Object.keys(props.plugins).forEach((name, _index) => {
       this.plugins_window_state[name] = {};
@@ -599,6 +596,8 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     pickedColorMap: string | null;
     dark: boolean;
     binning: ColorBinning;
+    /** Whether some value of the column falls in the missing bin. */
+    hasMissing: boolean;
   } | null = null;
   /** Color bins of the color-by column, rebuilt only when it or the color map changes. */
   colorBinning(): ColorBinning {
@@ -619,8 +618,19 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       return cached.binning;
     }
     const binning = colorBinning(pd, colormap, dark ? "dark" : "light", pickedColorMap);
-    this.cachedColorBinning = { pd, colormap, pickedColorMap, dark, binning };
+    const hasMissing =
+      pd.optional ||
+      pd.distinct_values.some((value) => binning.binOf(value) === binning.missingBin);
+    this.cachedColorBinning = { pd, colormap, pickedColorMap, dark, binning, hasMissing };
     return binning;
+  }
+  /** Whether the color-by column has values drawn in the missing color. */
+  colorHasMissing(): boolean {
+    this.colorBinning();
+    if (this.cachedColorBinning === null) {
+      throw new Error("Color bins are cached once computed");
+    }
+    return this.cachedColorBinning.hasMissing;
   }
   /** A numeric color map picked in the legend, remembered with the page state. */
   onPickColorMap = (id: string): void => {
@@ -931,12 +941,9 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
         setSelected: this.setSelected.bind(this),
         setHighlighted: this.setHighlighted.bind(this),
         notify: this.notify,
+        header_toolbar: this.state.headerToolbar,
         asserts: this.props.asserts,
       };
-      // Add callback for ParallelPlot to notify when hidden columns change
-      if (name === DefaultPlugins.PARALLEL_PLOT) {
-        baseProps.onHiddenColumnsChange = this.onHiddenColumnsChange.bind(this);
-      }
       return baseProps;
     };
     const experiment = this.state.experiment;
@@ -953,8 +960,25 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
             dark={this.state.dark}
             themeChoice={themeChoiceOf(this.state.darkModeSetting)}
             onThemeChoice={this.onThemeChoice}
-            restorableColumnsCount={this.state.restorableColumnsCount}
-            onRestoreColumns={this.restoreAllColumns.bind(this)}
+            legend={
+              this.state.loadStatus === HiPlotLoadStatus.Loaded &&
+              this.state.colorby !== null && (
+                <ColorLegend
+                  binning={this.colorBinning()}
+                  hasMissing={this.colorHasMissing()}
+                  column={this.state.colorby}
+                  labelHtml={this.state.params_def[this.state.colorby].label_html}
+                  colorMap={effectiveColorMap(
+                    this.state.params_def[this.state.colorby],
+                    this.state.colormap,
+                    this.state.pickedColorMap,
+                  )}
+                  theme={this.state.dark ? "dark" : "light"}
+                  onPickColorMap={this.onPickColorMap}
+                />
+              )
+            }
+            onToolbarSlot={this.onToolbarSlot}
             {...controlProps}
           />
           {this.state.loadStatus === HiPlotLoadStatus.Error && this.state.error !== null && (
@@ -962,20 +986,6 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
           )}
           {this.state.loadStatus !== HiPlotLoadStatus.Loaded && (
             <DocAndCredits dark={this.state.dark} />
-          )}
-          {this.state.loadStatus === HiPlotLoadStatus.Loaded && this.state.colorby !== null && (
-            <ColorLegend
-              binning={this.colorBinning()}
-              column={this.state.colorby}
-              labelHtml={this.state.params_def[this.state.colorby].label_html}
-              colorMap={effectiveColorMap(
-                this.state.params_def[this.state.colorby],
-                this.state.colormap,
-                this.state.pickedColorMap,
-              )}
-              theme={this.state.dark ? "dark" : "light"}
-              onPickColorMap={this.onPickColorMap}
-            />
           )}
           <ContextMenu ref={this.contextMenuRef} />
           <Toasts toasts={this.state.toasts} onDismiss={this.dismissToast} />
@@ -1008,17 +1018,11 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     }
     throw new Error(`Can not find plugin ${cls.name}`);
   }
-  onHiddenColumnsChange(count: number): void {
-    if (count !== this.state.restorableColumnsCount) {
-      this.setState({ restorableColumnsCount: count });
+  onToolbarSlot = (slot: HTMLDivElement | null): void => {
+    if (slot !== this.state.headerToolbar) {
+      this.setState({ headerToolbar: slot });
     }
-  }
-  getRestorableColumnsCount(): number {
-    return this.parallelPlot()?.getRestorableColumnsCount() ?? 0;
-  }
-  restoreAllColumns(): void {
-    this.parallelPlot()?.restore_all_columns();
-  }
+  };
 }
 
 interface DocsCreditsProps {
