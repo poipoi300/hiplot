@@ -226,7 +226,11 @@ test("brushing an axis updates selection count", async ({ page }) => {
   };
   const before = await extractCounts();
 
-  const overlay = page.locator("svg g.dimension .pplot-brush rect.overlay").first();
+  // An axis in view: the first one in the DOM sits at the right end, past the viewport.
+  const overlay = page
+    .locator("svg g.dimension")
+    .filter({ has: page.locator(".pplot-label[data-dimension='seed']") })
+    .locator(".pplot-brush rect.overlay");
   const box = await overlay.boundingBox();
   if (box) {
     const x = box.x + box.width / 2;
