@@ -197,6 +197,7 @@ test("a brush between two categories is tagged as selecting none", async ({ page
   await page.mouse.down();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.38, { steps: 6 });
   await page.mouse.up();
-  await expect(dimension.locator("text.pplot-brush-range")).toHaveText(["none", "none"]);
+  // One tag: both ends name the same (lack of a) category.
+  await expect(dimension.locator("text.pplot-brush-range")).toHaveText(["none"]);
   await expect(page.getByTestId("selection-count")).toHaveText(/^0 of/);
 });
