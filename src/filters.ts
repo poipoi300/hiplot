@@ -7,11 +7,14 @@
 
 import { convert_to_categorical_input } from "./lib/d3_scales";
 import { escapeRegExp } from "./lib/escape";
+import { isStringArray } from "./lib/savedstate";
 import { type Datapoint, type DatapointValue, ParamType } from "./types";
 
 export enum FilterType {
   All = "All",
   Range = "Range",
+  /** Rows meeting at least one of several filters, such as the brushes of one axis. */
+  Any = "Any",
   Not = "Not",
   Search = "Search",
   Column = "Column",
@@ -19,7 +22,17 @@ export enum FilterType {
 }
 
 export type FilterRange =
-  | { col: string; type: ParamType.CATEGORICAL; min: string; max: string }
+  | {
+      col: string;
+      type: ParamType.CATEGORICAL;
+      min: string;
+      max: string;
+      /**
+       * The categories selected. Filters saved before it existed select the
+       * categories whose string sorts between `min` and `max` instead.
+       */
+      values?: string[];
+    }
   | {
       col: string;
       type: Exclude<ParamType, ParamType.CATEGORICAL>;
@@ -32,6 +45,7 @@ export type FilterRange =
 export type Filter =
   | { type: FilterType.All; data: Filter[] }
   | { type: FilterType.Range; data: FilterRange }
+  | { type: FilterType.Any; data: Filter[] }
   | { type: FilterType.Not; data: Filter }
   | { type: FilterType.Search; data: string }
   | { type: FilterType.Column; data: { col: string; query: string } }
@@ -102,13 +116,16 @@ type Predicate = (dp: Datapoint) => boolean;
 
 function filter_range(data: FilterRange): Predicate {
   if (data.type === ParamType.CATEGORICAL) {
+    const selected = data.values === undefined ? null : new Set(data.values);
     return (dp: Datapoint) => {
       const value = dp[data.col];
       if (value === undefined) {
         return false;
       }
       const category = convert_to_categorical_input(value);
-      return data.min <= category && category <= data.max;
+      return selected === null
+        ? data.min <= category && category <= data.max
+        : selected.has(category);
     };
   }
   return (dp: Datapoint) => {
@@ -139,6 +156,10 @@ export function filter_predicate(filter: Filter): Predicate {
     }
     case FilterType.Range:
       return filter_range(filter.data);
+    case FilterType.Any: {
+      const predicates = filter.data.map(filter_predicate);
+      return (dp) => predicates.some((fn) => fn(dp));
+    }
     case FilterType.Not: {
       const predicate = filter_predicate(filter.data);
       return (dp) => !predicate(dp);
@@ -153,6 +174,23 @@ export function filter_predicate(filter: Filter): Predicate {
     case FilterType.None:
       return () => false;
   }
+}
+
+/**
+ * The filter of one axis's brushes: rows in any of its ranges. No range selects
+ * nothing, and a single range stays a plain range filter.
+ */
+export function anyOfRanges(ranges: ReadonlyArray<FilterRange>): Filter {
+  if (ranges.length === 0) {
+    return { type: FilterType.None, data: {} };
+  }
+  if (ranges.length === 1) {
+    return { type: FilterType.Range, data: ranges[0] };
+  }
+  return {
+    type: FilterType.Any,
+    data: ranges.map((range): Filter => ({ type: FilterType.Range, data: range })),
+  };
 }
 
 export function apply_filter(rows: ReadonlyArray<Datapoint>, filter: Filter): Array<Datapoint> {
@@ -179,7 +217,11 @@ function isFilterRange(value: unknown): value is FilterRange {
     return false;
   }
   if (value.type === ParamType.CATEGORICAL) {
-    return typeof value.min === "string" && typeof value.max === "string";
+    return (
+      typeof value.min === "string" &&
+      typeof value.max === "string" &&
+      (value.values === undefined || isStringArray(value.values))
+    );
   }
   return (
     Object.values(ParamType).includes(value.type as ParamType) &&
@@ -196,6 +238,7 @@ export function isFilter(value: unknown): value is Filter {
   }
   switch (value.type) {
     case FilterType.All:
+    case FilterType.Any:
       return Array.isArray(value.data) && value.data.every(isFilter);
     case FilterType.Range:
       return isFilterRange(value.data);

@@ -9,8 +9,11 @@ import type { FilterRange } from "../filters";
 import { convert_to_categorical_input } from "../lib/d3_scales";
 import { type Datapoint, ParamType } from "../types";
 
-/** What one brushed axis selects: a range of values, or nothing at all. */
-export type AxisSelection = FilterRange | "nothing";
+/**
+ * What the brushes of one axis select: the rows in any of these ranges. A brush
+ * that selects no value has no range, so an empty list selects nothing.
+ */
+export type AxisSelection = ReadonlyArray<FilterRange>;
 
 interface NumericColumn {
   values: Float64Array;
@@ -24,19 +27,17 @@ interface CategoricalColumn {
 
 const MISSING_CATEGORY = -1;
 
-function selectionKey(selection: AxisSelection): string {
-  return selection === "nothing" ? "nothing" : JSON.stringify(selection);
-}
-
 /**
  * Brush selection over a fixed set of rows, evaluated column by column on typed
- * arrays. Each axis keeps its own mask, recomputed only when that axis's
- * selection changes; the selected rows are the intersection of the masks.
+ * arrays. Each axis keeps its own mask, the union of its ranges, recomputed
+ * only when that axis's ranges change; the selected rows are the intersection
+ * of the masks.
  *
  * Masks reproduce `filters.ts` exactly: a row is in a numeric range when its
  * parsed value is, or when it is inf/NaN and the range includes those; a row
- * is in a categorical range when its category string sorts between the
- * bounds; a missing value is never selected.
+ * is in a categorical range when its category is one of the range's values
+ * (or, for a range without values, sorts between the bounds); a missing value
+ * is never selected.
  */
 export class BrushMasks {
   readonly rows: ReadonlyArray<Datapoint>;
@@ -95,41 +96,48 @@ export class BrushMasks {
     return column;
   }
 
-  private computeMask(selection: AxisSelection): Uint8Array {
-    const mask = new Uint8Array(this.rows.length);
-    if (selection === "nothing") {
-      return mask;
-    }
-    if (selection.type === ParamType.CATEGORICAL) {
-      const { min, max } = selection;
-      const { codes, categories } = this.categoricalColumn(selection.col);
-      const inRange = categories.map((category) => min <= category && category <= max);
+  /** Sets to 1 the flag of every row in `range`, leaving the others as they are. */
+  private addRange(mask: Uint8Array, range: FilterRange): void {
+    if (range.type === ParamType.CATEGORICAL) {
+      const { codes, categories } = this.categoricalColumn(range.col);
+      const values = range.values === undefined ? null : new Set(range.values);
+      const inRange = Uint8Array.from(categories, (category) =>
+        values === null
+          ? Number(range.min <= category && category <= range.max)
+          : Number(values.has(category)),
+      );
       for (let i = 0; i < codes.length; ++i) {
         const code = codes[i];
-        mask[i] = code !== MISSING_CATEGORY && inRange[code] ? 1 : 0;
+        if (code !== MISSING_CATEGORY) {
+          mask[i] |= inRange[code];
+        }
       }
-      return mask;
+      return;
     }
-    const { min, max } = selection;
-    const includeInfNans = selection.include_infnans === true;
-    const { values, missing } = this.numericColumn(selection.col);
+    const { min, max } = range;
+    const includeInfNans = range.include_infnans === true;
+    const { values, missing } = this.numericColumn(range.col);
     for (let i = 0; i < values.length; ++i) {
       const value = values[i];
       const selected =
         (min <= value && value <= max) || (includeInfNans && !Number.isFinite(value));
-      mask[i] = missing[i] === 0 && selected ? 1 : 0;
+      if (selected && missing[i] === 0) {
+        mask[i] = 1;
+      }
     }
-    return mask;
   }
 
-  /** The rows selected on one axis, recomputed only when its selection changed. */
+  /** The rows selected on one axis, recomputed only when its ranges changed. */
   axisMask(dimension: string, selection: AxisSelection): Uint8Array {
-    const key = selectionKey(selection);
+    const key = JSON.stringify(selection);
     const cached = this.masks.get(dimension);
     if (cached !== undefined && cached.key === key) {
       return cached.mask;
     }
-    const mask = this.computeMask(selection);
+    const mask = new Uint8Array(this.rows.length);
+    for (const range of selection) {
+      this.addRange(mask, range);
+    }
     this.masks.set(dimension, { key, mask });
     return mask;
   }

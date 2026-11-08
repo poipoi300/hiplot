@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  anyOfRanges,
   apply_filter,
   apply_filters,
   columnConditionHolds,
@@ -125,5 +126,92 @@ describe("column filter conditions", () => {
     expect(apply_filter(rows, { ...filter, data: { col: "lr", query: "" } })).toHaveLength(2);
     expect(isFilter(JSON.parse(JSON.stringify(filter)))).toBe(true);
     expect(isFilter({ type: FilterType.Column, data: { col: "lr" } })).toBe(false);
+  });
+});
+
+describe("multi-range brush filters", () => {
+  const optValues = (values: string[]): Filter => ({
+    type: FilterType.Range,
+    data: {
+      col: "opt",
+      type: ParamType.CATEGORICAL,
+      min: values[0],
+      max: values[values.length - 1],
+      values,
+    },
+  });
+
+  test("an Any filter keeps rows meeting at least one of its filters", () => {
+    const either: Filter = { type: FilterType.Any, data: [lossRange(0, 0.2), lossRange(0.4, 1)] };
+    expect(uids(apply_filter(table, either))).toEqual(["a", "b"]);
+    expect(apply_filter(table, { type: FilterType.Any, data: [] })).toEqual([]);
+  });
+
+  test("an excluded multi-range selection drops the rows in any of its ranges", () => {
+    const either: Filter = { type: FilterType.Any, data: [lossRange(0, 0.2), optValues(["sgd"])] };
+    expect(uids(apply_filter(table, { type: FilterType.Not, data: either }))).toEqual(["c", "d"]);
+  });
+
+  test("categorical ranges with values select those categories, whatever their string order", () => {
+    expect(uids(apply_filter(table, optValues(["adam", "sgd"])))).toEqual(["a", "b", "c"]);
+  });
+
+  test("the brushes of an axis become none, one range, or an Any of ranges", () => {
+    const range = { col: "loss", type: ParamType.NUMERIC, min: 0, max: 1 } as const;
+    expect(anyOfRanges([])).toEqual({ type: FilterType.None, data: {} });
+    expect(anyOfRanges([range])).toEqual({ type: FilterType.Range, data: range });
+    expect(anyOfRanges([range, range])).toEqual({
+      type: FilterType.Any,
+      data: [
+        { type: FilterType.Range, data: range },
+        { type: FilterType.Range, data: range },
+      ],
+    });
+  });
+
+  test("multi-range filters survive a round trip through saved state", () => {
+    const saved: Filter[] = [
+      {
+        type: FilterType.All,
+        data: [
+          { type: FilterType.Any, data: [lossRange(0, 0.2), lossRange(0.4, 1)] },
+          optValues(["adam", "sgd"]),
+        ],
+      },
+    ];
+    const restored: unknown = JSON.parse(JSON.stringify(saved));
+    expect(Array.isArray(restored) && restored.every(isFilter)).toBe(true);
+    expect(uids(apply_filters(table, restored as Filter[]))).toEqual(["a", "b"]);
+  });
+
+  test("filters saved before multi-range brushes still load and replay", () => {
+    // As earlier versions saved Keep and Exclude: one range per axis, categories by bounds.
+    const saved: unknown = JSON.parse(
+      JSON.stringify([
+        {
+          type: "All",
+          data: [
+            { type: "Range", data: { col: "loss", type: "numeric", min: 0, max: 1 } },
+            { type: "Range", data: { col: "opt", type: "categorical", min: "adam", max: "sgd" } },
+          ],
+        },
+        { type: "Not", data: { type: "None", data: {} } },
+      ]),
+    );
+    expect(Array.isArray(saved) && saved.every(isFilter)).toBe(true);
+    expect(uids(apply_filters(table, saved as Filter[]))).toEqual(["a", "b"]);
+  });
+
+  test("malformed multi-range filters are rejected", () => {
+    expect(isFilter({ type: FilterType.Any, data: {} })).toBe(false);
+    expect(isFilter({ type: FilterType.Any, data: [{ type: FilterType.Search, data: 1 }] })).toBe(
+      false,
+    );
+    expect(
+      isFilter({
+        type: FilterType.Range,
+        data: { col: "opt", type: "categorical", min: "a", max: "b", values: [1] },
+      }),
+    ).toBe(false);
   });
 });

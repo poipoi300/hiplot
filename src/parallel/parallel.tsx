@@ -13,7 +13,7 @@ import $ from "jquery";
 import React from "react";
 import { createPortal } from "react-dom";
 import _ from "underscore";
-import { type Filter, FilterType } from "../filters";
+import { anyOfRanges, type Filter, type FilterRange, FilterType } from "../filters";
 import style from "../hiplot.module.css";
 import {
   create_d3_scale,
@@ -106,17 +106,18 @@ function onBrushControl(target: EventTarget): boolean {
   );
 }
 
-/** What a brush selects on one axis, as a value range. */
-function axisSelection(dimension: string, range: ScaleDomainRange): AxisSelection {
+/** What a brush selects on one axis, as a value range; null when it selects no category. */
+function brushRange(dimension: string, range: ScaleDomainRange): FilterRange | null {
   if (range.type === ParamType.CATEGORICAL) {
     if (range.values.length === 0) {
-      return "nothing";
+      return null;
     }
     return {
       col: dimension,
       type: range.type,
       min: range.values[0],
       max: range.values[range.values.length - 1],
+      values: range.values,
     };
   }
   return {
@@ -1323,18 +1324,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         if (extent === null || extent === undefined) {
           throw new Error(`Dimension ${dimension} is not brushed`);
         }
-        selections.set(
-          dimension,
-          axisSelection(dimension, scale_pixels_range(me.yscale[dimension], extent)),
-        );
+        const range = brushRange(dimension, scale_pixels_range(me.yscale[dimension], extent));
+        selections.set(dimension, range === null ? [] : [range]);
       });
-      const filters = Array.from(
-        selections.values(),
-        (selection): Filter =>
-          selection === "nothing"
-            ? { type: FilterType.None, data: {} }
-            : { type: FilterType.Range, data: selection },
-      );
+      const filters = Array.from(selections.values(), (selection) => anyOfRanges(selection));
       const masks = me.brushMasks();
       const mask = masks.select(selections);
       const selected = masks.selectedRows(mask);
