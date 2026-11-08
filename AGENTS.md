@@ -133,7 +133,8 @@ the first run instead of iterating against the gates.
 - `src/` — the TypeScript frontend (React 19 class components, d3 v7).
   - `component.tsx` — the `HiPlot` root: loading, filtering, selection state.
   - `parallel/`, `plotxy.tsx`, `distribution/`, `rowsdisplaytable.tsx` — the
-    displays.
+    displays; `plots/` holds the scatter and distribution panel lists, the
+    3D scatter and its camera.
   - `infertypes.ts` — column type inference, scales and colors;
     `filters.ts` — serializable row filters; `lib/` — scales, persisted
     state, helpers.
@@ -146,7 +147,9 @@ the first run instead of iterating against the gates.
   verbatim from forge; `stack_coverage_gate.sh`, `e2e_coverage.sh` and
   `merge_lcov.py` with `statement_starts.ts` extend the push gate to Python
   plus TypeScript; `gates.py` is the registry.
-- `docs/` — the Sphinx site; `examples/` — notebooks and Streamlit demos.
+- `docs/` — the Sphinx site; `examples/` — notebooks, Streamlit demos, and
+  `hptuning/tune.py`, a real GPU hyperparameter search rendered with HiPlot
+  (`uv run examples/hptuning/tune.py --out <page>`).
 
 ## Verifying
 
