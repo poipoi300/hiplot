@@ -79,6 +79,7 @@ class Scatter3DPanel extends React.Component<
             height={this.state.height}
             render_row_text={this.props.render_row_text}
             setHighlighted={this.props.setHighlighted}
+            onSelect={(rows) => this.props.setSelected(rows, null)}
           />
         )}
       </ResizableH>

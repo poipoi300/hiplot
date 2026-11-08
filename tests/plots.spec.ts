@@ -142,3 +142,102 @@ test("a row hovered elsewhere is marked in a one-axis plot", async ({ page }) =>
   await page.locator(".dt-info").hover();
   await expect(marks).toHaveCount(0);
 });
+
+async function open3D(page: Page) {
+  await loadDemo(page);
+  await page.getByRole("button", { name: "Add scatter plot" }).click();
+  await select(page, "X").selectOption("lr");
+  await select(page, "Y").selectOption("exp_metric");
+  await select(page, "Z").selectOption("r");
+  const canvas = scatterPanels(page)
+    .last()
+    .getByRole("img", { name: /3D scatter plot/ });
+  await canvas.scrollIntoViewIfNeeded();
+  const box = await canvas.boundingBox();
+  if (box === null) {
+    throw new Error("No 3D scatter");
+  }
+  const label = scatterPanels(page).last().locator("[data-axis-label='x-name']");
+  return { canvas, box, label };
+}
+
+test("the 3D scatter pans with a right-drag, draws its plane fit and lassos a selection", async ({
+  page,
+}) => {
+  const { canvas, box, label } = await open3D(page);
+  await expect(scatterPanels(page).last().getByTestId("scatter3d-hint")).toContainText(
+    "Right- or Shift-drag to pan",
+  );
+  await expect(scatterPanels(page).last().getByTestId("plane-fit")).toHaveAttribute("d", /^M/);
+  await expect(scatterPanels(page).last().getByTestId("scatter3d-hint")).toContainText(
+    "Plane: least squares in axis space",
+  );
+
+  const before = await label.getAttribute("style");
+  const middle = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await page.mouse.move(middle.x, middle.y);
+  await page.mouse.down({ button: "right" });
+  await page.mouse.move(middle.x + 80, middle.y + 20, { steps: 6 });
+  await page.mouse.up({ button: "right" });
+  await expect.poll(() => label.getAttribute("style")).not.toBe(before);
+
+  const count = page.getByTestId("selection-count");
+  const all = await count.textContent();
+  await page.keyboard.down("Control");
+  await page.mouse.move(middle.x - 120, middle.y - 90);
+  await page.mouse.down();
+  for (const [dx, dy] of [
+    [120, -90],
+    [120, 90],
+    [-120, 90],
+    [-120, -90],
+  ]) {
+    await page.mouse.move(middle.x + dx, middle.y + dy, { steps: 4 });
+  }
+  await page.mouse.up();
+  await page.keyboard.up("Control");
+  await expect.poll(() => count.textContent()).not.toBe(all);
+  const prevented = await canvas.evaluate((element) => {
+    const event = new MouseEvent("mousedown", { button: 1, bubbles: true, cancelable: true });
+    element.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(prevented).toBe(true);
+});
+
+test("the 3D scatter zooms only for wheel gestures that start on it", async ({ page }) => {
+  const { box, label } = await open3D(page);
+  await page.evaluate(() => window.scrollBy(0, -200));
+  const canvas = await scatterPanels(page)
+    .last()
+    .getByRole("img", { name: /3D scatter plot/ })
+    .boundingBox();
+  if (canvas === null) {
+    throw new Error("No canvas");
+  }
+  const before = await label.getAttribute("style");
+  // A page scroll that starts above the plot and carries on over it.
+  await page.mouse.move(canvas.x + canvas.width / 2, canvas.y - 30);
+  const scrolled = await page.evaluate(() => window.scrollY);
+  await page.mouse.wheel(0, 40);
+  await page.mouse.move(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2);
+  await page.mouse.wheel(0, 40);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(scrolled + 40);
+  expect(await label.getAttribute("style")).toBe(before);
+
+  // After a pause, a gesture that starts on the plot zooms it, not the page.
+  await page.waitForTimeout(400);
+  const settled = await page.evaluate(() => window.scrollY);
+  const box2 = await scatterPanels(page)
+    .last()
+    .getByRole("img", { name: /3D scatter plot/ })
+    .boundingBox();
+  await page.mouse.move(
+    (box2?.x ?? box.x) + (box2?.width ?? box.width) / 2,
+    (box2?.y ?? box.y) + (box2?.height ?? box.height) / 2,
+  );
+  const unzoomed = await label.getAttribute("style");
+  await page.mouse.wheel(0, -120);
+  await expect.poll(() => label.getAttribute("style")).not.toBe(unzoomed);
+  expect(await page.evaluate(() => window.scrollY)).toBe(settled);
+});

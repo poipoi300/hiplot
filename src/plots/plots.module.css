@@ -111,6 +111,44 @@
 .scatter3d canvas:active {
   cursor: grabbing;
 }
+.scatter3d canvas.selecting {
+  cursor: crosshair;
+}
+/* The plane fit and the lasso, over the points. */
+.overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+.plane {
+  fill: none;
+  stroke-width: 1.25px;
+  stroke-opacity: 0.75;
+}
+.lasso {
+  fill: var(--hip-brush-fill);
+  stroke: var(--hip-brush-stroke);
+  stroke-width: 1.5px;
+  stroke-dasharray: 4 3;
+}
+.tools {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: var(--hip-bg);
+}
+.hint {
+  position: absolute;
+  left: 12px;
+  bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--hip-muted);
+  font-size: 11.5px;
+  pointer-events: none;
+}
 .axisName,
 .axisValue,
 .hoverText {

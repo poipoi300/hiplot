@@ -6,21 +6,24 @@
  */
 
 /**
- * The camera of the 3D scatter: it orbits the center of the [-1, 1]^3 data
- * cube, `yaw` around the vertical axis and `pitch` above the horizontal
- * plane (radians), `distance` away from it. Matrices are column-major, as
- * WebGL takes them.
+ * The camera of the 3D scatter: it orbits `target` (the center of the
+ * [-1, 1]^3 data cube until panned), `yaw` around the vertical axis and
+ * `pitch` above the horizontal plane (radians), `distance` away from it.
+ * Matrices are column-major, as WebGL takes them.
  */
 export interface Orbit {
   yaw: number;
   pitch: number;
   distance: number;
+  target: Vector;
 }
 
-export const DEFAULT_ORBIT: Orbit = { yaw: -0.65, pitch: 0.42, distance: 5.8 };
+export const DEFAULT_ORBIT: Orbit = { yaw: -0.65, pitch: 0.42, distance: 5.8, target: [0, 0, 0] };
 const MAX_PITCH = 1.45;
-const MIN_DISTANCE = 2.2;
+const MIN_DISTANCE = 1.2;
 const MAX_DISTANCE = 12;
+/** How far the target may be panned from the cube's center, per coordinate. */
+const MAX_TARGET = 2;
 /** Vertical field of view, in radians. */
 const FIELD_OF_VIEW = 0.7;
 
@@ -39,7 +42,18 @@ export function zoomOrbit(orbit: Orbit, deltaY: number): Orbit {
   return { ...orbit, distance: Math.max(MIN_DISTANCE, Math.min(MAX_DISTANCE, distance)) };
 }
 
-type Vector = readonly [number, number, number];
+/** The orbit after a pan of (dx, dy) pixels: the point under the pointer follows it. */
+export function panOrbit(orbit: Orbit, dx: number, dy: number, viewportHeight: number): Orbit {
+  const { right, up } = cameraAxes(orbit);
+  // World units per pixel at the target's depth.
+  const scale = (2 * orbit.distance * Math.tan(FIELD_OF_VIEW / 2)) / Math.max(1, viewportHeight);
+  const clamp = (value: number) => Math.max(-MAX_TARGET, Math.min(MAX_TARGET, value));
+  const moved = (axis: 0 | 1 | 2) =>
+    clamp(orbit.target[axis] - (right[axis] * dx - up[axis] * dy) * scale);
+  return { ...orbit, target: [moved(0), moved(1), moved(2)] };
+}
+
+export type Vector = readonly [number, number, number];
 
 const subtract = (a: Vector, b: Vector): Vector => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const cross = (a: Vector, b: Vector): Vector => [
@@ -56,19 +70,25 @@ const normalize = (a: Vector): Vector => {
 /** Where the camera is. */
 export function eyePosition(orbit: Orbit): Vector {
   const flat = Math.cos(orbit.pitch) * orbit.distance;
+  const [x, y, z] = orbit.target;
   return [
-    flat * Math.sin(orbit.yaw),
-    Math.sin(orbit.pitch) * orbit.distance,
-    flat * Math.cos(orbit.yaw),
+    x + flat * Math.sin(orbit.yaw),
+    y + Math.sin(orbit.pitch) * orbit.distance,
+    z + flat * Math.cos(orbit.yaw),
   ];
+}
+
+/** The camera's viewing direction and the screen's right and up, in data coordinates. */
+function cameraAxes(orbit: Orbit): { eye: Vector; forward: Vector; right: Vector; up: Vector } {
+  const eye = eyePosition(orbit);
+  const forward = normalize(subtract(orbit.target, eye));
+  const right = normalize(cross(forward, [0, 1, 0]));
+  return { eye, forward, right, up: cross(right, forward) };
 }
 
 /** Projection times view matrix of the orbit for a viewport of the given aspect ratio. */
 export function viewProjection(orbit: Orbit, aspect: number): Float32Array {
-  const eye = eyePosition(orbit);
-  const forward = normalize(subtract([0, 0, 0], eye));
-  const right = normalize(cross(forward, [0, 1, 0]));
-  const up = cross(right, forward);
+  const { eye, forward, right, up } = cameraAxes(orbit);
   const view = [
     right[0],
     up[0],

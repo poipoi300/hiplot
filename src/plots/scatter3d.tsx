@@ -9,15 +9,20 @@ import * as d3 from "d3";
 import React from "react";
 import { create_d3_scale_without_outliers, type ParamDefMap } from "../infertypes";
 import type { ColorBinning, RGB } from "../lib/colors";
+import controls from "../lib/controls.module.css";
 import { is_special_numeric } from "../lib/d3_scales";
 import { labelTextFromHtml } from "../lib/escape";
+import { fitColor } from "../lib/fitcolor";
 import { columnNotation, formatterFor } from "../lib/numberformat";
 import { mounted } from "../lib/refs";
-import type { Datapoint } from "../types";
+import { planeFit } from "../stats/regression";
+import { type Datapoint, ParamType } from "../types";
+import { lassoed, MIN_LASSO_POINTS, type ScreenPoint, WheelLatch } from "./lasso";
 import {
   DEFAULT_ORBIT,
   eyePosition,
   type Orbit,
+  panOrbit,
   projectPoint,
   rotateOrbit,
   viewProjection,
@@ -108,7 +113,21 @@ interface Scatter3DProps {
   height: number;
   render_row_text: (row: Datapoint) => string;
   setHighlighted: (rows: Datapoint[]) => void;
+  /** Makes the rows a lasso drew around the selection, as brushes do. */
+  onSelect: (rows: Datapoint[]) => void;
 }
+
+/** What a drag does: turn the view, pan it, or draw a lasso. */
+type DragMode = "orbit" | "pan" | "lasso";
+
+/** The least-squares plane through the selected points, drawn as a grid in the cube. */
+type PlaneState =
+  | { kind: "fit"; path: string; r2: number; n: number }
+  | { kind: "none"; reason: string };
+
+/** Lines of the plane's grid in each direction, and points per line. */
+const PLANE_GRID_LINES = 9;
+const PLANE_LINE_POINTS = 25;
 
 interface Label {
   key: string;
@@ -122,6 +141,11 @@ interface Scatter3DState {
   orbit: Orbit;
   labels: Label[];
   hover: { x: number; y: number; text: string } | null;
+  /** What a plain left drag does; Ctrl-drag always draws a lasso. */
+  tool: "orbit" | "select";
+  /** The lasso being drawn, in CSS pixels over the canvas. */
+  lasso: ScreenPoint[] | null;
+  plane: PlaneState;
 }
 
 /** Point diameter in CSS pixels, smaller when there are many rows. */
@@ -129,10 +153,17 @@ const pointDiameter = (rows: number): number => (rows > 20_000 ? 2.5 : rows > 2_
 /** How far the pointer may be from a point to pick it, in CSS pixels. */
 const HOVER_DISTANCE = 8;
 
+/** The controls, as the hint under the plot lists them. */
+const CONTROLS_HINT =
+  "Drag to turn · Right- or Shift-drag to pan · Wheel to zoom · Ctrl-drag or Select to lasso · Double-click to reset";
+
 /**
- * A 3D scatter of three columns, drawn with WebGL: drag to turn it, scroll to
- * zoom, double-click to reset the view. Points take the color-by colors; the
- * rows outside the selection stay as faint context.
+ * A 3D scatter of three columns, drawn with WebGL: drag to turn it,
+ * right- or shift-drag to pan, scroll to zoom, ctrl-drag (or the Select
+ * tool) to lasso points into the selection, double-click to reset the view.
+ * Points take the color-by colors; the rows outside the selection stay as
+ * faint context. A least-squares plane through the selected points, fitted
+ * in axis space (log axes in log space), is drawn as a grid.
  */
 export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
   canvasRef = React.createRef<HTMLCanvasElement>();
@@ -140,12 +171,22 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
   positions: Float32Array = new Float32Array(0);
   selectedFlags: Uint8Array = new Uint8Array(0);
   private frame: number | null = null;
-  private drag: { x: number; y: number } | null = null;
+  private drag: { mode: DragMode; x: number; y: number } | null = null;
   private hovered: Datapoint | null = null;
+  private readonly wheelLatch = new WheelLatch();
+  /** The plane fitted to the current points and selection: y = a + b·x + c·z in the cube. */
+  private plane: { a: number; b: number; c: number; r2: number; n: number } | null = null;
 
   constructor(props: Scatter3DProps) {
     super(props);
-    this.state = { orbit: DEFAULT_ORBIT, labels: [], hover: null };
+    this.state = {
+      orbit: DEFAULT_ORBIT,
+      labels: [],
+      hover: null,
+      tool: "orbit",
+      lasso: null,
+      plane: { kind: "none", reason: "" },
+    };
   }
 
   componentDidMount(): void {
@@ -156,6 +197,8 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
     this.renderer = renderer;
     // Not passive, so zooming does not also scroll the page.
     mounted(this.canvasRef).addEventListener("wheel", this.onWheel, { passive: false });
+    // Every wheel event of the page, first: where each gesture started.
+    window.addEventListener("wheel", this.recordWheel, { capture: true, passive: true });
     this.uploadPoints();
     this.uploadSelection();
     this.scheduleDraw();
@@ -173,6 +216,13 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
     if (prevProps.selected !== this.props.selected || prevProps.rows !== this.props.rows) {
       this.uploadSelection();
     }
+    if (
+      prevProps.selected !== this.props.selected ||
+      prevProps.rows !== this.props.rows ||
+      prevProps.params_def !== this.props.params_def
+    ) {
+      this.plane = null;
+    }
     if (prevProps !== this.props || prevState.orbit !== this.state.orbit) {
       this.scheduleDraw();
     }
@@ -183,6 +233,7 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
       cancelAnimationFrame(this.frame);
     }
     this.canvasRef.current?.removeEventListener("wheel", this.onWheel);
+    window.removeEventListener("wheel", this.recordWheel, { capture: true });
     this.renderer?.dispose();
     this.renderer = null;
   }
@@ -284,35 +335,157 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
       place(`${axis}-low`, edges[axis](-0.86, 1.14), low, "value");
       place(`${axis}-high`, edges[axis](0.86, 1.14), high, "value");
     }
-    this.setState({ labels });
+    this.setState({ labels, plane: this.projectedPlane(matrix) });
+  }
+
+  /** The least-squares plane through the selected points, fitted once per selection. */
+  private fittedPlane(): { a: number; b: number; c: number; r2: number; n: number } | null {
+    if (this.plane !== null) {
+      return this.plane;
+    }
+    const xs: number[] = [];
+    const ys: number[] = [];
+    const zs: number[] = [];
+    for (let index = 0; index < this.selectedFlags.length; ++index) {
+      if (this.selectedFlags[index] !== 0) {
+        xs.push(this.positions[index * 3]);
+        ys.push(this.positions[index * 3 + 1]);
+        zs.push(this.positions[index * 3 + 2]);
+      }
+    }
+    // Y is the vertical axis: y = a + b·x + c·z.
+    const fit = planeFit(xs, zs, ys);
+    this.plane = fit;
+    return fit;
+  }
+
+  /** The fitted plane's grid, clipped to the cube and projected; or why there is none. */
+  private projectedPlane(matrix: Float32Array): PlaneState {
+    const { axes, params_def, width, height } = this.props;
+    const categorical = AXES.find((axis) => params_def[axes[axis]].type === ParamType.CATEGORICAL);
+    if (categorical !== undefined) {
+      return { kind: "none", reason: `No plane fit: ${axes[categorical]} is categorical` };
+    }
+    const fit = this.fittedPlane();
+    if (fit === null) {
+      return { kind: "none", reason: "No plane fit: too few selected points" };
+    }
+    let path = "";
+    const line = (point: (t: number) => [number, number]) => {
+      let drawing = false;
+      for (let step = 0; step < PLANE_LINE_POINTS; ++step) {
+        const [x, z] = point(-1 + (2 * step) / (PLANE_LINE_POINTS - 1));
+        const y = fit.a + fit.b * x + fit.c * z;
+        const onScreen = Math.abs(y) <= 1 ? projectPoint(matrix, x, y, z, width, height) : null;
+        if (onScreen === null) {
+          drawing = false;
+          continue;
+        }
+        path += `${drawing ? "L" : "M"}${onScreen.x.toFixed(1)} ${onScreen.y.toFixed(1)}`;
+        drawing = true;
+      }
+    };
+    for (let index = 0; index < PLANE_GRID_LINES; ++index) {
+      const u = -1 + (2 * index) / (PLANE_GRID_LINES - 1);
+      line((t) => [u, t]);
+      line((t) => [t, u]);
+    }
+    return { kind: "fit", path, r2: fit.r2, n: fit.n };
+  }
+
+  /** What a press starts: middle, right or shift pans; ctrl or the Select tool draws a lasso. */
+  private dragModeOf(event: React.PointerEvent): DragMode {
+    if (event.button === 1 || event.button === 2 || event.shiftKey) {
+      return "pan";
+    }
+    return event.ctrlKey || event.metaKey || this.state.tool === "select" ? "lasso" : "orbit";
   }
 
   private onPointerDown = (event: React.PointerEvent<HTMLCanvasElement>): void => {
-    this.drag = { x: event.clientX, y: event.clientY };
+    const mode = this.dragModeOf(event);
+    this.drag = { mode, x: event.clientX, y: event.clientY };
     event.currentTarget.setPointerCapture(event.pointerId);
     this.clearHover();
+    if (mode === "lasso") {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      this.setState({ lasso: [{ x: event.clientX - bounds.left, y: event.clientY - bounds.top }] });
+    }
   };
 
   private onPointerMove = (event: React.PointerEvent<HTMLCanvasElement>): void => {
-    if (this.drag !== null) {
-      const dx = event.clientX - this.drag.x;
-      const dy = event.clientY - this.drag.y;
-      this.drag = { x: event.clientX, y: event.clientY };
-      this.setState((state) => ({ orbit: rotateOrbit(state.orbit, dx, dy) }));
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const drag = this.drag;
+    if (drag === null) {
+      this.hoverAt(event.clientX - bounds.left, event.clientY - bounds.top);
       return;
     }
-    const bounds = event.currentTarget.getBoundingClientRect();
-    this.hoverAt(event.clientX - bounds.left, event.clientY - bounds.top);
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    this.drag = { ...drag, x: event.clientX, y: event.clientY };
+    if (drag.mode === "lasso") {
+      const point = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+      this.setState((state) => ({ lasso: state.lasso === null ? null : [...state.lasso, point] }));
+    } else if (drag.mode === "pan") {
+      this.setState((state) => ({
+        orbit: panOrbit(state.orbit, dx, dy, this.props.height),
+      }));
+    } else {
+      this.setState((state) => ({ orbit: rotateOrbit(state.orbit, dx, dy) }));
+    }
   };
 
   private onPointerUp = (event: React.PointerEvent<HTMLCanvasElement>): void => {
+    const drag = this.drag;
     this.drag = null;
     event.currentTarget.releasePointerCapture(event.pointerId);
+    if (drag?.mode === "lasso") {
+      this.finishLasso();
+    }
   };
 
+  /** Selects the selected points inside the lasso, as a brush narrows the selection. */
+  private finishLasso(): void {
+    const polygon = this.state.lasso;
+    this.setState({ lasso: null });
+    if (polygon === null || polygon.length < MIN_LASSO_POINTS) {
+      return;
+    }
+    const { rows, width, height } = this.props;
+    const matrix = this.matrix();
+    const inside = lassoed(
+      this.selectedFlags,
+      (index) =>
+        projectPoint(
+          matrix,
+          this.positions[index * 3],
+          this.positions[index * 3 + 1],
+          this.positions[index * 3 + 2],
+          width,
+          height,
+        ),
+      polygon,
+    );
+    this.props.onSelect(inside.map((index) => rows[index]));
+  }
+
+  private recordWheel = (event: WheelEvent): void => {
+    this.wheelLatch.record(event.target, event.timeStamp);
+  };
+
+  /** Zooms, for wheel gestures that started on the plot; others scroll the page. */
   private onWheel = (event: WheelEvent): void => {
+    if (!this.wheelLatch.startedInside(mounted(this.canvasRef))) {
+      return;
+    }
     event.preventDefault();
     this.setState((state) => ({ orbit: zoomOrbit(state.orbit, event.deltaY) }));
+  };
+
+  /** The middle button pans here: no autoscroll gizmo from the browser. */
+  private onMouseDown = (event: React.MouseEvent<HTMLCanvasElement>): void => {
+    if (event.button === 1) {
+      event.preventDefault();
+    }
   };
 
   /** Names the selected point nearest to (x, y), when one is close enough. */
@@ -368,19 +541,62 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
 
   render(): React.ReactNode {
     const { width, height } = this.props;
+    const { plane, lasso, tool } = this.state;
+    const color = fitColor(this.props.color_binning.palette, this.props.dark ? "dark" : "light");
     return (
       <div className={style.scatter3d} style={{ width, height }}>
         <canvas
           ref={this.canvasRef}
           role="img"
-          aria-label="3D scatter plot: drag to turn, scroll to zoom, double-click to reset"
+          aria-label={`3D scatter plot. ${CONTROLS_HINT}`}
+          className={tool === "select" ? style.selecting : undefined}
           style={{ width, height }}
           onPointerDown={this.onPointerDown}
           onPointerMove={this.onPointerMove}
           onPointerUp={this.onPointerUp}
           onPointerLeave={this.clearHover}
+          onMouseDown={this.onMouseDown}
+          onContextMenu={(event) => event.preventDefault()}
           onDoubleClick={() => this.setState({ orbit: DEFAULT_ORBIT })}
         />
+        <svg className={style.overlay} width={width} height={height} aria-hidden="true">
+          {plane.kind === "fit" && (
+            <path className={style.plane} d={plane.path} stroke={color} data-testid="plane-fit" />
+          )}
+          {lasso !== null && (
+            <polygon
+              className={style.lasso}
+              points={lasso.map(({ x, y }) => `${x},${y}`).join(" ")}
+              data-testid="lasso"
+            />
+          )}
+        </svg>
+        <fieldset className={`${controls.segmented} ${style.tools}`} aria-label="3D drag tool">
+          {(
+            [
+              ["orbit", "Turn", "Drag turns the view"],
+              ["select", "Select", "Drag draws a lasso around the points to select"],
+            ] as const
+          ).map(([value, label, title]) => (
+            <button
+              key={value}
+              type="button"
+              title={title}
+              aria-pressed={tool === value}
+              onClick={() => this.setState({ tool: value })}
+            >
+              {label}
+            </button>
+          ))}
+        </fieldset>
+        <div className={style.hint} data-testid="scatter3d-hint">
+          <span>{CONTROLS_HINT}</span>
+          <span style={{ color: plane.kind === "fit" ? color : undefined }}>
+            {plane.kind === "fit"
+              ? `Plane: least squares in axis space, R² ${plane.r2.toFixed(2)}, n ${plane.n}`
+              : plane.reason}
+          </span>
+        </div>
         {this.state.labels.map((label) => (
           <span
             key={label.key}
