@@ -151,7 +151,8 @@ the first run instead of iterating against the gates.
   plus TypeScript; `gates.py` is the registry.
 - `docs/` — the Sphinx site; `examples/` — notebooks, Streamlit demos, and
   `hptuning/tune.py`, a real GPU hyperparameter search rendered with HiPlot
-  (`uv run examples/hptuning/tune.py --out <page>`).
+  (`uv run examples/hptuning/tune.py --out <page> --csv <trials.csv>`; add
+  `--from-csv <trials.csv>` instead to re-render a page without training).
 
 ## Verifying
 
