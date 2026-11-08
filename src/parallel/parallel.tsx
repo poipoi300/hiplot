@@ -66,6 +66,7 @@ import {
 import { categoryTagTexts, placeBrushTags, type TagTexts } from "./brushtags";
 import { categoryIndices, countByCategory, type FlowAxis, flowAxes } from "./flow";
 import { LineGeometry } from "./geometry";
+import { defaultHiddenColumns } from "./hidden";
 import pstyle from "./parallel.module.css";
 import { type AxisSelection, BrushMasks } from "./selection";
 import { monotoneSlope, SPLINE_HANDLE, splineParameter, splineY } from "./spline";
@@ -103,6 +104,7 @@ export interface ParallelPlotDisplayData {
   // NOTE: Categorical columns with more than `categoricalMaximumValues` distinct values will be hidden
   // NOTE: Columns with a single value won't appear either unless you provide a min/max
   //       eg: `exp.parameters_definition["column_name"].force_range(0, 100)`
+  // NOTE: `uid` is hidden too unless `order` lists it; the Columns menu shows it
   hide?: Array<string>;
 
   // These columns will be inverted (higher values are below)
@@ -632,7 +634,14 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       ),
       width: 0, // Will be initialized to element width
       order: readState(props.persistentState, "order", isStringArray, props.order ?? []),
-      hide: new Set(readState(props.persistentState, "hide", isStringArray, props.hide ?? [])),
+      hide: new Set(
+        readState(
+          props.persistentState,
+          "hide",
+          isStringArray,
+          defaultHiddenColumns(props.hide ?? [], props.order ?? []),
+        ),
+      ),
       invert: new Set(
         readState(props.persistentState, "invert", isStringArray, props.invert ?? []),
       ),

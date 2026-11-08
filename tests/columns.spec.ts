@@ -92,7 +92,7 @@ test("saved state of the wrong shape falls back to defaults with a toast", async
   await expect(page.getByTestId("toast")).toHaveCount(0);
 });
 
-test("a numeric uid is offered as a column, and is a numeric axis and scatter axis", async ({
+test("the uid is offered in the Columns menu, hidden until shown, and a numeric axis", async ({
   page,
 }) => {
   await page.goto("/");
@@ -103,19 +103,21 @@ test("a numeric uid is offered as a column, and is a numeric axis and scatter ax
   const uidAxis = page
     .locator("svg g.dimension")
     .filter({ has: page.locator(".pplot-label[data-dimension='uid']") });
-  await uidAxis.locator(".pplot-label").click({ button: "right" });
-  await expect(page.locator(".context-menu .dropdown-item.disabled")).toContainText(["Number"]);
-  await page.keyboard.press("Escape");
-  await page.mouse.click(5, 5);
+  await expect(uidAxis).toHaveCount(0);
 
   await page.getByTestId("columns-button").click();
   const uid = columnOption(page, "uid");
-  await expect(uid).toHaveAttribute("aria-selected", "true");
-  await uid.click();
-  await expect(uidAxis).toHaveCount(0);
+  await expect(uid).toHaveAttribute("aria-selected", "false");
   await uid.click();
   await expect(uidAxis).toHaveCount(1);
   await page.keyboard.press("Escape");
+  // Trial indices on a number line, not one category per row.
+  await uidAxis.locator(".pplot-label").click({ button: "right" });
+  await expect(page.locator(".context-menu .dropdown-item.disabled")).toContainText(["Number"]);
+  await page.mouse.click(5, 5);
+  await page.reload();
+  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
+  await expect(uidAxis).toHaveCount(1);
 
   await page.getByRole("button", { name: "Add scatter plot" }).click();
   const panel = page.getByTestId("scatter-panel").last();
@@ -123,7 +125,6 @@ test("a numeric uid is offered as a column, and is a numeric axis and scatter ax
   await pickColumn(panel, "Y", "loss");
   const ticks = panel.getByRole("img", { name: /XY scatter plot/ }).locator(".tick text");
   await expect(ticks.first()).toBeAttached();
-  // Trial indices on a number line: 0, 50, 100… rather than one category per row.
   const labels = await ticks.allTextContents();
   expect(labels).toContain("100");
   expect(labels.length).toBeLessThan(40);

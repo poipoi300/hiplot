@@ -60,5 +60,10 @@ For the full schema, see `docs/plugins_reference.rst`.
 
 - Columns with a single effective value can disappear unless you force a range in parameter definitions.
 - High-cardinality categorical columns can be hidden automatically by `categoricalMaximumValues`.
+- The rows' `uid` is a column like any other (numeric when the uids are numbers, such as a
+  trial index), offered in the Columns menu and in the scatter axis pickers. It is not drawn
+  as an axis unless `order` lists it or it is shown from the Columns menu.
+- A lasso drawn in a scatter plot replaces the selection: it clears the brushes (see
+  `docs/scatter_plot.md`).
 - Hidden/inverted/order state and the brushes are persisted via persistent state and restored on reload.
 - Keep and Exclude save the brushes of an axis as one filter that replays the union of their ranges.

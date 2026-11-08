@@ -53,8 +53,8 @@ test("many axes scroll sideways instead of crowding their tick labels", async ({
   const overflow = await scroller.evaluate((element) => element.scrollWidth - element.clientWidth);
   expect(overflow).toBeGreaterThan(0);
   const axes = await axisExtents(page);
-  // The uploaded columns, plus the uid HiPlot adds.
-  expect(axes).toHaveLength(41);
+  // The uploaded columns; the uid HiPlot adds stays hidden until shown.
+  expect(axes).toHaveLength(40);
   for (let i = 1; i < axes.length; ++i) {
     // Each axis's labels stay clear of the previous axis and its brush band.
     expect(axes[i].labelsLeft - axes[i - 1].axis).toBeGreaterThan(15);
