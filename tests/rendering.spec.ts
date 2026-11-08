@@ -109,7 +109,10 @@ test("a steep straight line keeps its width instead of breaking into dots", asyn
   const names = Array.from({ length: 12 }, (_, i) => `c${i}`);
   const rising = names.map((_, i) => i % 2);
   const falling = names.map((_, i) => 1 - (i % 2));
-  await page.goto("/?provider=upload");
+  // Upright axes: facing the color would flip every other one and flatten the zigzag.
+  await page.goto(
+    `/?provider=upload&hip.PARALLEL_PLOT.upright=${encodeURIComponent(JSON.stringify(names))}`,
+  );
   await page.locator("input[type=file]").setInputFiles({
     name: "steep.csv",
     mimeType: "text/csv",
@@ -182,7 +185,11 @@ for (const deviceScaleFactor of [0.5, 1, 2]) {
       const mirrored = names.map((_, i) => 1 - (i % 2));
       const rows = [...Array.from({ length: 200 }, () => bundle), mirrored];
       // The rows' uids, their index, would be an axis of their own, fanning the bundle out.
-      await page.goto(`/?provider=upload&hip.PARALLEL_PLOT.hide=${encodeURIComponent('["uid"]')}`);
+      // A categorical color has no gradient for the axes to face, which would flatten the zigzag.
+      await page.goto(
+        `/?provider=upload&hip.PARALLEL_PLOT.hide=${encodeURIComponent('["uid"]')}` +
+          `&hip.color_by=${encodeURIComponent('"c0"')}`,
+      );
       await page.locator("input[type=file]").setInputFiles({
         name: "bundle.csv",
         mimeType: "text/csv",

@@ -23,13 +23,42 @@
   overflow: hidden;
 }
 /* The scrollbar of the axes, under the plot, when they need more room than it has. */
+/*
+ * A full-size bar with a thumb wide enough to grab. Chromium ignores the
+ * ::-webkit-scrollbar rules once scrollbar-color is set, so that is only for
+ * browsers without them (Firefox).
+ */
 .scroller {
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-color: var(--hip-axis) transparent;
+}
+.scroller::-webkit-scrollbar {
+  height: 14px;
+}
+.scroller::-webkit-scrollbar-track {
+  background: var(--hip-rule);
+  border-radius: 7px;
 }
 .scroller::-webkit-scrollbar-thumb {
   background: var(--hip-axis);
+  border: 3px solid transparent;
+  border-radius: 7px;
+  background-clip: padding-box;
+  min-width: 48px;
+}
+.scroller::-webkit-scrollbar-thumb:hover {
+  border-width: 2px;
+}
+@supports not selector(::-webkit-scrollbar) {
+  .scroller {
+    scrollbar-color: var(--hip-axis) transparent;
+  }
+}
+/* While middle-click autoscroll runs, the cursor says which way it goes. */
+.autoscrolling,
+.autoscrolling * {
+  /* biome-ignore lint/complexity/noImportantStyles: it must override the cursor of every axis, brush and handle under the pointer */
+  cursor: ew-resize !important;
 }
 .spacer {
   height: 1px;

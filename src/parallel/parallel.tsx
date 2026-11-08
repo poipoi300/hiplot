@@ -33,12 +33,14 @@ import type { RGB } from "../lib/colors";
 import { ColumnPicker, type PickableColumn } from "../lib/columnpicker";
 import controls from "../lib/controls.module.css";
 import { snapTextsToDevicePixels } from "../lib/crisptext";
+import { d3_scale_categorical_ordered } from "../lib/d3_scales";
 import { labelTextFromHtml } from "../lib/escape";
 import { mounted } from "../lib/refs";
 import { ResizableH } from "../lib/resizable";
 import { isNumber, isStringArray, readState } from "../lib/savedstate";
 import type { HiPlotPluginData } from "../plugin";
 import { type Datapoint, ParamType } from "../types";
+import { HorizontalAutoscroll } from "./autoscroll";
 import {
   type AxisStyle,
   type AxisValue,
@@ -67,6 +69,7 @@ import { categoryTagTexts, placeBrushTags, type TagTexts } from "./brushtags";
 import { categoryIndices, countByCategory, type FlowAxis, flowAxes } from "./flow";
 import { LineGeometry } from "./geometry";
 import { defaultHiddenColumns } from "./hidden";
+import { type ColorOrientation, colorOrientation, NO_ORIENTATION } from "./orientation";
 import pstyle from "./parallel.module.css";
 import { type AxisSelection, BrushMasks } from "./selection";
 import { monotoneSlope, SPLINE_HANDLE, splineParameter, splineY } from "./spline";
@@ -77,7 +80,10 @@ interface ParallelPlotState {
   width: number;
   order: Array<string>;
   hide: Set<string>;
+  /** Axes flipped by hand to high values at the bottom; they override the color orientation. */
   invert: Set<string>;
+  /** Axes flipped by hand to high values at the top; they override the color orientation. */
+  upright: Set<string>;
   dimensions: Array<string>;
   lineShape: LineShape;
   /** Whether any axis is brushed, which enables "Reset brushes". */
@@ -107,7 +113,9 @@ export interface ParallelPlotDisplayData {
   // NOTE: `uid` is hidden too unless `order` lists it; the Columns menu shows it
   hide?: Array<string>;
 
-  // These columns will be inverted (higher values are below)
+  // These columns will be inverted (higher values are below). Other axes put
+  // the values that come with high colors at the top, as do the categories of
+  // categorical axes, when the color column is numeric.
   invert?: Array<string>;
 
   // Categorical columns with more distinct values that this won't be displayed
@@ -520,6 +528,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   scroller_ref = React.createRef<HTMLDivElement>();
   spacer_ref = React.createRef<HTMLDivElement>();
   scrollLeft = 0;
+  autoscroll: HorizontalAutoscroll | null = null;
+  /** How axes face by default: high colors at the top (see orientation.ts). */
+  orientation: ColorOrientation = NO_ORIENTATION;
   /** Width of all the axes, in plot coordinates. */
   contentW = 0;
   foreground_ref = React.createRef<HTMLCanvasElement>();
@@ -605,15 +616,18 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       .selectAll<SVGTextElement, string>(`.${pstyle.pplotLabel}`)
       .filter((p) => p === d);
 
-    const willBeInverted = !this.state.invert.has(d);
+    const willBeInverted = !this.isInverted(d);
     this.setState((prevState) => {
-      const newInvert = new Set(prevState.invert);
+      const invert = new Set(prevState.invert);
+      const upright = new Set(prevState.upright);
       if (willBeInverted) {
-        newInvert.add(d);
+        invert.add(d);
+        upright.delete(d);
       } else {
-        newInvert.delete(d);
+        invert.delete(d);
+        upright.add(d);
       }
-      return { invert: newInvert };
+      return { invert, upright };
     });
     this.setScaleRange(d, willBeInverted);
     if (willBeInverted) {
@@ -645,6 +659,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       invert: new Set(
         readState(props.persistentState, "invert", isStringArray, props.invert ?? []),
       ),
+      upright: new Set(readState(props.persistentState, "upright", isStringArray, [])),
       dimensions: [],
       lineShape: readState(props.persistentState, "lineShape", isLineShape, "auto"),
       brushed: false,
@@ -658,6 +673,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   componentWillUnmount() {
     this.root_ref.current?.removeEventListener("wheel", this.onWheel);
     this.root_ref.current?.removeEventListener("contextmenu", preventNativeMenu);
+    this.autoscroll?.dispose();
+    this.autoscroll = null;
     d3.select(this.svgg_ref.current).selectAll("*").remove();
     this.cancelDrawing();
     this.webgl?.dispose();
@@ -681,6 +698,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       (this.state.dimensions !== prevState.dimensions ||
         prevProps.params_def !== this.props.params_def)
     ) {
+      if (prevProps.params_def !== this.props.params_def) {
+        this.orientation = this.colorOrientation();
+      }
       const drop_scales: string[] = [];
       this.state.dimensions.forEach((d: string) => {
         const new_scale = this.createScale(d);
@@ -753,6 +773,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (this.pplot && !this.state.dimensions.every((value) => oldDimsSet.has(value))) {
       this.pplot.redraw_axis();
     }
+    if (
+      this.pplot &&
+      prevProps.colorby !== this.props.colorby &&
+      prevProps.params_def === this.props.params_def
+    ) {
+      this.reorient();
+    }
     // Rescale to new dataset domain
     if (this.pplot && prevProps.params_def !== this.props.params_def) {
       this.brush_clear_all();
@@ -787,6 +814,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     // starts from the last state that worked.
     if (prevState.invert !== this.state.invert) {
       this.props.persistentState.set("invert", Array.from(this.state.invert));
+    }
+    if (prevState.upright !== this.state.upright) {
+      this.props.persistentState.set("upright", Array.from(this.state.upright));
     }
     if (prevState.hide !== this.state.hide) {
       this.props.persistentState.set("hide", Array.from(this.state.hide));
@@ -1319,6 +1349,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     );
   }
   componentDidMount() {
+    this.orientation = this.colorOrientation();
     const order = this.state.order;
     const orderIndex = (dimension: string): number => {
       const index = order.indexOf(dimension);
@@ -1386,6 +1417,22 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     // Not passive: a horizontal gesture over the plot scrolls the axes, not the page.
     mounted(me.root_ref).addEventListener("wheel", me.onWheel, { passive: false });
     mounted(me.root_ref).addEventListener("contextmenu", preventNativeMenu);
+    me.autoscroll = new HorizontalAutoscroll(
+      mounted(me.root_ref),
+      (pixels) => {
+        mounted(me.scroller_ref).scrollLeft += pixels;
+      },
+      () => {
+        const scroller = mounted(me.scroller_ref);
+        return scroller.scrollWidth > scroller.clientWidth;
+      },
+      (active) => {
+        mounted(me.root_ref).classList.toggle(pstyle.autoscrolling, active);
+        if (active) {
+          me.clearHover();
+        }
+      },
+    );
     me.webgl = WebGLLineRenderer.create(foregroundCanvas);
     if (me.webgl === null) {
       const foreground = foregroundCanvas.getContext("2d");
@@ -1522,6 +1569,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         .classed("label-name", true)
         .classed(style.axisLabelText, true)
         .classed(pstyle.pplotLabel, true)
+        .style("text-decoration", (dim) => (me.isInverted(dim) ? "underline" : null))
         .each(function (this: SVGTextElement, dim) {
           const pd = me.props.params_def[dim];
           const hint = IS_MOBILE
@@ -1766,7 +1814,56 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
   }
 
-  setScaleRange(k: string, inverted: boolean = this.state.invert.has(k)) {
+  /** A hand-flipped axis keeps its orientation; others follow the color. */
+  isInverted(k: string): boolean {
+    if (this.state.invert.has(k)) {
+      return true;
+    }
+    return !this.state.upright.has(k) && this.orientation.inverted.has(k);
+  }
+
+  colorOrientation(): ColorOrientation {
+    return colorOrientation(this.props.rows_filtered, this.props.params_def, this.props.colorby);
+  }
+
+  /**
+   * Faces the axes to the new color column. A categorical axis whose order
+   * changed loses its brushes: they span positions, which now hold other
+   * categories.
+   */
+  reorient(): void {
+    this.orientation = this.colorOrientation();
+    let brushesDropped = false;
+    for (const dimension of this.state.dimensions) {
+      const scale = this.createScale(dimension);
+      if (scale === null) {
+        continue;
+      }
+      const previous = this.yscale[dimension];
+      const reordered =
+        previous?.kind === "categorical" &&
+        scale.kind === "categorical" &&
+        previous.domain().join(" ") !== scale.domain().join(" ");
+      if (reordered && this.brushes.delete(dimension)) {
+        brushesDropped = true;
+      }
+      this.yscale[dimension] = scale;
+    }
+    this.underlineInvertedTitles();
+    this.update_ticks();
+    if (brushesDropped) {
+      this.commitBrushes();
+    }
+  }
+
+  /** Titles of inverted axes are underlined. */
+  private underlineInvertedTitles(): void {
+    d3.select(mounted(this.root_ref))
+      .selectAll<SVGTextElement, string>(`.${pstyle.pplotLabel}`)
+      .style("text-decoration", (dimension) => (this.isInverted(dimension) ? "underline" : null));
+  }
+
+  setScaleRange(k: string, inverted: boolean = this.isInverted(k)) {
     this.yscale[k].range(inverted ? [0, this.h] : [this.h, 0]);
   }
 
@@ -1775,8 +1872,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (pd === undefined) {
       return null;
     }
-    const scale = create_d3_scale(pd);
-    scale.range(this.state.invert.has(k) ? [0, this.h] : [this.h, 0]);
+    const categories = this.orientation.categoryOrder.get(k);
+    const scale =
+      categories === undefined
+        ? create_d3_scale(pd)
+        : Object.assign(d3_scale_categorical_ordered(categories), { paramType: pd.type });
+    scale.range(this.isInverted(k) ? [0, this.h] : [this.h, 0]);
     return scale;
   }
 

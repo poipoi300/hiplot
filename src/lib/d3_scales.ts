@@ -181,7 +181,12 @@ function categoricalFromPoint(point: d3.ScalePoint<string>): CategoricalScale {
 export function d3_scale_categorical(distinct_values: Iterable<ScaleInput>): CategoricalScale {
   const domain = Array.from(new Set(Array.from(distinct_values, convert_to_categorical_input)));
   domain.sort(naturalSortComparator);
-  return categoricalFromPoint(d3.scalePoint<string>().domain(domain));
+  return d3_scale_categorical_ordered(domain);
+}
+
+/** Positions categories in the given order, the first at the start of the range. */
+export function d3_scale_categorical_ordered(categories: readonly string[]): CategoricalScale {
+  return categoricalFromPoint(d3.scalePoint<string>().domain(categories));
 }
 
 export function get_numeric_values_sorted(values: Iterable<ScaleInput>): Array<number> {
