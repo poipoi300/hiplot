@@ -52,30 +52,23 @@ describe("distribution plots saved by older pages", () => {
           ],
           axis: "ignored",
         },
-        { enabled: true, axis: "also ignored" },
+        "also ignored",
       ),
     ).toEqual(["lr", "optimizer"]);
   });
 
   test("the single axis of older pages moves over", () => {
-    expect(
-      distributionAxesToMigrate({ panels: undefined, axis: "lr" }, { enabled: false, axis: null }),
-    ).toEqual(["lr"]);
+    expect(distributionAxesToMigrate({ panels: undefined, axis: "lr" }, null)).toEqual(["lr"]);
   });
 
   test("the axis an experiment asked for applies only while nothing is saved", () => {
-    const requested = { enabled: true, axis: "c" };
+    const requested = "c";
     expect(distributionAxesToMigrate({ panels: undefined, axis: undefined }, requested)).toEqual([
       "c",
     ]);
     // An emptied list records that the columns already moved.
     expect(distributionAxesToMigrate({ panels: [], axis: undefined }, requested)).toEqual([]);
-    expect(
-      distributionAxesToMigrate(
-        { panels: undefined, axis: undefined },
-        { enabled: false, axis: "c" },
-      ),
-    ).toEqual([]);
+    expect(distributionAxesToMigrate({ panels: undefined, axis: undefined }, 7)).toEqual([]);
   });
 
   test("columns become one-axis panels unless they already have one", () => {

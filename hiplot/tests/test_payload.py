@@ -26,6 +26,14 @@ def sample() -> hip.Experiment:
     )
 
 
+def test_distribution_is_not_a_default_display_but_its_axis_is_still_sent() -> None:
+    experiment = sample()
+    experiment.display_data(hip.Displays.DISTRIBUTION).update({"axis": "loss", "nbins": 12})
+    payload = experiment._payload()
+    assert payload["enabled_displays"] == [hip.Displays.PARALLEL_PLOT, hip.Displays.XY, hip.Displays.TABLE]
+    assert payload["display_data"][hip.Displays.DISTRIBUTION] == {"axis": "loss", "nbins": 12}
+
+
 def test_non_finite_floats_become_json_objects() -> None:
     assert encode_value(math.inf) == {"$f": "inf"}
     assert encode_value(-math.inf) == {"$f": "-inf"}

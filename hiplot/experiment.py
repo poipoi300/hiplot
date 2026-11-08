@@ -65,7 +65,9 @@ class Displays:
     PARALLEL_PLOT = "PARALLEL_PLOT"  #: Parallel plot data
     XY = "XY"  #: XY scatter/line plot data
     TABLE = "TABLE"  #: Rows table data
-    DISTRIBUTION = "DISTRIBUTION"  #: Distribution plot data
+    #: Distribution plot data. Not a display of its own: an ``axis`` set here
+    #: opens a one-axis scatter panel, whose bins ``nbins`` sets.
+    DISTRIBUTION = "DISTRIBUTION"
 
 
 def validate_colormap(cm: str | None) -> None:
@@ -211,7 +213,7 @@ class Experiment(_DictSerializable):
     :ivar colormap: Colormap to use
     :ivar colorby: Default column to color by
     :ivar weightcolumn: If rows have different weights, use this column as the weight (default to 1 if not specified)
-    :ivar enabledDisplays: Ordered displays to enable (by default all are enabled)
+    :ivar enabledDisplays: Ordered displays to enable (by default the parallel plot, the scatter panels and the table)
 
     :Example:
 
@@ -240,7 +242,6 @@ class Experiment(_DictSerializable):
         self.enabledDisplays: list[str] = [
             Displays.PARALLEL_PLOT,
             Displays.XY,
-            Displays.DISTRIBUTION,
             Displays.TABLE,
         ]
         self._display_data: dict[str, dict[str, tp.Any]] = {}

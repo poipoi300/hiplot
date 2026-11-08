@@ -586,12 +586,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     const distributionState = this.state.persistentState.children(DefaultPlugins.DISTRIBUTION);
     const migratedDistributionAxes = distributionAxesToMigrate(
       { panels: distributionState.get("panels"), axis: distributionState.get("axis") },
-      {
-        enabled:
-          experiment.enabled_displays === undefined ||
-          experiment.enabled_displays.includes(DefaultPlugins.DISTRIBUTION),
-        axis: experiment.display_data?.[DefaultPlugins.DISTRIBUTION]?.axis,
-      },
+      experiment.display_data?.[DefaultPlugins.DISTRIBUTION]?.axis,
     );
     if (migratedDistributionAxes.length > 0) {
       distributionState.set("panels", []);

@@ -47,11 +47,13 @@ export const isDistributionPanels = (value: unknown): value is DistributionPanel
  * The columns of distribution plots a page saved before they became one-axis
  * scatter panels: its saved panels, else the single axis older pages kept,
  * else, the first time a page shows its experiment, the axis the
- * experiment asked for.
+ * experiment's DISTRIBUTION display data asks for. That request stands
+ * whether or not the experiment lists DISTRIBUTION among its displays, which
+ * newer experiments no longer do by default.
  */
 export function distributionAxesToMigrate(
   saved: { panels: unknown; axis: unknown },
-  requested: { enabled: boolean; axis: unknown },
+  requestedAxis: unknown,
 ): string[] {
   if (isDistributionPanels(saved.panels)) {
     return saved.panels.flatMap((panel) => (panel.axis === null ? [] : [panel.axis]));
@@ -59,7 +61,7 @@ export function distributionAxesToMigrate(
   if (typeof saved.axis === "string") {
     return [saved.axis];
   }
-  return requested.enabled && typeof requested.axis === "string" ? [requested.axis] : [];
+  return typeof requestedAxis === "string" ? [requestedAxis] : [];
 }
 
 /** `panels`, plus a one-axis panel for each of `columns` that has none yet. */
