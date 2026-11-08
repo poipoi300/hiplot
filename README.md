@@ -1,5 +1,21 @@
 # HiPlot - High dimensional Interactive Plotting
 
+## About this fork
+
+Thanks to [Facebook Research](https://github.com/facebookresearch/hiplot) for creating HiPlot, and to [Mind the Math](https://github.com/mindthemath/hiplot) for keeping it alive after the original was archived. This fork builds on their work; it is not affiliated with either.
+
+What changed:
+
+- **Rendering:** WebGL2 density lines with exact anti-aliasing and colors mapped by value, with a choice of what overlapping lines show (mean, lowest or highest). 100,000 rows by 30 columns stay interactive.
+- **Parallel plot:** several brushes per axis, value tags on brushes, axes that face the color gradient (high colors at the top), horizontal scrolling with middle-click autoscroll, spline lines and a searchable Columns menu.
+- **Scatter plots:** XY, one-axis and 3D panels with lasso selection, a shared axis picker and correlation and regression fits.
+- **Table:** multi-level sorting, column filters and aligned numbers.
+- **Look:** a redesigned light and dark theme, colorblind-safe palettes and a color legend.
+- **Data:** compact columnar transfer, NaN, inf and missing-value spellings read as such, numeric uids.
+- **Example:** a real GPU hyperparameter search in [examples/hptuning](examples/hptuning), with trials stored as Parquet.
+- **Engineering:** Python 3.12 to 3.15, ruff and mypy --strict, TypeScript strict and Biome, Playwright browser tests, and commit and push gates requiring 90% coverage of changed lines across all suites.
+
+
 ![Logo](https://raw.githubusercontent.com/mindthemath/hiplot/main/hiplot/static/logo.png)
 
 [![CI](https://github.com/mindthemath/hiplot/actions/workflows/ci.yml/badge.svg)](https://github.com/mindthemath/hiplot/actions/workflows/ci.yml)
