@@ -192,7 +192,8 @@ test.describe("column menu", () => {
         fontSize: getComputedStyle(option).fontSize,
       };
     });
-    expect(geometry.bottomGap).toBeLessThanOrEqual(11);
+    // Layout snaps to fractions of a pixel: 11 px can measure 11.00003.
+    expect(geometry.bottomGap).toBeLessThanOrEqual(11.01);
     expect(geometry.paddingLeft).toBe("0px");
     // Row text lines up with the filter's text: its border and padding.
     expect(Math.abs(geometry.textInset - 10)).toBeLessThanOrEqual(0.5);
