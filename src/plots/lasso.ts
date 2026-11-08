@@ -28,12 +28,12 @@ export function insidePolygon(x: number, y: number, polygon: ReadonlyArray<Scree
 }
 
 /**
- * Indices of the candidate points (flag 1) whose screen position falls inside
+ * Indices, among `count` points, of those whose screen position falls inside
  * the lasso. `project` gives a point's screen position, or null when it is
  * not on screen (behind the camera, or a missing value).
  */
 export function lassoed(
-  candidates: Uint8Array,
+  count: number,
   project: (index: number) => ScreenPoint | null,
   polygon: ReadonlyArray<ScreenPoint>,
 ): number[] {
@@ -51,10 +51,7 @@ export function lassoed(
     bottom = Math.max(bottom, y);
   }
   const inside: number[] = [];
-  for (let index = 0; index < candidates.length; ++index) {
-    if (candidates[index] === 0) {
-      continue;
-    }
+  for (let index = 0; index < count; ++index) {
     const point = project(index);
     if (
       point !== null &&

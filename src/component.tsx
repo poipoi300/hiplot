@@ -926,6 +926,10 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       rows_selected_filter: filter,
     });
   }
+  /** Selects every filtered row again, as no brush does: how a lasso selection is cleared. */
+  clearSelection = (): void => {
+    this.setSelected(this.state.rows_filtered, { type: FilterType.All, data: [] });
+  };
   setHighlighted(rows: Array<Datapoint>): void {
     this.setState({ rows_highlighted: rows });
   }
@@ -1012,6 +1016,8 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
               )
             }
             onToolbarSlot={this.onToolbarSlot}
+            selectionFilter={this.state.rows_selected_filter}
+            onClearSelection={this.clearSelection}
             {...controlProps}
           />
           {this.state.loadStatus === HiPlotLoadStatus.Error && this.state.error !== null && (

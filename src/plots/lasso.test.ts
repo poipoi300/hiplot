@@ -23,14 +23,13 @@ describe("lasso selection", () => {
     expect(insidePolygon(2, 5, notch)).toBe(true);
   });
 
-  test("only candidate points on screen inside the lasso are picked", () => {
+  test("every point on screen inside the lasso is picked, and only those", () => {
     const positions = [{ x: 5, y: 5 }, { x: 50, y: 5 }, { x: 2, y: 2 }, null];
-    const candidates = Uint8Array.from([1, 1, 0, 1]);
-    expect(lassoed(candidates, (index) => positions[index], square)).toEqual([0]);
+    expect(lassoed(positions.length, (index) => positions[index], square)).toEqual([0, 2]);
   });
 
   test("a gesture too short to enclose anything picks nothing", () => {
-    expect(lassoed(Uint8Array.from([1]), () => ({ x: 0, y: 0 }), square.slice(0, 2))).toEqual([]);
+    expect(lassoed(1, () => ({ x: 0, y: 0 }), square.slice(0, 2))).toEqual([]);
   });
 });
 

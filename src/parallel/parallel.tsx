@@ -13,7 +13,13 @@ import $ from "jquery";
 import React from "react";
 import { createPortal } from "react-dom";
 import _ from "underscore";
-import { anyOfRanges, type Filter, type FilterRange, FilterType } from "../filters";
+import {
+  anyOfRanges,
+  type Filter,
+  type FilterRange,
+  FilterType,
+  isLassoSelection,
+} from "../filters";
 import style from "../hiplot.module.css";
 import {
   create_d3_scale,
@@ -740,13 +746,16 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.update_ticks();
       this.cancelDrawing();
     }
-    // A selection made elsewhere (table search, Keep/Exclude): draw it. Our own
-    // brush selections are already drawn when they are published.
+    // A selection made elsewhere (table search, Keep/Exclude, a lasso): draw
+    // it. Our own brush selections are already drawn when they are published.
     const selectionChanged =
       prevProps.rows_selected !== this.props.rows_selected &&
       this.props.rows_selected !== this.publishedSelection;
     if (selectionChanged) {
       this.drawnSelection = this.props.rows_selected;
+      if (isLassoSelection(this.props.rows_selected_filter) && this.brushes.size > 0) {
+        this.dropBrushesReplacedByLasso();
+      }
     }
     if (
       selectionChanged ||
@@ -915,6 +924,28 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       })),
     );
     this.commitBrushes();
+  }
+
+  /**
+   * A lasso replaces the selection, brushes included: they go, without
+   * publishing the selection they made, and the next brush replaces the
+   * lasso's selection in turn.
+   */
+  private dropBrushesReplacedByLasso(): void {
+    this.brushes.clear();
+    this.props.persistentState.set(PSTATE_BRUSHES, {});
+    this.sendBrushExtents();
+    this.drawBrushes();
+    this.markBrushedTitles([]);
+    this.updateFlowBadges(new Set(), this.selectionMask(this.geometry()));
+    this.setState({ brushed: false });
+  }
+
+  /** Titles of brushed axes are bold. */
+  private markBrushedTitles(brushed: ReadonlyArray<string>): void {
+    d3.select(mounted(this.root_ref))
+      .selectAll<SVGTextElement, string>(`.${pstyle.pplotLabel}`)
+      .style("font-weight", (dimension) => (brushed.includes(dimension) ? "bold" : null));
   }
 
   /** Clears the brushes of one axis. */
@@ -1601,10 +1632,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         me.setState({ brushed: actives.length > 0 });
       }
 
-      // bold dimensions with label
-      div
-        .selectAll<SVGTextElement, string>(`.${pstyle.pplotLabel}`)
-        .style("font-weight", (dimension) => (_.include(actives, dimension) ? "bold" : null));
+      me.markBrushedTitles(actives);
 
       // Get lines within the brushes: in any brush of each brushed axis.
       const selections = new Map<string, AxisSelection>(

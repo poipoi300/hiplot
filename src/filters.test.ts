@@ -7,6 +7,8 @@ import {
   type Filter,
   FilterType,
   isFilter,
+  isLassoSelection,
+  lassoFilter,
   parseColumnCondition,
 } from "./filters";
 import { type Datapoint, ParamType } from "./types";
@@ -57,6 +59,16 @@ describe("filters", () => {
     expect(apply_filter(table, { type: FilterType.None, data: {} })).toEqual([]);
   });
 
+  test("a lasso's filter keeps exactly the rows it drew around", () => {
+    const lasso = lassoFilter([table[3], table[1]]);
+    expect(uids(apply_filter(table, lasso))).toEqual(["b", "d"]);
+    expect(isLassoSelection(lasso)).toBe(true);
+    expect(isLassoSelection(lossRange(0, 1))).toBe(false);
+    expect(isLassoSelection(null)).toBe(false);
+    // Excluding a lasso's rows replays from the saved filters.
+    expect(uids(apply_filter(table, { type: FilterType.Not, data: lasso }))).toEqual(["a", "c"]);
+  });
+
   test("filters apply in sequence and leave the input untouched", () => {
     const input = table.slice();
     const kept = apply_filters(input, [lossRange(0, 1), { type: FilterType.Search, data: "sgd" }]);
@@ -69,6 +81,7 @@ describe("filter validation", () => {
   test("well-formed filters, including nested ones, are accepted", () => {
     expect(isFilter(lossRange(0, 1))).toBe(true);
     expect(isFilter({ type: FilterType.Not, data: { type: FilterType.All, data: [] } })).toBe(true);
+    expect(isFilter({ type: FilterType.Lasso, data: ["a", "b"] })).toBe(true);
   });
 
   test("malformed filters from storage are rejected", () => {
@@ -79,6 +92,7 @@ describe("filter validation", () => {
       { type: FilterType.Range, data: { col: "x", type: "numeric", min: "0", max: 1 } },
       { type: FilterType.Search, data: 3 },
       { type: FilterType.All, data: [{ type: FilterType.None }] },
+      { type: FilterType.Lasso, data: [1, 2] },
     ]) {
       expect(isFilter(value)).toBe(false);
     }

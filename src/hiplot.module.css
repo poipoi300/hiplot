@@ -410,6 +410,55 @@ textarea.runsSelectionTextarea {
   font-weight: 600;
 }
 
+/* A lasso's selection, which replaced the brushes, and the button that clears it. */
+.lassoSelection {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 3px 0 8px;
+  border: 1px solid color-mix(in srgb, var(--hip-accent) 45%, transparent);
+  border-radius: 999px;
+  background: var(--hip-brush-fill);
+  color: var(--hip-fg);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.lassoSelection svg {
+  flex: none;
+  color: var(--hip-accent);
+}
+button.lassoClear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--hip-muted);
+  cursor: pointer;
+  transition:
+    color 120ms ease-out,
+    background-color 120ms ease-out;
+}
+button.lassoClear svg {
+  color: currentColor;
+}
+.lassoClear:hover {
+  background: color-mix(in srgb, var(--hip-accent) 18%, transparent);
+  color: var(--hip-fg);
+}
+.lassoClear:focus-visible {
+  outline: 2px solid var(--hip-accent);
+  outline-offset: 0;
+}
+
 .selectionShare {
   margin-left: 0.4em;
   padding: 0 0.45em;

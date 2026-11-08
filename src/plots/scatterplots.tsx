@@ -9,6 +9,7 @@ import $ from "jquery";
 import React from "react";
 import _ from "underscore";
 import { DistributionView } from "../distribution/plugin";
+import { lassoFilter } from "../filters";
 import { ColumnSelect } from "../lib/columnpicker";
 import { ResizableH } from "../lib/resizable";
 import { isString, readState } from "../lib/savedstate";
@@ -83,7 +84,7 @@ class Scatter3DPanel extends React.Component<
             height={this.state.height}
             render_row_text={this.props.render_row_text}
             setHighlighted={this.props.setHighlighted}
-            onSelect={(rows) => this.props.setSelected(rows, null)}
+            onLasso={(rows) => this.props.setSelected(rows, lassoFilter(rows))}
           />
         )}
       </ResizableH>

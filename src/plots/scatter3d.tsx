@@ -113,8 +113,8 @@ interface Scatter3DProps {
   height: number;
   render_row_text: (row: Datapoint) => string;
   setHighlighted: (rows: Datapoint[]) => void;
-  /** Makes the rows a lasso drew around the selection, as brushes do. */
-  onSelect: (rows: Datapoint[]) => void;
+  /** Makes the rows a lasso drew around the selection, in place of any other. */
+  onLasso: (rows: Datapoint[]) => void;
 }
 
 /** What a drag does: turn the view, pan it, or draw a lasso. */
@@ -443,7 +443,10 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
     }
   };
 
-  /** Selects the selected points inside the lasso, as a brush narrows the selection. */
+  /**
+   * Selects the points inside the lasso, among all the rows Keep and Exclude
+   * left, selected or not: the lasso replaces the selection.
+   */
   private finishLasso(): void {
     const polygon = this.state.lasso;
     this.setState({ lasso: null });
@@ -453,7 +456,7 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
     const { rows, width, height } = this.props;
     const matrix = this.matrix();
     const inside = lassoed(
-      this.selectedFlags,
+      rows.length,
       (index) =>
         projectPoint(
           matrix,
@@ -465,7 +468,7 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
         ),
       polygon,
     );
-    this.props.onSelect(inside.map((index) => rows[index]));
+    this.props.onLasso(inside.map((index) => rows[index]));
   }
 
   private recordWheel = (event: WheelEvent): void => {

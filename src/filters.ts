@@ -19,6 +19,8 @@ export enum FilterType {
   Search = "Search",
   Column = "Column",
   None = "None",
+  /** The rows a lasso drew around in a scatter plot, by uid. */
+  Lasso = "Lasso",
 }
 
 export type FilterRange =
@@ -49,7 +51,18 @@ export type Filter =
   | { type: FilterType.Not; data: Filter }
   | { type: FilterType.Search; data: string }
   | { type: FilterType.Column; data: { col: string; query: string } }
-  | { type: FilterType.None; data: Record<string, never> };
+  | { type: FilterType.None; data: Record<string, never> }
+  | { type: FilterType.Lasso; data: string[] };
+
+/** The selection a lasso makes: exactly the rows it drew around. */
+export function lassoFilter(rows: Iterable<Datapoint>): Filter {
+  return { type: FilterType.Lasso, data: Array.from(rows, (row) => row.uid) };
+}
+
+/** Whether a selection is a lasso's, which replaced every brush. */
+export function isLassoSelection(filter: Filter | null): boolean {
+  return filter !== null && filter.type === FilterType.Lasso;
+}
 
 /**
  * A condition typed into a table column's filter: a comparison or a range
@@ -173,6 +186,10 @@ export function filter_predicate(filter: Filter): Predicate {
     }
     case FilterType.None:
       return () => false;
+    case FilterType.Lasso: {
+      const uids = new Set(filter.data);
+      return (dp) => uids.has(dp.uid);
+    }
   }
 }
 
@@ -254,6 +271,8 @@ export function isFilter(value: unknown): value is Filter {
       );
     case FilterType.None:
       return isRecord(value.data);
+    case FilterType.Lasso:
+      return isStringArray(value.data);
     default:
       return false;
   }

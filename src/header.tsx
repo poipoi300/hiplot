@@ -15,6 +15,7 @@ import {
   KeepDataBtn,
   RestoreDataBtn,
 } from "./controls";
+import { type Filter, isLassoSelection } from "./filters";
 import style from "./hiplot.module.css";
 import controls from "./lib/controls.module.css";
 import { mounted } from "./lib/refs";
@@ -63,6 +64,26 @@ const THEME_LABELS: { [choice in ThemeChoice]: { label: string; title: string } 
   dark: { label: "Dark", title: "Dark theme" },
   system: { label: "System", title: "Follow the system's light or dark setting" },
 };
+
+/** A loop drawn freehand: the selection a lasso made. */
+const LASSO_ICON = (
+  <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+    <path
+      d="M7 2.2c3 0 5.2 1.4 5.2 3.3S10 8.8 7 8.8 1.8 7.4 1.8 5.5 4 2.2 7 2.2ZM4.6 8.4c-.6.9-.7 2-.1 2.9"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeDasharray="2.2 1.6"
+    />
+  </svg>
+);
+
+const CLEAR_ICON = (
+  <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+    <path d="M2 2l6 6M8 2 2 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+  </svg>
+);
 
 /** A circular arrow: load the experiment again. */
 const REFRESH_ICON = (
@@ -124,6 +145,10 @@ interface HeaderBarProps extends IDatasets, HiPlotDataControlProps {
   legend: React.ReactNode;
   /** Where displays put their controls in the row (see HiPlotPluginData.header_toolbar). */
   onToolbarSlot: (slot: HTMLDivElement | null) => void;
+  /** What the selection is, which says when a lasso made it. */
+  selectionFilter: Filter | null;
+  /** Selects every filtered row again. */
+  onClearSelection: () => void;
 }
 
 interface HeaderBarState {
@@ -260,6 +285,23 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
                   : `${this.state.selectedPct}%`}
               </span>
             </div>
+            {isLassoSelection(this.props.selectionFilter) && (
+              <div className={style.lassoSelection} data-testid="lasso-selection">
+                {LASSO_ICON}
+                <span>
+                  Lasso selection · {COUNT_FORMAT.format(this.props.rows_selected.length)} rows
+                </span>
+                <button
+                  type="button"
+                  className={style.lassoClear}
+                  title="Clear the lasso selection and select every row"
+                  aria-label="Clear the lasso selection"
+                  onClick={this.props.onClearSelection}
+                >
+                  {CLEAR_ICON}
+                </button>
+              </div>
+            )}
             {this.props.legend}
           </React.Fragment>
         )}
