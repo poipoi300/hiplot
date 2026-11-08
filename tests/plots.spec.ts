@@ -63,9 +63,17 @@ test("any axis can be None: the set ones are plotted in order, and kept", async 
   await expect(xy).toBeVisible();
   // Y runs across and Z up: the horizontal axis is drawn first.
   await expect(xy.locator(".plotxy-label")).toHaveText([/^lr/, /^exp_metric/]);
-  const across = await xy.locator(".plotxy-label").nth(0).boundingBox();
-  const up = await xy.locator(".plotxy-label").nth(1).boundingBox();
-  expect(across?.y ?? 0).toBeGreaterThan(up?.y ?? 0);
+  // Polled: a label has no box until the plot has laid it out.
+  const labels = xy.locator(".plotxy-label");
+  await expect
+    .poll(async () => {
+      const [across, up] = await Promise.all([
+        labels.nth(0).boundingBox(),
+        labels.nth(1).boundingBox(),
+      ]);
+      return across !== null && up !== null && across.y > up.y;
+    })
+    .toBe(true);
   // The pickers keep their axes: X stays None.
   await expect(axisButton(panel, "X")).toHaveAccessibleName("X: None");
   await expect(axisButton(panel, "Y")).toHaveAccessibleName("Y: lr");
