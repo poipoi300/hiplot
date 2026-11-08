@@ -6,6 +6,7 @@ import {
   d3_scale_categorical,
   d3_scale_percentile,
   d3_scale_timestamp,
+  finiteExtent,
   get_numeric_values_sorted,
   getLogScaleTickValues,
   is_numeric_value,
@@ -170,5 +171,23 @@ describe("outlier band", () => {
     const scale = scale_add_outliers(base()).range([0, 130]);
     expect(scale.invert(120)).toBeCloseTo(11);
     expect(scale.invert(50)).toBe(5);
+  });
+});
+
+describe("finite extent", () => {
+  const linear = () => continuousFromD3(d3.scaleLinear().domain([0, 1]));
+  test("an axis with an outlier band leaves the band out of the extent, at either end", () => {
+    const upward = scale_add_outliers(linear()).range([400, 10]);
+    expect(finiteExtent(upward, [0, 410])).toEqual([40, 410]);
+    const rightward = scale_add_outliers(linear()).range([10, 400]);
+    expect(finiteExtent(rightward, [400, 0])).toEqual([0, 370]);
+    expect(rightward(Number.NaN)).toBeGreaterThan(finiteExtent(rightward, [0, 400])[1]);
+  });
+
+  test("an axis without a band, continuous or categorical, keeps the whole extent", () => {
+    expect(finiteExtent(linear().range([400, 10]), [410, 0])).toEqual([0, 410]);
+    expect(finiteExtent(d3_scale_categorical(["a", "b"]).range([0, 100]), [0, 100])).toEqual([
+      0, 100,
+    ]);
   });
 });

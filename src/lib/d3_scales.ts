@@ -414,6 +414,22 @@ export function getLogScaleTickValues(domain: number[], approxTickCount: number)
 export const OUTLIER_BAND_PIXELS = 30;
 
 /**
+ * The part of `extent`, a pixel span along a scale's axis, outside the
+ * scale's outlier band: what drawings of finite values (fits, means) are
+ * clipped to so that they never enter the band. Unchanged on a scale without
+ * a band.
+ */
+export function finiteExtent(scale: Scale, extent: readonly [number, number]): [number, number] {
+  const [low, high] = [Math.min(...extent), Math.max(...extent)];
+  if (scale.kind !== "continuous" || !scale.hasOutlierBand) {
+    return [low, high];
+  }
+  const [from, to] = scale.range();
+  const bandStart = to - Math.sign(to - from) * OUTLIER_BAND_PIXELS;
+  return to > from ? [low, Math.min(high, bandStart)] : [Math.max(low, bandStart), high];
+}
+
+/**
  * Adds NaN/Inf/-Inf to a continuous scale, with one extra tick for them.
  *
  * Either the scale is in ascending order (range[1] > range[0]):

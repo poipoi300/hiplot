@@ -14,7 +14,7 @@ import style from "./hiplot.module.css";
 import { create_d3_scale, type ParamDef, type ParamScale } from "./infertypes";
 import { IS_MOBILE } from "./lib/browsercompat";
 import controls from "./lib/controls.module.css";
-import { getLogScaleTickValues, type Scale } from "./lib/d3_scales";
+import { finiteExtent, getLogScaleTickValues, type Scale } from "./lib/d3_scales";
 import { labelTextFromHtml } from "./lib/escape";
 import { fitColor } from "./lib/fitcolor";
 import { powerOfTenLabels } from "./lib/numberformat";
@@ -732,12 +732,15 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
     /** Draws the fit of `stats` with the current (possibly zoomed) scales. */
     function draw_fit(stats: ScatterStats): void {
       fitLayer.selectAll("*").remove();
-      // Fits stay inside the plot area, where their values are on the axes.
+      // Fits stay inside the plot area, where their values are on the axes,
+      // and out of the bands of inf, NaN and missing values.
+      const [left, right] = finiteExtent(x_scale, [margin.left, me.state.width - margin.right]);
+      const [top, bottom] = finiteExtent(y_scale, [margin.top, me.state.height - margin.bottom]);
       fitClip
-        .attr("x", margin.left)
-        .attr("y", margin.top)
-        .attr("width", Math.max(0, me.state.width - margin.left - margin.right))
-        .attr("height", Math.max(0, me.state.height - margin.top - margin.bottom));
+        .attr("x", left)
+        .attr("y", top)
+        .attr("width", Math.max(0, right - left))
+        .attr("height", Math.max(0, bottom - top));
       const color = fitColor(me.props.color_binning.palette, me.props.dark ? "dark" : "light");
       if (stats.kind === "numeric" && stats.fit !== null) {
         const points = stats.fit.points

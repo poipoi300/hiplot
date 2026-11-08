@@ -84,6 +84,14 @@ describe("scatter statistics", () => {
   test("values that cannot be fitted are left out", () => {
     expect(fitSpaceValue(-1, ParamType.NUMERICLOG)).toBeNaN();
     expect(fitSpaceValue("inf", ParamType.NUMERIC)).toBeNaN();
+    expect(fitSpaceValue("NA", ParamType.NUMERIC)).toBeNaN();
+    expect(fitSpaceValue(null, ParamType.NUMERIC)).toBeNaN();
+    expect(fitSpaceValue(true, ParamType.NUMERIC)).toBeNaN();
+  });
+
+  test("numbers spelled as text are fitted like numbers", () => {
+    expect(fitSpaceValue(" 2.5 ", ParamType.NUMERIC)).toBe(2.5);
+    expect(fitSpaceValue("100", ParamType.NUMERICLOG)).toBe(2);
     expect(fromFitSpace(2, ParamType.NUMERICLOG)).toBe(100);
   });
 });

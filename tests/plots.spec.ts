@@ -272,6 +272,34 @@ test("a scatter shows the correlations of the selection and fits it", async ({ p
   await expect(stats).toContainText("per optimizer, with its 95% interval");
 });
 
+test("a scatter's fit is clipped out of the band of inf, NaN and missing values", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  await page.getByRole("button", { name: "Add scatter plot" }).click();
+  await select(page, "X").selectOption("lr");
+  await select(page, "Y").selectOption("special_values");
+  const panel = scatterPanels(page).last();
+  await expect(panel.getByTestId("scatter-fit")).toHaveAttribute("d", /^M/);
+  const svg = panel.getByRole("img", { name: "XY scatter plot" });
+  const { clipTop, bandTick } = await svg.evaluate((element) => {
+    const clip = element.querySelector("clipPath[id^='plotxy-fit-clip'] rect");
+    const tick = Array.from(element.querySelectorAll(".tick text")).find(
+      (text) => text.textContent === "nan/inf/null",
+    );
+    if (clip === null || tick === undefined) {
+      throw new Error("No fit clip or no band tick");
+    }
+    const tickBox = tick.getBoundingClientRect();
+    return {
+      clipTop: element.getBoundingClientRect().top + Number(clip.getAttribute("y")),
+      bandTick: tickBox.top + tickBox.height / 2,
+    };
+  });
+  // The band spans 30 pixels from its tick at the top of the axis.
+  expect(clipTop - bandTick).toBeGreaterThanOrEqual(29.5);
+});
+
 test("a one-axis plot draws the best-fitting distribution and states it", async ({ page }) => {
   await loadDemo(page);
   await page.locator(".pplot-label[data-dimension='exp_metric']").click({ button: "right" });

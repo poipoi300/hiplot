@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+import { parse_numeric } from "../lib/d3_scales";
 import { type CorrelationSummary, correlationSummary } from "../stats/correlation";
 import { binnedMeans, categoryMeans, linearFit } from "../stats/regression";
 import { type Datapoint, type DatapointValue, ParamType } from "../types";
@@ -53,15 +54,20 @@ export type ScatterStats =
     }
   | { kind: "none"; reason: string };
 
-/** A row's value in the space fits are made in: log10 on log axes; NaN when not a usable number. */
+/**
+ * A row's value in the space fits are made in: log10 on log axes. Numbers
+ * spelled as text count; NaN when the value is no finite number, so fits
+ * use finite points only.
+ */
 export function fitSpaceValue(value: DatapointValue, type: ParamType): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
+  const number = parse_numeric(value);
+  if (!Number.isFinite(number)) {
     return Number.NaN;
   }
   if (type === ParamType.NUMERICLOG) {
-    return value > 0 ? Math.log10(value) : Number.NaN;
+    return number > 0 ? Math.log10(number) : Number.NaN;
   }
-  return value;
+  return number;
 }
 
 /** A value back from fit space. */
