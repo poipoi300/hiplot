@@ -64,6 +64,22 @@ const THEME_LABELS: { [choice in ThemeChoice]: { label: string; title: string } 
   system: { label: "System", title: "Follow the system's light or dark setting" },
 };
 
+/** A circular arrow: load the experiment again. */
+const REFRESH_ICON = (
+  <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+    <g
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M13.1 8.6A5.2 5.2 0 1 1 11.6 4.1" />
+      <path d="M12.2 1.6v3h-3" />
+    </g>
+  </svg>
+);
+
 /** Light / Dark / System as icons: the theme, remembered across pages. */
 function ThemeToggle({
   choice,
@@ -213,6 +229,17 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
     return (
       <React.Fragment>
         {React.createElement(this.props.dataProvider, dataProviderProps)}
+        {showControls && this.dataProviderRef.current?.refresh && (
+          <button
+            type="button"
+            title="Load the experiment again"
+            aria-label="Refresh"
+            className={`${controls.button} ${controls.iconButton}`}
+            onClick={this.onRefresh.bind(this)}
+          >
+            {REFRESH_ICON}
+          </button>
+        )}
 
         {showControls && (
           <React.Fragment>
@@ -223,7 +250,10 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
             </div>
             <div className={style.selectionCount} data-testid="selection-count" aria-live="polite">
               <strong>{COUNT_FORMAT.format(this.props.rows_selected.length)}</strong>
-              <span> of {COUNT_FORMAT.format(this.props.rows_filtered.length)} selected</span>
+              <span>
+                of {COUNT_FORMAT.format(this.props.rows_filtered.length)}
+                <span className={style.selectionWord}> selected</span>
+              </span>
               <span className={style.selectionShare}>
                 {this.props.weightColumn
                   ? `${this.state.selectedPctWeighted}% weighted`
@@ -242,16 +272,6 @@ export class HeaderBar extends React.Component<HeaderBarProps, HeaderBarState> {
         />
         {showControls && (
           <div className={style.controlGroup}>
-            {this.dataProviderRef.current?.refresh && (
-              <button
-                type="button"
-                title="Load the experiment again"
-                className={controls.button}
-                onClick={this.onRefresh.bind(this)}
-              >
-                Refresh
-              </button>
-            )}
             <ExportDataCSVBtn {...this.props} />
             <button
               type="button"

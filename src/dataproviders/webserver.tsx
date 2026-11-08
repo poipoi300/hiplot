@@ -75,9 +75,11 @@ export class RunsSelectionTextArea extends React.Component<TextAreaProps, TextAr
       <textarea
         style={{
           height: `${MINIMIZED_HEIGHT_PIXELS}px`,
-          // Once loaded it shares the header row; before, it is the row.
-          flex: this.props.minimizeWhenOutOfFocus ? "0 1 160px" : "1 1 auto",
-          minWidth: "100px",
+          // Once loaded and out of focus it shares the header row, and is the
+          // first control to narrow when the row is short; otherwise it is the row.
+          flex:
+            this.props.minimizeWhenOutOfFocus && !this.props.hasFocus ? "0 4 160px" : "1 1 auto",
+          minWidth: "48px",
         }}
         ref={this.textarea}
         className={style.runsSelectionTextarea}

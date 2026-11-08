@@ -31,6 +31,12 @@ button.button {
   border-color: var(--hip-axis);
   background: var(--hip-brush-fill);
 }
+/* A button that is an icon: square, the icon centered. */
+button.iconButton {
+  justify-content: center;
+  width: 28px;
+  padding: 0;
+}
 .button:disabled {
   opacity: 0.45;
   cursor: default;

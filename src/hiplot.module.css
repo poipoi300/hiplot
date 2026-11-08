@@ -318,7 +318,8 @@ textarea.runsSelectionTextarea {
 /*
  * The top panel: one row of logo, data actions with the selection count,
  * the color legend, the displays' controls, app actions and the theme.
- * Only the legend gives way when the row is short of room.
+ * When the row is short of room, the experiment input (in server mode) and
+ * the legend give way; the other controls keep their size.
  */
 .header {
   display: flex;
@@ -361,6 +362,20 @@ textarea.runsSelectionTextarea {
   }
   .header .selectionShare {
     display: none;
+  }
+}
+/* Shorter still, the count reads "N of M" and the gaps narrow again. */
+@media (max-width: 1440px) {
+  .header,
+  .toolbarSlot {
+    gap: 6px;
+  }
+  .header .selectionWord {
+    display: none;
+  }
+  .header .legend {
+    gap: 10px;
+    padding-left: 10px;
   }
 }
 @media (max-width: 900px) {
@@ -406,9 +421,9 @@ textarea.runsSelectionTextarea {
 }
 
 /*
- * Color legend for the color-by column, in the header row. Its list of
- * categories is what gives way first; the title, the scale and the map
- * picker always show.
+ * Color legend for the color-by column, in the header row. Short of room,
+ * its list of categories gives way first, then a gradient narrows; the
+ * title, the scale's ends and the map picker always show.
  */
 .legend {
   flex: 0 1 auto;
@@ -421,10 +436,20 @@ textarea.runsSelectionTextarea {
   font-size: 12px;
   color: var(--hip-muted);
 }
+/* The categories' own width does not hold the legend open. */
+.legend:has(> .legendCategories) {
+  min-width: 0;
+  overflow: hidden;
+}
 .legendTitle {
   font-weight: 500;
 }
 .legendColumn {
+  display: inline-block;
+  max-width: 10em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
   margin-left: 4px;
   color: var(--hip-fg);
   font-weight: 600;
@@ -441,9 +466,11 @@ textarea.runsSelectionTextarea {
   mask-image: linear-gradient(to left, transparent, #000 16px);
 }
 .legendTitle,
-.legendScale,
 .legendMissing {
   flex: none;
+}
+.legendScale {
+  flex: 0 1 auto;
 }
 .legendCategories li,
 .legendMissing {
@@ -467,7 +494,8 @@ textarea.runsSelectionTextarea {
 }
 .legendGradient {
   display: inline-block;
-  width: 96px;
+  flex: 0 1 96px;
+  min-width: 32px;
   height: 10px;
   border-radius: 3px;
 }

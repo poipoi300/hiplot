@@ -174,6 +174,25 @@ test("Auto names the line shape it chose and why", async ({ page }) => {
   );
 });
 
+test("in server mode the top panel fits one row at 1280 px, the input widening when edited", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await loadDemo(page);
+  await page.mouse.click(5, 700);
+  const header = page.getByTestId("header-toolbar").locator("..");
+  await expect(page.getByRole("button", { name: "Refresh" })).toBeVisible();
+  expect(await header.evaluate((row) => row.scrollWidth <= row.clientWidth)).toBe(true);
+
+  const input = page.locator('textarea[placeholder="Experiments to load"]');
+  const resting = await input.boundingBox();
+  await input.focus();
+  await expect(page.getByTestId("selection-count")).toBeHidden();
+  const editing = await input.boundingBox();
+  expect(editing?.width ?? 0).toBeGreaterThan(4 * (resting?.width ?? 0));
+  expect(await header.evaluate((row) => row.scrollWidth <= row.clientWidth)).toBe(true);
+});
+
 test("the top panel is one row of same-size controls with the theme at its right end", async ({
   page,
 }) => {
