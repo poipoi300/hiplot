@@ -31,6 +31,12 @@ title = "Density rendering, palettes, legend, axes, theming, affordances"
 weight = 3
 done = true
 
+[[v1.milestones]]
+id = "redesign-round-2"
+title = "Anti-aliased splines, plot panels and 3D scatter, table filters, theme toggle, at baseline speed"
+weight = 4
+done = true
+
 [[checks]]
 id = "pytest"
 label = "Python tests"
