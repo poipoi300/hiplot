@@ -282,6 +282,25 @@ test("brushes are restored after a reload", async ({ page }) => {
   expect(count).toBeLessThan(total);
 });
 
+test("a brush that selects nothing is restored in place after a reload, still selecting nothing", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  // Between red at the top and green in the middle: no category.
+  await brushAxis(page, "c", 0.2, 0.3);
+  await expect(bands(page, "c")).toHaveCount(1);
+  await expect.poll(() => selected(page)).toBe(0);
+  const before = await boxOf(bands(page, "c"));
+  await expect.poll(() => page.url()).toContain("brushes");
+  await page.reload();
+  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
+  await expect(bands(page, "c")).toHaveCount(1);
+  const after = await boxOf(bands(page, "c"));
+  expect(Math.abs(after.y - before.y)).toBeLessThanOrEqual(1);
+  expect(Math.abs(after.height - before.height)).toBeLessThanOrEqual(1);
+  await expect.poll(() => selected(page)).toBe(0);
+});
+
 test("brushes saved as axis positions by earlier versions still load", async ({ page }) => {
   await loadDemo(page);
   await brushAxis(page, "seed", 0.1, 0.3);

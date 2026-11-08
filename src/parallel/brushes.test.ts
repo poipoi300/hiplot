@@ -10,6 +10,7 @@ import {
   isSavedBrushes,
   mergeBrushes,
   pixelInterval,
+  savedBrushFor,
   savedBrushIntervals,
   savedBrushOf,
 } from "./brushes";
@@ -170,6 +171,38 @@ describe("brushes saved in values", () => {
     }
     expect(savedBrushIntervals(scale, { min: 0, max: 1, include_infnans: false })).toEqual([]);
     expect(savedBrushIntervals(numeric(tenths), { categories: ["a"] })).toEqual([]);
+  });
+
+  test("a brush that selects a value saves the values", () => {
+    const scale = numeric(tenths);
+    const interval = pixelInterval(scale.range(), { top: 80, bottom: 240 });
+    expect(savedBrushFor(scale, interval)).toEqual({ min: 0.4, max: 0.8, include_infnans: false });
+  });
+
+  test("a brush that selects no value saves its positions, so it reloads in place and still selects nothing", () => {
+    const categorical = Object.assign(d3_scale_categorical(["a", "b", "c"]).range([400, 0]), {
+      paramType: ParamType.CATEGORICAL,
+    });
+    const betweenCategories = pixelInterval(categorical.range(), { top: 120, bottom: 150 });
+    const nanAxis = numeric([...tenths, "nan"]);
+    const highest = nanAxis(1);
+    const betweenMaximumAndBand = pixelInterval(nanAxis.range(), {
+      top: highest - 4,
+      bottom: highest - 1,
+    });
+    for (const [scale, interval] of [
+      [categorical, betweenCategories],
+      [nanAxis, betweenMaximumAndBand],
+    ] as const) {
+      const saved = savedBrushFor(scale, interval);
+      expect(saved).toEqual([interval.start, interval.end]);
+      expect(isSavedBrushes({ x: [saved] })).toBe(true);
+      const selected = scale_pixels_range(scale, [
+        intervalPixels(scale.range(), interval).top,
+        intervalPixels(scale.range(), interval).bottom,
+      ]);
+      expect(savedBrushIntervals(scale, savedBrushOf(selected))).toEqual([]);
+    }
   });
 });
 

@@ -49,8 +49,8 @@ import {
   type PixelSpan,
   pixelInterval,
   type SavedBrushes,
+  savedBrushFor,
   savedBrushIntervals,
-  savedBrushOf,
 } from "./brushes";
 import { categoryTagTexts, placeBrushTags, type TagTexts } from "./brushtags";
 import { ColumnPicker, type PickableColumn } from "./columnpicker";
@@ -912,11 +912,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** Saves the brushes, tells Python about them and publishes the selection they make. */
   private commitBrushes(): void {
     const saved: SavedBrushes = {};
-    this.brushes.forEach((_brushes, dimension) => {
+    this.brushes.forEach((brushes, dimension) => {
       const scale = this.yscale[dimension];
-      saved[dimension] = this.brushSpans(dimension).map((span) =>
-        savedBrushOf(scale_pixels_range(scale, [span.top, span.bottom])),
-      );
+      saved[dimension] = brushes.map((brush) => savedBrushFor(scale, brush));
     });
     this.props.persistentState.set(PSTATE_BRUSHES, saved);
     this.sendBrushExtents();

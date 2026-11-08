@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import type { ScaleDomainRange } from "../infertypes";
+import { type ParamScale, type ScaleDomainRange, scale_pixels_range } from "../infertypes";
 import { OUTLIER_BAND_PIXELS, type Scale } from "../lib/d3_scales";
 import { isStringArray } from "../lib/savedstate";
 import { ParamType } from "../types";
@@ -165,6 +165,24 @@ export function savedBrushIntervals(scale: Scale, saved: SavedBrush): AxisInterv
   }
   const inward = Math.sign(range[0] - range[1]);
   return [toInterval(range[1], range[1] + (inward * OUTLIER_BAND_PIXELS) / 2)];
+}
+
+/**
+ * What a brush covering `interval` on an axis drawn with `scale` saves: the
+ * values it selects, or its positions when it selects no value, since such a
+ * brush has no values to project back onto the axis and would vanish on
+ * reload, turning an empty selection into a full one.
+ */
+export function savedBrushFor(
+  scale: ParamScale,
+  interval: AxisInterval,
+): SavedBrush | SavedPositions {
+  const span = intervalPixels(scale.range(), interval);
+  const saved = savedBrushOf(scale_pixels_range(scale, [span.top, span.bottom]));
+  if (savedBrushIntervals(scale, saved).length > 0) {
+    return saved;
+  }
+  return [interval.start, interval.end];
 }
 
 const isSavedBrush = (value: unknown): value is SavedBrush => {
