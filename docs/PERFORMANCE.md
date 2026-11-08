@@ -236,3 +236,41 @@ sampled once after the run, so it swings with garbage collection. The
 numbers in the wrong direction (brush end → table 79 → 83 ms at 50k × 50,
 initial drawn 451 → 476 ms at 20k × 30) are within that drift, but have not
 been shown to be zero.
+
+## Third round: aliasing, flow badges and statistics
+
+The third round mitered the anti-aliased line strips (steep lines no longer
+break into dots), added flow badges that count the selection per category
+next to a brush on every drag frame, put the header on one row, and added
+statistics to the scatter panels. "Before" is `83fa04d`, the branch as the
+second round left it; "after" is `0897a23`. Same harness and machine,
+measured in one session, medians of three page loads.
+
+| Size | HTML MB | decode ms | DOM ready ms | initial drawn ms | full redraw ms | drag frame p50 / p95 / max ms | stalls | brush end → lines ms | brush end → table ms | JS heap MB |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5k × 20, before | 2.6 | 3 | 115 | 172 | 2 | 8 / 8 / 9 | 0/120 | 1 | 17 | 33 |
+| 5k × 20, after | 2.6 | 4 | 122 | 200 | 2 | 8 / 9 / 9 | 0/120 | 1 | 16 | 42 |
+| 20k × 30, before | 7.8 | 16 | 383 | 511 | 4 | 8 / 8 / 17 | 0/120 | 1 | 30 | 162 |
+| 20k × 30, after | 7.8 | 19 | 415 | 532 | 4 | 8 / 8 / 17 | 0/120 | 1 | 37 | 95 |
+| 50k × 50, before | 27.2 | 68 | 1546 | 1837 | 6 | 8 / 9 / 17 | 0/120 | 1 | 95 | 266 |
+| 50k × 50, after | 27.3 | 79 | 1512 | 1803 | 9 | 8 / 9 / 17 | 0/120 | 2 | 95 | 331 |
+| 100k × 30, before | 32.7 | 90 | 1910 | 2250 | 10 | 8 / 9 / 17 | 0/120 | 2 | 121 | 352 |
+| 100k × 30, after | 32.8 | 107 | 1874 | 2197 | 10 | 8 / 9 / 17 | 0/120 | 2 | 123 | 349 |
+
+Reading it:
+
+- Brush drag frames, stalls and brush end → lines are unchanged at every
+  size, flow badges included: they count the selection from per-row
+  category indices cached per axis, a tight loop over a typed array.
+- The full redraw is the one cost the line fix adds. A mitered vertex reads
+  the chord on each side of its point, so a straight segment's vertex makes
+  three texel fetches instead of two. In two runs before the last, the
+  100k × 30 redraw measured 13 to 16 ms and the 50k × 50 one 8 to 9 ms
+  (6 ms before); straight segments now fetch the neighbor's far end alone
+  rather than rebuilding the neighbor segment, which the last run measures
+  at 10 ms. It is a one-off on a color or layout change, not per frame.
+- Initial drawn at 5k × 20 is 28 ms later, and brush end → table at
+  20k × 30 7 ms later. Both are inside this machine's drift between runs
+  (DOM ready moved 7 ms on code that does not change parsing); the header
+  now mounts the legend and the plot's controls in one row, which is the
+  only new work at load.
