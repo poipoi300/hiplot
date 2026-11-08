@@ -47,13 +47,20 @@ export type Scale = CategoricalScale | ContinuousScale;
 const FINITE_SPELLING = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 const INFINITE_SPELLING = /^([+-]?)(?:inf|infinity)$/i;
 const NAN_SPELLING = /^[+-]?nan$/i;
+const MISSING_SPELLING = /^(?:na|n\/a|null|none)$/i;
 
 /**
  * Whether a text cell spells a value with no finite number: inf, infinity or
- * nan in any case and with an optional sign, or blank (a missing value).
+ * nan in any case and with an optional sign, or a missing value (blank, or
+ * na, n/a, null or none in any case).
  */
 function isSpecialSpelling(text: string): boolean {
-  return text === "" || INFINITE_SPELLING.test(text) || NAN_SPELLING.test(text);
+  return (
+    text === "" ||
+    MISSING_SPELLING.test(text) ||
+    INFINITE_SPELLING.test(text) ||
+    NAN_SPELLING.test(text)
+  );
 }
 
 /** inf, -inf, NaN, null and blank, as numbers or as the text CSV gives. */

@@ -60,6 +60,22 @@ describe("type inference", () => {
     expect(scale.kind === "continuous" && scale.hasOutlierBand).toBe(true);
   });
 
+  test("text numbers with NA, N/A, null and None cells are numeric with missing values", () => {
+    const accuracies = range(60, (i) => i / 100).map(String);
+    const pd = infer("val_accuracy", [...accuracies, "NA", "n/a", "null", "None", "NULL"]);
+    expect(pd.numeric).toBe(true);
+    expect(pd.type).toBe(ParamType.NUMERIC);
+    const scale = create_d3_scale(pd);
+    expect(scale.kind === "continuous" && scale.hasOutlierBand).toBe(true);
+  });
+
+  test("missing-value spellings beside real text leave the column categorical", () => {
+    const optimizers = range(30, (i) => i).map((i) => (i % 2 === 0 ? "adam" : "sgd"));
+    const pd = infer("optimizer", [...optimizers, "NA", "None"]);
+    expect(pd.numeric).toBe(false);
+    expect(pd.type).toBe(ParamType.CATEGORICAL);
+  });
+
   test("hexadecimal text is not a number spelling, so its column is categorical", () => {
     expect(
       infer(

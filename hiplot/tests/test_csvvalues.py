@@ -51,7 +51,22 @@ def test_blank_cells_are_missing(cell: str | None) -> None:
     assert parse_number(cell) is None
 
 
-@pytest.mark.parametrize("cell", ["abc", "0x1f", "1_000", "1,5", "nan1"])
+@pytest.mark.parametrize("cell", ["NA", "na", "N/A", "n/a", "null", "NULL", "None", "none", " NA "])
+def test_missing_value_spellings_are_missing(cell: str) -> None:
+    assert parse_number(cell) is None
+
+
+def test_numbers_with_missing_value_spellings_make_a_numeric_column() -> None:
+    rows = typed_rows([{"acc": "0.9"}, {"acc": "NA"}, {"acc": "N/A"}, {"acc": "null"}, {"acc": "None"}])
+    assert [row["acc"] for row in rows] == [0.9, None, None, None, None]
+
+
+def test_missing_value_spellings_beside_text_keep_the_column_categorical() -> None:
+    rows = typed_rows([{"opt": "adam"}, {"opt": "NA"}, {"opt": "None"}, {"opt": "3"}])
+    assert [row["opt"] for row in rows] == ["adam", "NA", "None", "3"]
+
+
+@pytest.mark.parametrize("cell", ["abc", "0x1f", "1_000", "1,5", "nan1", "nul", "N-A"])
 def test_other_text_is_not_a_number(cell: str) -> None:
     with pytest.raises(ValueError, match="Not a number"):
         parse_number(cell)

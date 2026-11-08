@@ -2,7 +2,8 @@
 
 A column is numeric when every one of its cells spells a number: decimal or
 exponent notation, ``inf``/``infinity``/``nan`` in any case with an optional
-sign, or blank for a missing value; at least one cell must be finite. The
+sign, or a missing value: blank, or ``na``/``n/a``/``null``/``none`` in any
+case. At least one cell must be finite. The
 grammar is the one the frontend applies to text cells (``src/lib/d3_scales.ts``),
 so both sides agree on which columns are numeric.
 """
@@ -16,20 +17,22 @@ _FINITE = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
 _INTEGER = re.compile(r"[+-]?\d+")
 _INFINITE = re.compile(r"([+-]?)(?:inf|infinity)", re.IGNORECASE)
 _NAN = re.compile(r"[+-]?nan", re.IGNORECASE)
+_MISSING = re.compile(r"na|n/a|null|none", re.IGNORECASE)
 
 #: Columns that identify rows and are never read as numbers.
 _IDENTIFIER_COLUMNS = frozenset({"uid", "from_uid"})
 
 
 def parse_number(cell: str | None) -> int | float | None:
-    """The number a CSV cell spells: an int, a float (inf and nan included), or None when blank.
+    """The number a CSV cell spells: an int, a float (inf and nan included), or None when missing.
 
-    A short row's missing cells (None from ``csv.DictReader``) are blank.
+    Blank cells, the missing-value spellings, and a short row's missing cells
+    (None from ``csv.DictReader``) are missing.
 
     :raises ValueError: when the cell spells no number.
     """
     text = "" if cell is None else cell.strip()
-    if text == "":
+    if _is_missing_spelling(text):
         return None
     if _INTEGER.fullmatch(text):
         return int(text)
@@ -43,10 +46,14 @@ def parse_number(cell: str | None) -> int | float | None:
     raise ValueError(f"Not a number: {cell!r}")
 
 
+def _is_missing_spelling(text: str) -> bool:
+    return text == "" or _MISSING.fullmatch(text) is not None
+
+
 def _is_number_spelling(cell: str | None) -> bool:
     text = "" if cell is None else cell.strip()
     return (
-        text == ""
+        _is_missing_spelling(text)
         or _FINITE.fullmatch(text) is not None
         or _INFINITE.fullmatch(text) is not None
         or _NAN.fullmatch(text) is not None

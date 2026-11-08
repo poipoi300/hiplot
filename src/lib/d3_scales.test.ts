@@ -33,6 +33,17 @@ describe("special numerics", () => {
     }
   });
 
+  test("na, n/a, null and none in any case are missing values", () => {
+    for (const value of ["NA", "na", "N/A", "n/a", "null", "NULL", "None", "none", " NA "]) {
+      expect(is_special_numeric(value)).toBe(true);
+      expect(is_numeric_value(value)).toBe(true);
+      expect(parse_numeric(value)).toBeNaN();
+    }
+    for (const value of ["NaNa", "nul", "nonee", "N-A"]) {
+      expect(is_numeric_value(value)).toBe(false);
+    }
+  });
+
   test("numbers spelled as text are numeric values, other text and booleans are not", () => {
     for (const value of ["1", "-2.5", ".5", "5.", "1e-3", "+3E4", " 7 ", 0, null]) {
       expect(is_numeric_value(value)).toBe(true);
