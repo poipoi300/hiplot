@@ -18,7 +18,8 @@ with an `axis`, open one-axis panels instead, and its `nbins` sets their bins.
 For numeric columns the plot draws, over the selected rows' histogram, the
 distribution that fits the selection best by BIC among normal, log-normal,
 exponential and gamma (positive values), beta (values in (0, 1)) and
-Student t, plus a dashed kernel density estimate for reference. The caption
+Student t, plus a dashed kernel density estimate for reference; on a log
+axis the estimate smooths ln(x), so its bandwidth follows the axis. The caption
 states the winner with its fitted parameters and formula, the runner-up and
 its ΔBIC. Beyond 5,000 values an evenly spaced sample is fitted.
 
