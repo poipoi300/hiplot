@@ -192,6 +192,11 @@ pills. Borders are 1 px hairlines in `--hip-rule`.
   with Select all and Deselect all; a scatter axis chooses one column or
   None and closes. A scatter axis's button is the control button with the
   muted axis letter, the column and a chevron.
+- **Lasso selection**: while a lasso's rows are the selection, a 24 px pill
+  after the selection count, in the accent tint with a 45 % accent hairline:
+  a dashed loop icon in the accent, "Lasso selection · N rows" in 12 px/500
+  ink and an 18 px round clear button. The lasso being drawn is a dashed
+  1.5 px accent outline over the accent tint, under a crosshair.
 - **Toast**: bottom-right, surface background, floating shadow, ink text;
   errors carry a red dot like Exclude. Disappears after a few seconds or on
   dismiss.

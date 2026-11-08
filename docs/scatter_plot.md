@@ -54,11 +54,25 @@ the active color map:
 
 ## 3D scatter
 
-With Z set the panel is a WebGL 3D scatter: drag to turn, right-, middle- or
-shift-drag to pan, wheel to zoom (only for wheel gestures that start on the
-plot), ctrl-drag or the Select tool to lasso points into the selection,
-double-click to reset. A least-squares plane through the selected points,
-fitted in axis space, is drawn as a grid, unless an axis is categorical.
+With three columns set the panel is a WebGL 3D scatter: drag to turn,
+right-, middle- or shift-drag to pan, wheel to zoom (only for wheel gestures
+that start on the plot), ctrl-drag (cmd-drag on a Mac) to lasso, double-click
+to reset. A least-squares plane through the selected points, fitted in axis
+space, is drawn as a grid, unless an axis is categorical.
+
+## Lasso selection
+
+A ctrl-drag (cmd-drag on a Mac) draws a lasso. It selects exactly the points
+inside it, among every row Keep and Exclude left, including rows other
+brushes or an earlier lasso had deselected, and its rows replace the
+selection:
+
+- the parallel plot's brushes are cleared (their saved state too), and the
+  header shows "Lasso selection · N rows" with a button that selects every
+  row again;
+- the next brush on an axis replaces the lasso's selection in turn;
+- Keep and Exclude apply to the lasso's rows; they are saved by uid, so they
+  replay on reload for experiments whose uids are stable.
 
 ## Rendering model
 

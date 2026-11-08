@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { insidePolygon, lassoed, WHEEL_GESTURE_GAP_MS, WheelLatch } from "./lasso";
+import { insidePolygon, lassoed, startsLasso, WHEEL_GESTURE_GAP_MS, WheelLatch } from "./lasso";
 
 const square = [
   { x: 0, y: 0 },
@@ -26,6 +26,13 @@ describe("lasso selection", () => {
   test("every point on screen inside the lasso is picked, and only those", () => {
     const positions = [{ x: 5, y: 5 }, { x: 50, y: 5 }, { x: 2, y: 2 }, null];
     expect(lassoed(positions.length, (index) => positions[index], square)).toEqual([0, 2]);
+  });
+
+  test("a primary press with Ctrl or Cmd starts a lasso; others do what they always did", () => {
+    expect(startsLasso({ button: 0, ctrlKey: true, metaKey: false })).toBe(true);
+    expect(startsLasso({ button: 0, ctrlKey: false, metaKey: true })).toBe(true);
+    expect(startsLasso({ button: 0, ctrlKey: false, metaKey: false })).toBe(false);
+    expect(startsLasso({ button: 2, ctrlKey: true, metaKey: false })).toBe(false);
   });
 
   test("a gesture too short to enclose anything picks nothing", () => {

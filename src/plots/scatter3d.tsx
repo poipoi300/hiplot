@@ -9,7 +9,6 @@ import * as d3 from "d3";
 import React from "react";
 import { create_d3_scale_without_outliers, type ParamDefMap } from "../infertypes";
 import type { ColorBinning, RGB } from "../lib/colors";
-import controls from "../lib/controls.module.css";
 import { is_special_numeric } from "../lib/d3_scales";
 import { labelTextFromHtml } from "../lib/escape";
 import { fitColor } from "../lib/fitcolor";
@@ -17,7 +16,8 @@ import { columnNotation, formatterFor } from "../lib/numberformat";
 import { mounted } from "../lib/refs";
 import { planeFit } from "../stats/regression";
 import { type Datapoint, ParamType } from "../types";
-import { lassoed, MIN_LASSO_POINTS, type ScreenPoint, WheelLatch } from "./lasso";
+import { LASSO_GESTURE, lassoed, type ScreenPoint, WheelLatch } from "./lasso";
+import { LassoSurface } from "./lassosurface";
 import {
   DEFAULT_ORBIT,
   eyePosition,
@@ -117,8 +117,8 @@ interface Scatter3DProps {
   onLasso: (rows: Datapoint[]) => void;
 }
 
-/** What a drag does: turn the view, pan it, or draw a lasso. */
-type DragMode = "orbit" | "pan" | "lasso";
+/** What a drag does: turn the view or pan it (a lasso is the LassoSurface's). */
+type DragMode = "orbit" | "pan";
 
 /** The least-squares plane through the selected points, drawn as a grid in the cube. */
 type PlaneState =
@@ -141,10 +141,6 @@ interface Scatter3DState {
   orbit: Orbit;
   labels: Label[];
   hover: { x: number; y: number; text: string } | null;
-  /** What a plain left drag does; Ctrl-drag always draws a lasso. */
-  tool: "orbit" | "select";
-  /** The lasso being drawn, in CSS pixels over the canvas. */
-  lasso: ScreenPoint[] | null;
   plane: PlaneState;
 }
 
@@ -154,13 +150,12 @@ const pointDiameter = (rows: number): number => (rows > 20_000 ? 2.5 : rows > 2_
 const HOVER_DISTANCE = 8;
 
 /** The controls, as the hint under the plot lists them. */
-const CONTROLS_HINT =
-  "Drag to turn · Right- or Shift-drag to pan · Wheel to zoom · Ctrl-drag or Select to lasso · Double-click to reset";
+const CONTROLS_HINT = `Drag to turn · Right-, middle- or Shift-drag to pan · Wheel to zoom · ${LASSO_GESTURE} to lasso · Double-click to reset`;
 
 /**
  * A 3D scatter of three columns, drawn with WebGL: drag to turn it,
- * right- or shift-drag to pan, scroll to zoom, ctrl-drag (or the Select
- * tool) to lasso points into the selection, double-click to reset the view.
+ * right-, middle- or shift-drag to pan, scroll to zoom, ctrl-drag (cmd-drag
+ * on a Mac) to lasso points into the selection, double-click to reset the view.
  * Points take the color-by colors; the rows outside the selection stay as
  * faint context. A least-squares plane through the selected points, fitted
  * in axis space (log axes in log space), is drawn as a grid.
@@ -183,8 +178,6 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
       orbit: DEFAULT_ORBIT,
       labels: [],
       hover: null,
-      tool: "orbit",
-      lasso: null,
       plane: { kind: "none", reason: "" },
     };
   }
@@ -393,23 +386,15 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
     return { kind: "fit", path, r2: fit.r2, n: fit.n };
   }
 
-  /** What a press starts: middle, right or shift pans; ctrl or the Select tool draws a lasso. */
+  /** What a press starts: middle, right or shift pans, anything else turns the view. */
   private dragModeOf(event: React.PointerEvent): DragMode {
-    if (event.button === 1 || event.button === 2 || event.shiftKey) {
-      return "pan";
-    }
-    return event.ctrlKey || event.metaKey || this.state.tool === "select" ? "lasso" : "orbit";
+    return event.button === 1 || event.button === 2 || event.shiftKey ? "pan" : "orbit";
   }
 
   private onPointerDown = (event: React.PointerEvent<HTMLCanvasElement>): void => {
-    const mode = this.dragModeOf(event);
-    this.drag = { mode, x: event.clientX, y: event.clientY };
+    this.drag = { mode: this.dragModeOf(event), x: event.clientX, y: event.clientY };
     event.currentTarget.setPointerCapture(event.pointerId);
     this.clearHover();
-    if (mode === "lasso") {
-      const bounds = event.currentTarget.getBoundingClientRect();
-      this.setState({ lasso: [{ x: event.clientX - bounds.left, y: event.clientY - bounds.top }] });
-    }
   };
 
   private onPointerMove = (event: React.PointerEvent<HTMLCanvasElement>): void => {
@@ -422,10 +407,7 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
     const dx = event.clientX - drag.x;
     const dy = event.clientY - drag.y;
     this.drag = { ...drag, x: event.clientX, y: event.clientY };
-    if (drag.mode === "lasso") {
-      const point = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
-      this.setState((state) => ({ lasso: state.lasso === null ? null : [...state.lasso, point] }));
-    } else if (drag.mode === "pan") {
+    if (drag.mode === "pan") {
       this.setState((state) => ({
         orbit: panOrbit(state.orbit, dx, dy, this.props.height),
       }));
@@ -435,24 +417,15 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
   };
 
   private onPointerUp = (event: React.PointerEvent<HTMLCanvasElement>): void => {
-    const drag = this.drag;
     this.drag = null;
     event.currentTarget.releasePointerCapture(event.pointerId);
-    if (drag?.mode === "lasso") {
-      this.finishLasso();
-    }
   };
 
   /**
    * Selects the points inside the lasso, among all the rows Keep and Exclude
    * left, selected or not: the lasso replaces the selection.
    */
-  private finishLasso(): void {
-    const polygon = this.state.lasso;
-    this.setState({ lasso: null });
-    if (polygon === null || polygon.length < MIN_LASSO_POINTS) {
-      return;
-    }
+  private onLasso = (polygon: ReadonlyArray<ScreenPoint>): void => {
     const { rows, width, height } = this.props;
     const matrix = this.matrix();
     const inside = lassoed(
@@ -469,7 +442,7 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
       polygon,
     );
     this.props.onLasso(inside.map((index) => rows[index]));
-  }
+  };
 
   private recordWheel = (event: WheelEvent): void => {
     this.wheelLatch.record(event.target, event.timeStamp);
@@ -544,88 +517,64 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
 
   render(): React.ReactNode {
     const { width, height } = this.props;
-    const { plane, lasso, tool } = this.state;
+    const { plane } = this.state;
     const color = fitColor(this.props.color_binning.palette, this.props.dark ? "dark" : "light");
     return (
-      <div className={style.scatter3d} style={{ width, height }}>
-        <canvas
-          ref={this.canvasRef}
-          role="img"
-          aria-label={`3D scatter plot. ${CONTROLS_HINT}`}
-          className={tool === "select" ? style.selecting : undefined}
-          style={{ width, height }}
-          onPointerDown={this.onPointerDown}
-          onPointerMove={this.onPointerMove}
-          onPointerUp={this.onPointerUp}
-          onPointerLeave={this.clearHover}
-          onMouseDown={this.onMouseDown}
-          onContextMenu={(event) => event.preventDefault()}
-          onDoubleClick={() => this.setState({ orbit: DEFAULT_ORBIT })}
-        />
-        <svg className={style.overlay} width={width} height={height} aria-hidden="true">
-          {plane.kind === "fit" && (
-            <path className={style.plane} d={plane.path} stroke={color} data-testid="plane-fit" />
-          )}
-          {lasso !== null && (
-            <polygon
-              className={style.lasso}
-              points={lasso.map(({ x, y }) => `${x},${y}`).join(" ")}
-              data-testid="lasso"
-            />
-          )}
-        </svg>
-        <fieldset className={`${controls.segmented} ${style.tools}`} aria-label="3D drag tool">
-          {(
-            [
-              ["orbit", "Turn", "Drag turns the view"],
-              ["select", "Select", "Drag draws a lasso around the points to select"],
-            ] as const
-          ).map(([value, label, title]) => (
-            <button
-              key={value}
-              type="button"
-              title={title}
-              aria-pressed={tool === value}
-              onClick={() => this.setState({ tool: value })}
-            >
-              {label}
-            </button>
-          ))}
-        </fieldset>
-        <div className={style.hint} data-testid="scatter3d-hint">
-          <span>{CONTROLS_HINT}</span>
-          <span style={{ color: plane.kind === "fit" ? color : undefined }}>
-            {plane.kind === "fit"
-              ? `Plane: least squares in axis space, R² ${plane.r2.toFixed(2)}, n ${plane.n}`
-              : plane.reason}
-          </span>
-        </div>
-        {this.state.labels.map((label) => (
-          <span
-            key={label.key}
-            className={label.kind === "name" ? style.axisName : style.axisValue}
-            style={{ left: label.x, top: label.y }}
-            data-axis-label={label.key}
-          >
-            {label.text}
-          </span>
-        ))}
-        {this.state.hover !== null && (
-          <>
-            <span
-              className={style.hoverRing}
-              style={{ left: this.state.hover.x, top: this.state.hover.y }}
-            />
-            <span
-              className={style.hoverText}
-              style={{ left: this.state.hover.x, top: this.state.hover.y }}
-              data-testid="scatter3d-tooltip"
-            >
-              {this.state.hover.text}
+      <LassoSurface onLasso={this.onLasso}>
+        <div className={style.scatter3d} style={{ width, height }}>
+          <canvas
+            ref={this.canvasRef}
+            role="img"
+            aria-label={`3D scatter plot. ${CONTROLS_HINT}`}
+            style={{ width, height }}
+            onPointerDown={this.onPointerDown}
+            onPointerMove={this.onPointerMove}
+            onPointerUp={this.onPointerUp}
+            onPointerLeave={this.clearHover}
+            onMouseDown={this.onMouseDown}
+            onContextMenu={(event) => event.preventDefault()}
+            onDoubleClick={() => this.setState({ orbit: DEFAULT_ORBIT })}
+          />
+          <svg className={style.overlay} width={width} height={height} aria-hidden="true">
+            {plane.kind === "fit" && (
+              <path className={style.plane} d={plane.path} stroke={color} data-testid="plane-fit" />
+            )}
+          </svg>
+          <div className={style.hint} data-testid="scatter3d-hint">
+            <span>{CONTROLS_HINT}</span>
+            <span style={{ color: plane.kind === "fit" ? color : undefined }}>
+              {plane.kind === "fit"
+                ? `Plane: least squares in axis space, R² ${plane.r2.toFixed(2)}, n ${plane.n}`
+                : plane.reason}
             </span>
-          </>
-        )}
-      </div>
+          </div>
+          {this.state.labels.map((label) => (
+            <span
+              key={label.key}
+              className={label.kind === "name" ? style.axisName : style.axisValue}
+              style={{ left: label.x, top: label.y }}
+              data-axis-label={label.key}
+            >
+              {label.text}
+            </span>
+          ))}
+          {this.state.hover !== null && (
+            <>
+              <span
+                className={style.hoverRing}
+                style={{ left: this.state.hover.x, top: this.state.hover.y }}
+              />
+              <span
+                className={style.hoverText}
+                style={{ left: this.state.hover.x, top: this.state.hover.y }}
+                data-testid="scatter3d-tooltip"
+              >
+                {this.state.hover.text}
+              </span>
+            </>
+          )}
+        </div>
+      </LassoSurface>
     );
   }
 }

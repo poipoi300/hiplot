@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+import { IS_MAC } from "../lib/browsercompat";
+
 /** A point on screen, in CSS pixels. */
 export interface ScreenPoint {
   x: number;
@@ -13,6 +15,18 @@ export interface ScreenPoint {
 
 /** Fewer points than this make no area to select: the gesture was a click. */
 export const MIN_LASSO_POINTS = 3;
+
+/** Whether a press starts a lasso: a primary press with Ctrl, or Cmd on a Mac. */
+export function startsLasso(press: {
+  button: number;
+  ctrlKey: boolean;
+  metaKey: boolean;
+}): boolean {
+  return press.button === 0 && (press.ctrlKey || press.metaKey);
+}
+
+/** The lasso gesture as the plots' hints name it. */
+export const LASSO_GESTURE = IS_MAC ? "⌘-drag" : "Ctrl-drag";
 
 /** Whether (x, y) lies inside `polygon` (even-odd rule; the polygon closes itself). */
 export function insidePolygon(x: number, y: number, polygon: ReadonlyArray<ScreenPoint>): boolean {

@@ -134,6 +134,26 @@ test("a lasso replaces the selection and the brushes, rows they left out include
   expect(new Set(await selectedUids(page))).toEqual(brushed);
 });
 
+test("a Cmd-drag lassos the 3D scatter as Ctrl does, and a plain drag still turns it", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  const canvas = await open3D(page);
+  const label = page.getByTestId("scatter-panel").last().locator("[data-axis-label='x-name']");
+  const before = await label.getAttribute("style");
+  await lasso(page, canvas, [0.3, 0.3], [0.7, 0.7], "Meta");
+  await expect(page.getByTestId("lasso-selection")).toBeVisible();
+  // Drawing the lasso did not turn the view.
+  expect(await label.getAttribute("style")).toBe(before);
+
+  const box = await boxOf(canvas);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 120, box.y + box.height / 2, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(() => label.getAttribute("style")).not.toBe(before);
+});
+
 test("clearing a lasso selects every row again", async ({ page }) => {
   await loadDemo(page);
   const all = await filteredCount(page);

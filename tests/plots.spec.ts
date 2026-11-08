@@ -203,8 +203,12 @@ test("the 3D scatter pans with a right-drag, draws its plane fit and lassos a se
   page,
 }) => {
   const { canvas, box, label } = await open3D(page);
-  await expect(scatterPanels(page).last().getByTestId("scatter3d-hint")).toContainText(
-    "Right- or Shift-drag to pan",
+  const hint = scatterPanels(page).last().getByTestId("scatter3d-hint");
+  await expect(hint).toContainText("Drag to turn · Right-, middle- or Shift-drag to pan");
+  await expect(hint).toContainText("Ctrl-drag to lasso");
+  // One drag vocabulary: no separate turn and select modes.
+  await expect(scatterPanels(page).last().getByRole("group", { name: "3D drag tool" })).toHaveCount(
+    0,
   );
   await expect(scatterPanels(page).last().getByTestId("plane-fit")).toHaveAttribute("d", /^M/);
   await expect(scatterPanels(page).last().getByTestId("scatter3d-hint")).toContainText(
