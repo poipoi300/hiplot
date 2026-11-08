@@ -274,3 +274,43 @@ Reading it:
   (DOM ready moved 7 ms on code that does not change parsing); the header
   now mounts the legend and the plot's controls in one row, which is the
   only new work at load.
+
+## Fourth round: anti-aliasing under the density tone map
+
+The fourth round found why lines still looked aliased and fixed it in the
+density pass, which changes what that pass writes. Coincident lines (every
+segment between two integer or categorical values) were tone-mapped as one
+density N × coverage, which saturates at a tiny coverage, so the
+anti-aliased edge of each bundle became a two-pixel hard step. Coverage is
+now applied after the tone map: the line pass also keeps each pixel's peak
+coverage, with MAX blending on the alpha channels, and the composite scales
+the tone-mapped density by it. The second target, single-channel (R16F)
+since the second round, is RGBA16F again to hold the selected and
+deselected coverage sums and the deselected peak.
+
+"Before" is `0897a23`, the renderer as the third round left it; "after" is
+`cd5102f`. Same harness and machine, measured in one session, medians of
+three page loads.
+
+| Size | HTML MB | decode ms | DOM ready ms | initial drawn ms | full redraw ms | drag frame p50 / p95 / max ms | stalls | brush end → lines ms | brush end → table ms | JS heap MB |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5k × 20, before | 2.6 | 3 | 102 | 158 | 2 | 8 / 9 / 9 | 0/120 | 1 | 18 | 42 |
+| 5k × 20, after | 2.6 | 3 | 98 | 157 | 2 | 8 / 8 / 9 | 0/120 | 1 | 16 | 42 |
+| 20k × 30, before | 7.8 | 16 | 408 | 543 | 5 | 8 / 8 / 9 | 0/120 | 1 | 35 | 96 |
+| 20k × 30, after | 7.8 | 17 | 404 | 525 | 5 | 8 / 8 / 9 | 0/120 | 1 | 33 | 182 |
+| 50k × 50, before | 27.3 | 74 | 1368 | 1640 | 8 | 8 / 8 / 9 | 0/120 | 2 | 94 | 287 |
+| 50k × 50, after | 27.3 | 65 | 1347 | 1642 | 6 | 8 / 8 / 9 | 0/120 | 2 | 88 | 342 |
+| 100k × 30, before | 32.8 | 87 | 1654 | 1956 | 11 | 8 / 8 / 9 | 0/120 | 2 | 111 | 345 |
+| 100k × 30, after | 32.8 | 87 | 1631 | 1933 | 11 | 8 / 8 / 9 | 0/120 | 2 | 112 | 346 |
+
+Reading it:
+
+- Drag frames stay at 8 ms median and 9 ms max at every size, with no stall,
+  and a full redraw costs the same: the wider second target and the MAX
+  blend fit in the frame. Lines are still drawn as plain one-pixel lines
+  while a brush or an axis is dragged over more than 20,000 rows, and the
+  frame after release is anti-aliased again (checked on a 25k-row page by
+  the draw mode of the last draw call).
+- The JS heap at 20k × 30 (96 → 182 MB) is one sample after the run and
+  swings with garbage collection, as in earlier rounds; nothing in this
+  round allocates on the JavaScript side.
