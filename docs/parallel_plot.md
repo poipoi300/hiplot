@@ -19,7 +19,9 @@ This is the primary surface for slicing and filtering high-dimensional data.
   the rows inside any of its brushes, and the axes combine, so a row is selected when it
   passes every brushed axis. On a categorical axis a brush selects the categories inside it.
 - **Move and resize a brush**: drag inside a brush to move it, drag its top or bottom edge
-  to resize it. Brushes that overlap or touch merge into one when you release.
+  to resize it. Brushes that overlap or touch merge into one when you release. A brush
+  covering a whole axis filters nothing, so it is removed on release, as are brushes
+  that merge into the whole axis.
 - **Remove brushes**: click or tap a brush without dragging to remove it. Click or tap
   anywhere else on the axis, outside its brushes, to remove all of that axis's brushes;
   "Clear brushes on this axis" in the axis menu (right-click or long-press) does the
