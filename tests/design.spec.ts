@@ -148,7 +148,7 @@ test.describe("line highlight around brushes", () => {
   test("hovering a placed brush highlights the line under the pointer", async ({ page }) => {
     await loadDemo(page);
     await brushAxis(page, 3);
-    const band = page.locator("svg g.dimension .pplot-brush rect.selection").nth(3);
+    const band = page.locator("svg g.dimension").nth(3).locator(".pplot-brush rect.selection");
     const box = await band.boundingBox();
     if (box === null) {
       throw new Error("No placed brush");

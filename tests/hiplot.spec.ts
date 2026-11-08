@@ -4,8 +4,6 @@ import { expect, test } from "./fixtures";
 // The members of the live HiPlot objects (`window.hiplot_last_instance`) that the
 // page.evaluate bodies below reach into. They run in the browser, so these are
 // local descriptions of the runtime shape, not imports of the application classes.
-type BrushExtent = [number, number] | null;
-
 interface DimensionSelection {
   filter(predicate: (dimension: string) => boolean): DimensionSelection;
   select(selector: string): DimensionSelection;
@@ -17,9 +15,9 @@ interface ParallelPlotUnderTest {
   h: number;
   yscale: Record<string, { range(): number[] }>;
   dimensions_dom: DimensionSelection;
-  d3brush: { move(selection: DimensionSelection, extent: [number, number]): void };
-  toggleInvertAxis(dimension: string): BrushExtent;
-  update_ticks(dimension: string, extent: BrushExtent): void;
+  setBrushes(dimension: string, spans: [number, number][]): void;
+  toggleInvertAxis(dimension: string): void;
+  update_ticks(): void;
 }
 
 interface TableUnderTest {
@@ -447,14 +445,13 @@ test("inverted axis orientation is preserved across keep/restore on another axis
     const wasInverted = pplot.state.invert.has(invertDim);
     const expectedRangeAfterToggle = !wasInverted ? [0, pplot.h] : [pplot.h, 0];
 
-    const invertExtent = pplot.toggleInvertAxis(invertDim);
+    pplot.toggleInvertAxis(invertDim);
     const rangeImmediatelyAfterToggle = pplot.yscale[invertDim].range().slice();
-    pplot.update_ticks(invertDim, invertExtent);
+    pplot.update_ticks();
     await sleep(150);
     const rangeAfterInvert = pplot.yscale[invertDim].range().slice();
 
-    const brushEl = pplot.dimensions_dom.filter((d) => d === filterDim).select(".pplot-brush");
-    pplot.d3brush.move(brushEl, [60, Math.min(260, pplot.h - 20)]);
+    pplot.setBrushes(filterDim, [[60, Math.min(260, pplot.h - 20)]]);
     await sleep(250);
 
     const selectedCount = hiplot.state.rows_selected.length;
@@ -504,8 +501,7 @@ test("inverting another axis does not temporarily unhide ticks on an actively fi
     const filteredDim = dims[0];
     const actionDim = dims[1];
 
-    const brushEl = pplot.dimensions_dom.filter((d) => d === filteredDim).select(".pplot-brush");
-    pplot.d3brush.move(brushEl, [60, Math.min(260, pplot.h - 20)]);
+    pplot.setBrushes(filteredDim, [[60, Math.min(260, pplot.h - 20)]]);
     await sleep(250);
 
     const dimNode = pplot.dimensions_dom.filter((d) => d === filteredDim).node();
@@ -543,8 +539,8 @@ test("inverting another axis does not temporarily unhide ticks on an actively fi
       attributeFilter: ["style", "class"],
     });
 
-    const invertExtent = pplot.toggleInvertAxis(actionDim);
-    pplot.update_ticks(actionDim, invertExtent);
+    pplot.toggleInvertAxis(actionDim);
+    pplot.update_ticks();
     await sleep(300);
     observer.disconnect();
 
@@ -587,8 +583,7 @@ test("table keeps correct column-value mapping after column reorder and brush up
       return { error: "no-parallel-dimensions" };
     }
     const brushDim = dims[0];
-    const brushEl = pplot.dimensions_dom.filter((d) => d === brushDim).select(".pplot-brush");
-    pplot.d3brush.move(brushEl, [60, Math.min(260, pplot.h - 20)]);
+    pplot.setBrushes(brushDim, [[60, Math.min(260, pplot.h - 20)]]);
     await sleep(300);
 
     const headers = Array.from(document.querySelectorAll("table.sample-rows-table thead th")).map(

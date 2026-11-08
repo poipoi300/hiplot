@@ -5,7 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import * as d3 from "d3";
 import $ from "jquery";
 import React from "react";
 import ReactDOMClient from "react-dom/client";
@@ -240,12 +239,13 @@ function prefix(pre: string, tests: Array<Test>): Array<Test> {
 function test_pplot(this: HiPlotTester): Array<Test> {
   const pplot = this.pplot.bind(this);
 
+  /** Brushes one axis: once, or on odd columns twice, so Keep and Exclude replay an Any filter. */
   function brushIdx(pplot: ParallelPlot, colIdx: number) {
-    let brush_el = d3.select(mounted(pplot.svg_ref)).selectAll<SVGGElement, string>(".pplot-brush");
-    const size = brush_el.nodes().length; // Why does `brush_el.size()` returns 0?!
-    console.assert(size > 0);
-    brush_el = brush_el.filter((_d, i) => i === colIdx % size);
-    pplot.d3brush.move(brush_el, [colIdx % 3 === 0 ? 0 : 100, 200]);
+    const dimensions = pplot.state.dimensions;
+    console.assert(dimensions.length > 0);
+    const dimension = dimensions[colIdx % dimensions.length];
+    const first: [number, number] = [colIdx % 3 === 0 ? 0 : 100, 200];
+    pplot.setBrushes(dimension, colIdx % 2 === 1 ? [[0, 40], first] : [first]);
   }
   const brushKeepRestore = (colIdx: number): Array<Test> => {
     const tests: Array<Test> = [{ name: "brush", test: () => brushIdx(pplot(), colIdx) }];

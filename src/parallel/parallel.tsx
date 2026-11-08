@@ -38,6 +38,16 @@ import {
   tickCountFor,
   valueFormatter,
 } from "./axisformat";
+import {
+  type AxisBrush,
+  intervalPixels,
+  isSavedBrushes,
+  mergeBrushes,
+  type PixelSpan,
+  pixelInterval,
+  type SavedBrushes,
+} from "./brushes";
+import { placeBrushTags } from "./brushtags";
 import { ColumnPicker, type PickableColumn } from "./columnpicker";
 import { categoryIndices, countByCategory, type FlowAxis, flowAxes } from "./flow";
 import { LineGeometry } from "./geometry";
@@ -90,7 +100,28 @@ export interface ParallelPlotDisplayData {
 
 export interface ParallelPlotData extends HiPlotPluginData, ParallelPlotDisplayData {}
 
-type BrushExtents = { [dimension: string]: [number, number] | null };
+/** A brush as drawn: its id and its span in axis pixels. */
+interface DrawnBrush extends PixelSpan {
+  id: number;
+}
+
+/**
+ * A brush gesture on one axis: drawing a new brush from an empty part of the
+ * axis, moving a brush by its band, or resizing it by its top or bottom edge.
+ */
+interface BrushGesture {
+  dimension: string;
+  kind: "create" | "move" | "top" | "bottom";
+  /** The brush the gesture draws or changes. */
+  brushId: number;
+  /** Pointer position where the gesture started, in axis pixels. */
+  origin: number;
+  /** The span of the brush when the gesture started; null for a new brush. */
+  initial: PixelSpan | null;
+  /** Whether the pointer has moved past the click tolerance. */
+  moved: boolean;
+}
+
 /** An axis title being long-pressed on a touch screen. */
 interface LongPress {
   timer: number | null;
@@ -221,9 +252,21 @@ const TITLE_HIT_HEIGHT = 22;
 const TITLE_HIT_PADDING = 6;
 /** The drag grip sits between the axis top and its title. */
 const GRIP_OFFSET_Y = -9;
+/** The band brushes are drawn in, left and right of the axis line. */
+const BRUSH_LEFT = -23;
+const BRUSH_WIDTH = 38;
+/** Height of the band along each brush edge that resizes it. */
+const BRUSH_HANDLE_PIXELS = 6;
+/** A press that moves less than this is a click: on a brush, it removes the brush. */
+const BRUSH_CLICK_PIXELS = 2;
+/** Brushes on one axis this close merge when a gesture ends. */
+const BRUSH_TOUCH_PIXELS = 1;
+/** Where the plot keeps its brushes in the persistent state. */
+const PSTATE_BRUSHES = "brushes";
 /**
  * Brush range tags: pills centered on the axis, outside the brush at its top
- * and bottom edges, or just inside an edge that leaves no room outside.
+ * and bottom edges, or just inside an edge that leaves no room outside (see
+ * `placeBrushTags`).
  */
 const BRUSH_TAG_HEIGHT = 18;
 const BRUSH_TAG_PADDING = 6;
@@ -331,8 +374,10 @@ interface FlowBadge {
 
 /** A value tag at one end of a brush; `y` is the tag's vertical center. */
 interface BrushTag {
+  key: string;
   edge: "top" | "bottom";
   y: number;
+  inside: boolean;
   text: string;
 }
 
@@ -466,23 +511,51 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   // Dimensions, scaling and axis
   yscale: { [dimension: string]: ParamScale } = {};
-  d3brush = d3.brushY<string>();
+
+  /**
+   * The brushes of each brushed axis. An axis without brushes has no entry;
+   * a row passes an axis when it is in any of its brushes.
+   */
+  private brushes = new Map<string, AxisBrush[]>();
+  private nextBrushId = 0;
+  private brushGesture: BrushGesture | null = null;
+  /** Draws, moves, resizes and removes brushes on the axis it is called on. */
+  private brushDrag = d3
+    .drag<SVGGElement, string, d3.SubjectPosition>()
+    .subject((event: d3.D3DragEvent<SVGGElement, string, d3.SubjectPosition>) => ({
+      x: event.x,
+      y: event.y,
+    }))
+    .on("start", (event: d3.D3DragEvent<SVGGElement, string, d3.SubjectPosition>, dimension) =>
+      this.startBrushGesture(event, dimension),
+    )
+    .on("drag", (event: d3.D3DragEvent<SVGGElement, string, d3.SubjectPosition>) =>
+      this.continueBrushGesture(event.y),
+    )
+    .on("end", () => this.endBrushGesture());
 
   private longPresses = new WeakMap<SVGTextElement, LongPress>();
 
-  private getBrushExtents(): BrushExtents {
-    const extents: BrushExtents = {};
-    if (!this.dimensions_dom) {
-      return extents;
+  /** The brushes of one axis as drawn, from the top. */
+  brushSpans(dimension: string): DrawnBrush[] {
+    const brushes = this.brushes.get(dimension);
+    const scale = this.yscale[dimension];
+    if (brushes === undefined || scale === undefined) {
+      return [];
     }
-    this.dimensions_dom.selectAll<SVGGElement, string>(`.${pstyle.brush}`).each(function (
-      this: SVGGElement,
-      dim: string,
-    ) {
-      const selection = d3.brushSelection(this);
-      extents[dim] = selection === null ? null : (selection as [number, number]);
-    });
-    return extents;
+    return brushes
+      .map((brush) => ({ id: brush.id, ...intervalPixels(scale.range(), brush) }))
+      .sort((a, b) => a.top - b.top);
+  }
+
+  /** The displayed axes with at least one brush, in axis order. */
+  private brushedDimensions(): string[] {
+    return this.state.dimensions.filter((dimension) => this.brushes.has(dimension));
+  }
+
+  /** Whether the axis of `dimension` holds a brush. */
+  hasBrushes(dimension: string): boolean {
+    return this.brushes.has(dimension);
   }
 
   private highlightContext(): CanvasRenderingContext2D {
@@ -501,12 +574,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return x;
   }
 
-  toggleInvertAxis(d: string): [number, number] | null {
-    // save extent before inverting
-    const currentExtent = this.getBrushExtents()[d];
-    const extent: [number, number] | null = currentExtent
-      ? [this.h - currentExtent[1], this.h - currentExtent[0]]
-      : null;
+  /** Flips an axis; its brushes keep their values, as they are kept along the scale. */
+  toggleInvertAxis(d: string): void {
     const labels = d3
       .select(mounted(this.root_ref))
       .selectAll<SVGTextElement, string>(`.${pstyle.pplotLabel}`)
@@ -528,7 +597,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     } else {
       labels.style("text-decoration", null);
     }
-    return extent;
   }
 
   constructor(props: ParallelPlotData) {
@@ -603,7 +671,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       if (prevState.dimensions.length !== this.state.dimensions.length) {
         // Spacing and plot width follow the number of axes.
         this.compute_dimensions();
-        this.dimensions_dom.selectAll<SVGGElement, string>(`.${pstyle.brush}`).call(this.d3brush);
       }
       this.xscale.domain(this.state.dimensions);
       const g = d3.select(this.svgg_ref.current).selectAll<SVGGElement, string>(".dimension");
@@ -616,8 +683,17 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
       this.update_ticks();
       this.updateAxisTitlesAnglesAndFontSize();
-      // Which axes neighbor a brush changed with the order.
-      if (this.lastFlow !== null) {
+      // A hidden axis no longer filters: its brushes go, and the selection follows.
+      const hiddenBrushed = Array.from(this.brushes.keys()).filter(
+        (dimension) => !this.state.dimensions.includes(dimension),
+      );
+      if (hiddenBrushed.length > 0) {
+        for (const dimension of hiddenBrushed) {
+          this.brushes.delete(dimension);
+        }
+        this.commitBrushes();
+      } else if (this.lastFlow !== null) {
+        // Which axes neighbor a brush changed with the order.
         this.updateFlowBadges(this.lastFlow.brushed, this.lastFlow.mask);
       }
     }
@@ -689,13 +765,170 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
   /** Whether a brush or an axis is being dragged (see `antialiasedLines`). */
   private interacting = false;
-  onBrushStart = (): void => {
+
+  /**
+   * A press on an axis's brush band: on a brush edge it resizes the brush, on
+   * a brush it moves it, elsewhere it draws a new brush. Nothing changes until
+   * the pointer moves past the click tolerance.
+   */
+  private startBrushGesture(
+    event: d3.D3DragEvent<SVGGElement, string, d3.SubjectPosition>,
+    dimension: string,
+  ): void {
+    const target = event.sourceEvent.target;
+    if (!(target instanceof Element)) {
+      throw new Error("A brush gesture started outside the brush band");
+    }
     this.interacting = true;
     this.clearHover();
-  };
+    this.props.context_menu_ref?.current?.hide();
+    const origin = Math.max(0, Math.min(this.h, event.y));
+    const band = target.closest("[data-brush-id]");
+    if (band === null) {
+      this.brushGesture = {
+        dimension,
+        kind: "create",
+        brushId: this.nextBrushId++,
+        origin,
+        initial: null,
+        moved: false,
+      };
+      return;
+    }
+    const brushId = Number(band.getAttribute("data-brush-id"));
+    const initial = this.brushSpans(dimension).find((span) => span.id === brushId);
+    if (initial === undefined) {
+      throw new Error(`Brush ${brushId} is not on axis ${dimension}`);
+    }
+    const edge = target.getAttribute("data-edge");
+    this.brushGesture = {
+      dimension,
+      kind: edge === "top" || edge === "bottom" ? edge : "move",
+      brushId,
+      origin,
+      initial,
+      moved: false,
+    };
+  }
+
+  /** Follows the pointer at `y` (axis pixels); the selection updates once per frame. */
+  private continueBrushGesture(y: number): void {
+    const gesture = this.brushGesture;
+    if (gesture === null) {
+      throw new Error("A brush gesture moved before it started");
+    }
+    if (!gesture.moved && Math.abs(y - gesture.origin) < BRUSH_CLICK_PIXELS) {
+      return;
+    }
+    gesture.moved = true;
+    const pointer = Math.max(0, Math.min(this.h, y));
+    const { initial } = gesture;
+    let span: PixelSpan;
+    if (initial === null) {
+      span = { top: Math.min(gesture.origin, pointer), bottom: Math.max(gesture.origin, pointer) };
+    } else if (gesture.kind === "move") {
+      const height = initial.bottom - initial.top;
+      const top = Math.max(0, Math.min(this.h - height, initial.top + y - gesture.origin));
+      span = { top, bottom: top + height };
+    } else {
+      // The opposite edge stays; dragging past it turns the brush over, as d3's brushes do.
+      const anchor = gesture.kind === "top" ? initial.bottom : initial.top;
+      span = { top: Math.min(anchor, pointer), bottom: Math.max(anchor, pointer) };
+    }
+    const interval = pixelInterval(this.yscale[gesture.dimension].range(), span);
+    const others = (this.brushes.get(gesture.dimension) ?? []).filter(
+      (brush) => brush.id !== gesture.brushId,
+    );
+    this.brushes.set(gesture.dimension, [...others, { id: gesture.brushId, ...interval }]);
+    this.scheduleBrushFrame();
+  }
+
+  /**
+   * Ends a brush gesture: a click on a brush removes it, a click elsewhere
+   * changes nothing; after a drag, empty brushes go and the brushes of the
+   * axis that overlap or touch merge.
+   */
+  private endBrushGesture(): void {
+    const gesture = this.brushGesture;
+    if (gesture === null) {
+      throw new Error("A brush gesture ended before it started");
+    }
+    this.brushGesture = null;
+    this.interacting = false;
+    this.cancelBrushMove();
+    if (!gesture.moved && gesture.kind === "create") {
+      return;
+    }
+    const brushes = (this.brushes.get(gesture.dimension) ?? []).filter(
+      (brush) => brush.end > brush.start && (gesture.moved || brush.id !== gesture.brushId),
+    );
+    this.setAxisBrushes(gesture.dimension, brushes);
+    this.commitBrushes();
+  }
+
+  /**
+   * Replaces the brushes of an axis, merging those that overlap or touch;
+   * the axis is unbrushed when none is left.
+   */
+  private setAxisBrushes(dimension: string, brushes: ReadonlyArray<AxisBrush>): void {
+    if (brushes.length === 0) {
+      this.brushes.delete(dimension);
+      return;
+    }
+    const touching = BRUSH_TOUCH_PIXELS / Math.max(1, this.h);
+    this.brushes.set(dimension, mergeBrushes(brushes, touching));
+  }
+
+  /**
+   * Sets the brushes of one axis from pixel spans, `[top, bottom]` from the
+   * axis top, as if drawn by hand, and publishes the selection.
+   */
+  setBrushes(dimension: string, spans: ReadonlyArray<readonly [number, number]>): void {
+    const range = this.yscale[dimension].range();
+    this.setAxisBrushes(
+      dimension,
+      spans.map(([top, bottom]) => ({
+        id: this.nextBrushId++,
+        ...pixelInterval(range, { top, bottom }),
+      })),
+    );
+    this.commitBrushes();
+  }
+
+  /** Clears the brushes of one axis. */
+  clearAxisBrushes(dimension: string): void {
+    this.brushes.delete(dimension);
+    this.commitBrushes();
+  }
+
+  /** Saves the brushes, tells Python about them and publishes the selection they make. */
+  private commitBrushes(): void {
+    const saved: SavedBrushes = {};
+    this.brushes.forEach((brushes, dimension) => {
+      saved[dimension] = brushes.map((brush): [number, number] => [brush.start, brush.end]);
+    });
+    this.props.persistentState.set(PSTATE_BRUSHES, saved);
+    this.sendBrushExtents();
+    this.pplot?.brush(true);
+  }
+
+  /** Reads the brushes saved for the displayed axes. */
+  private restoreBrushes(): void {
+    const saved = readState(this.props.persistentState, PSTATE_BRUSHES, isSavedBrushes, {});
+    Object.entries(saved).forEach(([dimension, intervals]) => {
+      if (!this.state.dimensions.includes(dimension) || this.yscale[dimension] === undefined) {
+        return;
+      }
+      this.setAxisBrushes(
+        dimension,
+        intervals.map(([start, end]) => ({ id: this.nextBrushId++, start, end })),
+      );
+    });
+  }
+
   /** Brush moves are coalesced to one selection update per animation frame. */
   private brushMoveFrame: number | null = null;
-  onBrushMove = (): void => {
+  private scheduleBrushFrame(): void {
     if (this.brushMoveFrame !== null) {
       return;
     }
@@ -703,13 +936,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.brushMoveFrame = null;
       this.pplot?.brush(false);
     });
-  };
-  onBrushEnd = (): void => {
-    this.interacting = false;
-    this.cancelBrushMove();
-    this.sendBrushExtents();
-    this.pplot?.brush(true);
-  };
+  }
   cancelBrushMove(): void {
     if (this.brushMoveFrame !== null) {
       cancelAnimationFrame(this.brushMoveFrame);
@@ -940,13 +1167,27 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.props.setHighlighted([row]);
     }
   }
+  /**
+   * Tells Python what each brushed axis selects. The fields of earlier
+   * versions describe the span from the highest brush to the lowest, and
+   * `brushes` lists each brush.
+   */
   sendBrushExtents = _.debounce((): void => {
     this.props.sendMessage("brush_extents", () => {
-      const colToScale: { [dimension: string]: ScaleDomainRange } = {};
-      Object.entries(this.getBrushExtents()).forEach(([dim, extent]) => {
-        if (extent !== null) {
-          colToScale[dim] = scale_pixels_range(this.yscale[dim], extent);
-        }
+      const colToScale: {
+        [dimension: string]: ScaleDomainRange & { brushes: ScaleDomainRange[] };
+      } = {};
+      this.brushedDimensions().forEach((dimension) => {
+        const scale = this.yscale[dimension];
+        const spans = this.brushSpans(dimension);
+        const envelope: [number, number] = [
+          Math.min(...spans.map((span) => span.top)),
+          Math.max(...spans.map((span) => span.bottom)),
+        ];
+        colToScale[dimension] = {
+          ...scale_pixels_range(scale, envelope),
+          brushes: spans.map((span) => scale_pixels_range(scale, [span.top, span.bottom])),
+        };
       });
       return colToScale;
     });
@@ -1021,7 +1262,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     const me = this;
 
     const div = d3.select(mounted(me.root_ref));
-    const svg = d3.select(mounted(me.svg_ref));
 
     // Foreground canvas for the lines: WebGL2 when available, Canvas 2D otherwise
     const foregroundCanvas = mounted(this.foreground_ref);
@@ -1112,8 +1352,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             if (!me.state.dragging.dragging) {
               // no movement, invert axis
               if (!IS_MOBILE) {
-                const extent = me.toggleInvertAxis(d);
-                me.update_ticks(d, extent);
+                me.toggleInvertAxis(d);
+                me.update_ticks();
               }
             } else if (me.state.dragging.pos < 12 || me.state.dragging.pos > me.contentW - 12) {
               // remove axis if dragged all the way left
@@ -1125,7 +1365,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
                 d3.select(dimensionGroup)
                   .transition()
                   .attr("transform", `translate(${me.xPosition(d)})`);
-                me.update_ticks(d, me.getBrushExtents()[d]);
+                me.update_ticks();
               });
             }
 
@@ -1257,57 +1497,34 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       }
       grips.call(create_drag_beh());
 
-      // Add and store a brush for each axis.
-      dimensions_dom
+      // A brush band along each axis: drag on it to draw, move, resize or remove brushes.
+      const brushBands = dimensions_dom
         .append<SVGGElement>("svg:g")
         .classed(pstyle.brush, true)
-        .classed("pplot-brush", true)
-        .each(function (this: SVGGElement) {
-          d3.select<SVGGElement, string>(this).call(me.d3brush);
-        })
-        .selectAll("rect")
-        .style("visibility", null)
+        .classed("pplot-brush", true);
+      brushBands
+        .append("rect")
+        .classed("overlay", true)
+        .attr("x", BRUSH_LEFT)
+        .attr("width", BRUSH_WIDTH)
         .append("title")
-        .text("Drag up or down to brush along this axis");
-
-      dimensions_dom.selectAll(".extent").append("title").text("Drag or resize this filter");
+        .text("Drag up or down to add a brush on this axis");
+      brushBands.call(me.brushDrag);
+      me.drawBrushes();
       me.fitTickLabels();
     }
 
     function brush(publish: boolean): void {
       /**
-       * Called whenever a brush moves. Recomputes and draws the selected lines
-       * right away; with `publish`, also hands the selection to HiPlot, which
-       * updates the other displays (done when a brush gesture ends).
+       * Called whenever a brush changes. Draws the brushes, recomputes and
+       * draws the selected lines right away; with `publish`, also hands the
+       * selection to HiPlot, which updates the other displays (done when a
+       * brush gesture ends).
        */
       me.props.context_menu_ref?.current?.hide();
-      const extents = me.getBrushExtents();
-      const actives = me.state.dimensions.filter(
-        (p) => extents[p] !== null && extents[p] !== undefined,
-      );
-
-      // hack to hide ticks beyond extent
-      me.dimensions_dom?.each(function (this: SVGGElement, dimension) {
-        const extent = extents[dimension];
-        const texts = d3.select(this).selectAll<SVGTextElement, AxisValue>(".tick text");
-        if (extent !== null && extent !== undefined && _.include(actives, dimension)) {
-          const scale = me.yscale[dimension];
-          texts
-            .classed(pstyle.tickSelected, true)
-            .style("display", function (this: SVGTextElement) {
-              if (d3.select(this).classed(pstyle.pplotLabel)) {
-                return null;
-              }
-              const position = scale(d3.select<SVGTextElement, AxisValue>(this).datum());
-              return extent[0] <= position && position <= extent[1] ? null : "none";
-            });
-        } else {
-          texts.classed(pstyle.tickSelected, false).style("display", null);
-        }
-        d3.select(this).selectAll(`.${pstyle.pplotLabel}`).style("display", null);
-      });
-
-      me.updateBrushRangeLabels(extents);
+      // Mid-gesture only the axis under the pointer changes.
+      me.drawBrushes(me.brushGesture?.dimension);
+      const actives = me.brushedDimensions();
       if (me.state.brushed !== actives.length > 0) {
         me.setState({ brushed: actives.length > 0 });
       }
@@ -1317,16 +1534,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         .selectAll<SVGTextElement, string>(`.${pstyle.pplotLabel}`)
         .style("font-weight", (dimension) => (_.include(actives, dimension) ? "bold" : null));
 
-      // Get lines within extents
-      const selections = new Map<string, AxisSelection>();
-      actives.forEach((dimension) => {
-        const extent = extents[dimension];
-        if (extent === null || extent === undefined) {
-          throw new Error(`Dimension ${dimension} is not brushed`);
-        }
-        const range = brushRange(dimension, scale_pixels_range(me.yscale[dimension], extent));
-        selections.set(dimension, range === null ? [] : [range]);
-      });
+      // Get lines within the brushes: in any brush of each brushed axis.
+      const selections = new Map<string, AxisSelection>(
+        actives.map((dimension) => [dimension, me.axisRanges(dimension)]),
+      );
       const filters = Array.from(selections.values(), (selection) => anyOfRanges(selection));
       const masks = me.brushMasks();
       const mask = masks.select(selections);
@@ -1342,7 +1553,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       }
 
       if (me.props.asserts) {
-        me.assertPixelSelectionMatches(actives, extents, filters, selected);
+        me.assertPixelSelectionMatches(actives, filters, selected);
       }
       me.publishedSelection = selected;
       me.props.setSelected(selected, {
@@ -1358,8 +1569,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       div
         .selectAll<SVGGElement, string>(".dimension")
         .attr("transform", (d) => `translate(${me.xPosition(d)})`);
-      // update brush placement
-      svg.selectAll<SVGGElement, string>(`.${pstyle.brush}`).call(me.d3brush);
 
       // update axis placement
       div.selectAll<SVGGElement, string>(`.${pstyle.axis}`).each(function (this: SVGGElement, d) {
@@ -1367,6 +1576,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       });
       me.updateAxisTitlesAnglesAndFontSize();
       me.fitTickLabels();
+      me.drawBrushes();
 
       me.redrawLines();
       this.props.sendMessage("height_changed", () => null);
@@ -1374,6 +1584,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.on_resize = _.debounce(this.relayout, 100);
 
     me.compute_dimensions();
+    me.restoreBrushes();
     redraw_axis();
 
     me.pplot = {
@@ -1386,6 +1597,15 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     me.sendBrushExtents();
   }
 
+  /** What the brushes of one axis select, one value range per brush that selects any value. */
+  private axisRanges(dimension: string): FilterRange[] {
+    const scale = this.yscale[dimension];
+    return this.brushSpans(dimension).flatMap((span) => {
+      const range = brushRange(dimension, scale_pixels_range(scale, [span.top, span.bottom]));
+      return range === null ? [] : [range];
+    });
+  }
+
   /**
    * Debug check, off unless the `asserts` prop is set: rows selected by value
    * must match the rows whose cached pixels fall inside the brushes, within one
@@ -1393,13 +1613,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
    */
   private assertPixelSelectionMatches(
     actives: string[],
-    extents: BrushExtents,
     filters: Filter[],
     selected: Datapoint[],
   ): void {
     const geometry = this.geometry();
     const columns = actives.map((dimension) => ({
-      extent: extents[dimension],
+      spans: this.brushSpans(dimension),
       pixels: geometry.pixels(
         dimension,
         this.yscale[dimension],
@@ -1407,12 +1626,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       ),
     }));
     const insideBrushes = (index: number, tolerance: number): boolean =>
-      columns.every(({ extent, pixels }) => {
-        if (extent === null || extent === undefined) {
-          return false;
-        }
+      columns.every(({ spans, pixels }) => {
         const position = pixels[index];
-        return extent[0] + tolerance <= position && position <= extent[1] - tolerance;
+        return spans.some(
+          (span) => span.top + tolerance <= position && position <= span.bottom - tolerance,
+        );
       });
     const rows = geometry.rows;
     const selected_pixels_minset = rows.filter((_row, index) => insideBrushes(index, 1));
@@ -1526,81 +1744,154 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     };
   }
 
-  /** Value tags at the top and bottom edges of each brush. */
-  private updateBrushRangeLabels(extents: BrushExtents): void {
-    const tagCenter = (edge: "top" | "bottom", pixel: number): number => {
-      const offset = BRUSH_TAG_GAP + BRUSH_TAG_HEIGHT / 2;
-      if (edge === "top") {
-        return pixel - offset < BRUSH_TAG_HEIGHT / 2 ? pixel + offset : pixel - offset;
-      }
-      return pixel + offset > this.h + this.m[2] - BRUSH_TAG_HEIGHT / 2
-        ? pixel - offset
-        : pixel + offset;
-    };
-    this.dimensions_dom?.each((dimension, index, nodes) => {
-      const extent = extents[dimension];
-      const scale = this.yscale[dimension];
-      const labels: BrushTag[] = [];
-      if (extent !== null && extent !== undefined && scale !== undefined) {
-        const [top, bottom] = extent;
-        const valueAt = (pixel: number): string => {
-          if (scale.kind === "continuous") {
-            if (scale.paramType === ParamType.TIMESTAMP) {
-              return formatTimestamp(scale.invert(pixel));
-            }
-            const format = valueFormatter(scale, tickCountFor(this.h));
-            return format(scale.invert(pixel));
-          }
-          const range = scale_pixels_range(scale, [pixel, pixel]);
-          return range.type === ParamType.CATEGORICAL && range.values.length > 0
-            ? range.values[0]
-            : "";
-        };
-        const range = scale_pixels_range(scale, extent);
-        const [topText, bottomText] =
-          range.type === ParamType.CATEGORICAL
-            ? [range.values[0] ?? "none", range.values[range.values.length - 1] ?? "none"]
-            : [valueAt(top), valueAt(bottom)];
-        labels.push(
-          { edge: "top", y: tagCenter("top", top), text: topText },
-          { edge: "bottom", y: tagCenter("bottom", bottom), text: bottomText },
-        );
-      }
-      const tags = d3
-        .select(nodes[index])
-        .selectAll<SVGGElement, BrushTag>(`.${pstyle.brushTag}`)
-        .data(labels, (label) => label.edge)
-        .join((enter) => {
-          const tag = enter.append("g").classed(pstyle.brushTag, true);
-          tag
-            .append("rect")
-            .attr("height", BRUSH_TAG_HEIGHT)
-            .attr("rx", BRUSH_TAG_HEIGHT / 2);
-          tag
-            .append("text")
-            .classed(pstyle.brushRange, true)
-            .classed("pplot-brush-range", true)
-            .attr("text-anchor", "middle")
-            .attr("dominant-baseline", "central");
-          return tag;
-        })
-        .attr("data-edge", (label) => label.edge)
-        .attr("transform", (label) => `translate(0, ${label.y})`);
-      const measure = this.tagTextMeasure();
-      tags.each(function (this: SVGGElement, label) {
-        const text = d3.select(this).select<SVGTextElement>("text").node();
-        if (text === null) {
-          throw new Error("Brush tag lost its text");
+  /**
+   * Draws the brushes of every axis, or of `only`: their bands, the value tags
+   * at their edges, and the tick labels, hidden outside the brushes.
+   */
+  private drawBrushes(only?: string): void {
+    const me = this;
+    this.dimensions_dom
+      ?.filter((dimension) => only === undefined || dimension === only)
+      .each(function (this: SVGGElement, dimension) {
+        const spans = me.brushSpans(dimension);
+        const group = d3.select<SVGGElement, string>(this);
+        me.drawBrushBands(group.select<SVGGElement>(`.${pstyle.brush}`), spans);
+        me.drawBrushTags(group, dimension, spans);
+        // Tick labels outside every brush are hidden.
+        const texts = group.selectAll<SVGTextElement, AxisValue>(".tick text");
+        if (spans.length === 0) {
+          texts.classed(pstyle.tickSelected, false).style("display", null);
+          return;
         }
-        const fitted = fitWithMeasure(label.text, BRUSH_TAG_MAX_PIXELS, measure);
-        text.textContent = fitted.text;
-        const width = fitted.width + 2 * BRUSH_TAG_PADDING;
-        d3.select(this)
-          .select("rect")
-          .attr("x", -width / 2)
-          .attr("y", -BRUSH_TAG_HEIGHT / 2)
-          .attr("width", width);
+        const scale = me.yscale[dimension];
+        texts.classed(pstyle.tickSelected, true).style("display", (value) => {
+          const position = scale(value);
+          return spans.some((span) => span.top <= position && position <= span.bottom)
+            ? null
+            : "none";
+        });
       });
+  }
+
+  /** The bands of an axis's brushes, each with a resize handle along its top and bottom edges. */
+  private drawBrushBands(
+    group: d3.Selection<SVGGElement, string, null, undefined>,
+    spans: ReadonlyArray<DrawnBrush>,
+  ): void {
+    group.select(".overlay").attr("height", this.h);
+    const bands = group
+      .selectAll<SVGGElement, DrawnBrush>(".pplot-brush-band")
+      .data(spans, (span) => String(span.id))
+      .join((enter) => {
+        const band = enter.append("g").classed("pplot-brush-band", true);
+        band
+          .append("rect")
+          .classed("selection", true)
+          .attr("x", BRUSH_LEFT)
+          .attr("width", BRUSH_WIDTH)
+          .append("title")
+          .text("Drag to move this brush, drag an edge to resize it, click to remove it");
+        for (const edge of ["top", "bottom"]) {
+          band
+            .append("rect")
+            .classed("handle", true)
+            .attr("data-edge", edge)
+            .attr("x", BRUSH_LEFT)
+            .attr("width", BRUSH_WIDTH)
+            .attr("height", BRUSH_HANDLE_PIXELS);
+        }
+        return band;
+      })
+      .attr("data-brush-id", (span) => span.id);
+    bands
+      .select(".selection")
+      .attr("y", (span) => span.top)
+      .attr("height", (span) => span.bottom - span.top);
+    bands
+      .select(".handle[data-edge='top']")
+      .attr("y", (span) => span.top - BRUSH_HANDLE_PIXELS / 2);
+    bands
+      .select(".handle[data-edge='bottom']")
+      .attr("y", (span) => span.bottom - BRUSH_HANDLE_PIXELS / 2);
+  }
+
+  /**
+   * Value tags at the top and bottom edges of each brush, placed by
+   * `placeBrushTags`: outside the brush where there is room, inside it where
+   * an axis end or a neighboring brush leaves none, never overlapping.
+   */
+  private drawBrushTags(
+    group: d3.Selection<SVGGElement, string, null, undefined>,
+    dimension: string,
+    spans: ReadonlyArray<DrawnBrush>,
+  ): void {
+    const scale = this.yscale[dimension];
+    const labels: BrushTag[] = [];
+    if (spans.length > 0 && scale !== undefined) {
+      // A categorical brush is tagged with its first and last category, a continuous one with
+      // the values at its edges.
+      const texts = spans.map((span): Record<"top" | "bottom", string> => {
+        if (scale.kind === "categorical") {
+          const range = scale_pixels_range(scale, [span.top, span.bottom]);
+          const values = range.type === ParamType.CATEGORICAL ? range.values : [];
+          return { top: values[0] ?? "none", bottom: values[values.length - 1] ?? "none" };
+        }
+        const format =
+          scale.paramType === ParamType.TIMESTAMP
+            ? formatTimestamp
+            : valueFormatter(scale, tickCountFor(this.h));
+        return { top: format(scale.invert(span.top)), bottom: format(scale.invert(span.bottom)) };
+      });
+      const placed = placeBrushTags(spans, {
+        height: BRUSH_TAG_HEIGHT,
+        gap: BRUSH_TAG_GAP,
+        min: 0,
+        max: this.h + this.m[2],
+      });
+      for (const tag of placed) {
+        labels.push({
+          key: `${spans[tag.brush].id}:${tag.edge}`,
+          edge: tag.edge,
+          y: tag.center,
+          inside: tag.inside,
+          text: texts[tag.brush][tag.edge],
+        });
+      }
+    }
+    const tags = group
+      .selectAll<SVGGElement, BrushTag>(`.${pstyle.brushTag}`)
+      .data(labels, (label) => label.key)
+      .join((enter) => {
+        const tag = enter.append("g").classed(pstyle.brushTag, true);
+        tag
+          .append("rect")
+          .attr("height", BRUSH_TAG_HEIGHT)
+          .attr("rx", BRUSH_TAG_HEIGHT / 2);
+        tag
+          .append("text")
+          .classed(pstyle.brushRange, true)
+          .classed("pplot-brush-range", true)
+          .attr("text-anchor", "middle")
+          .attr("dominant-baseline", "central");
+        return tag;
+      })
+      .attr("data-edge", (label) => label.edge)
+      .attr("data-inside", (label) => String(label.inside))
+      .attr("transform", (label) => `translate(0, ${label.y})`);
+    const measure = this.tagTextMeasure();
+    tags.each(function (this: SVGGElement, label) {
+      const text = d3.select(this).select<SVGTextElement>("text").node();
+      if (text === null) {
+        throw new Error("Brush tag lost its text");
+      }
+      const fitted = fitWithMeasure(label.text, BRUSH_TAG_MAX_PIXELS, measure);
+      text.textContent = fitted.text;
+      const width = fitted.width + 2 * BRUSH_TAG_PADDING;
+      d3.select(this)
+        .select("rect")
+        .attr("x", -width / 2)
+        .attr("y", -BRUSH_TAG_HEIGHT / 2)
+        .attr("width", width);
     });
   }
 
@@ -1777,14 +2068,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.w = this.state.width - this.m[1] - this.m[3];
     this.contentW = layout.contentWidth - this.m[1] - this.m[3];
     this.h = height - this.m[0] - this.m[2];
-    this.d3brush
-      .extent([
-        [-23, 0],
-        [15, this.h],
-      ])
-      .on("start", this.onBrushStart)
-      .on("brush", this.onBrushMove)
-      .on("end", this.onBrushEnd);
     // Scale chart and canvas height
     const div = d3.select(mounted(this.root_ref));
     div.style("height", `${this.state.height}px`);
@@ -1816,19 +2099,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   // transition ticks for reordering, rescaling and inverting
-  update_ticks(d?: string, extent?: [number, number] | null): void {
-    const svg = d3.select(mounted(this.svg_ref));
-    // update brushes
-    if (d) {
-      const brush_el = svg
-        .selectAll<SVGGElement, string>(`.${pstyle.brush}`)
-        .filter((key) => key === d);
-      this.d3brush.move(brush_el, extent ?? null);
-    } else {
-      // all ticks
-      svg.selectAll<SVGGElement, string>(`.${pstyle.brush}`).call(this.d3brush);
-    }
-
+  update_ticks(): void {
     // update axes
     d3.select(mounted(this.root_ref))
       .selectAll<SVGGElement, string>(`.${pstyle.axis}`)
@@ -1838,6 +2109,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         node.transition().duration(AXIS_TRANSITION_MS).call(this.get_axis(dimension));
         node.selectAll(".tick text").style("font-weight", null).style("font-size", null);
       });
+    this.drawBrushes();
     this.fitTickLabelsAfterTransition();
     this.redrawLines();
   }
@@ -2076,16 +2348,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   brush_clear_all(): void {
-    // Reset brushes - but only trigger call to "brush" once
-    this.d3brush.on("brush", null).on("end", null);
-    if (this.dimensions_dom !== null) {
-      this.d3brush.move(
-        this.dimensions_dom.selectAll<SVGGElement, string>(`.${pstyle.brush}`),
-        null,
-      );
-    }
-    this.d3brush.on("brush", this.onBrushMove).on("end", this.onBrushEnd);
-    this.onBrushEnd();
+    this.brushes.clear();
+    this.commitBrushes();
   }
 
   remove_axis(d: string): void {

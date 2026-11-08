@@ -802,11 +802,19 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     if (pp !== null) {
       const invert_axis = $('<a class="dropdown-item" href="#">Invert axis</a>');
       invert_axis.on("click", (event) => {
-        const extent = pp.toggleInvertAxis(column);
-        pp.update_ticks(column, extent);
+        pp.toggleInvertAxis(column);
+        pp.update_ticks();
         event.preventDefault();
       });
       contextmenu.append(invert_axis);
+      if (pp.hasBrushes(column)) {
+        const clear_brushes = $('<a class="dropdown-item" href="#">Clear brushes on this axis</a>');
+        clear_brushes.on("click", (event) => {
+          pp.clearAxisBrushes(column);
+          event.preventDefault();
+        });
+        contextmenu.append(clear_brushes);
+      }
     }
 
     // Color by

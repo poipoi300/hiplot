@@ -35,18 +35,26 @@
   height: 1px;
 }
 
-/* Brushes: a filled band in the accent color, its value range labelled at both ends. */
+/*
+ * Brushes: filled bands in the accent color, each value range labelled at both
+ * ends. Dragging the empty band along an axis adds a brush; a brush moves by
+ * its body and resizes by its edges.
+ */
+.brush {
+  touch-action: none;
+}
 .brush :global(.selection) {
   fill: var(--hip-brush-fill);
   fill-opacity: 1;
   stroke: var(--hip-brush-stroke);
   stroke-width: 1;
   shape-rendering: crispEdges;
+  cursor: move;
 }
-.brush :global(.overlay) {
-  cursor: ns-resize;
-}
+.brush :global(.overlay),
 .brush :global(.handle) {
+  fill: none;
+  pointer-events: all;
   cursor: ns-resize;
 }
 /* Value tags at the top and bottom edges of a brush. */
