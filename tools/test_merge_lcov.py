@@ -57,6 +57,12 @@ def test_folded_zero_hit_statements_still_count_as_missed() -> None:
     assert merge([unit, e2e]) == {"src/a.ts": {10: 4, 30: 0}}
 
 
+def test_lines_without_code_are_dropped_from_per_line_reports() -> None:
+    unit = {"src/a.ts": {3: 0, 4: 0, 5: 2}, "src/types.ts": {1: 0, 2: 0}, "src/empty.ts": {}}
+    targets = {"src/a.ts": {3: 0, 4: 0}, "src/types.ts": {1: 0, 2: 0}, "src/empty.ts": {}}
+    assert fold_statements(unit, targets) == {"src/a.ts": {5: 2}, "src/empty.ts": {}}
+
+
 def test_a_per_line_report_without_a_statement_map_is_rejected() -> None:
     with pytest.raises(ValueError, match=re.escape("No statement map for src/new.ts")):
         fold_statements({"src/new.ts": {1: 1}}, {"src/a.ts": {}})

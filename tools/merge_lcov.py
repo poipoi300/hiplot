@@ -13,7 +13,9 @@ while bun lists every physical line it spans, including signatures and closing
 braces. bun's lines are therefore folded first, with the map
 tools/statement_starts.ts writes: each line onto the first line of the
 statement istanbul counts it under, keeping the highest hit count among the
-lines folded together.
+lines folded together. Lines the map marks as holding no code (blank,
+comment-only, or TypeScript-only declarations the compiler erases) are
+dropped: bun lists them, but no runtime can execute them.
 
 Only line records (DA) are kept; diff-cover reads nothing else.
 
@@ -34,6 +36,8 @@ from pathlib import Path
 type LineHits = dict[int, int]
 #: Per source path, the line each folded line is counted under.
 type StatementTargets = dict[str, dict[int, int]]
+#: The target of lines without code (`NOT_CODE` in tools/statement_starts.ts).
+NOT_CODE = 0
 
 
 def read_report(report: Path, root: Path, repo: Path) -> dict[str, LineHits]:
@@ -63,7 +67,12 @@ def read_statement_targets(path: Path) -> StatementTargets:
 
 
 def fold_statements(report: Mapping[str, LineHits], targets: StatementTargets) -> dict[str, LineHits]:
-    """Folds every line of a per-line report onto the line its statement is counted under."""
+    """Folds every line of a per-line report onto the line its statement is counted under.
+
+    A file whose listed lines all hold no code (a module of types only) has
+    nothing to cover and is left out; a file listed without any line at all
+    still reaches `merge`, which rejects it.
+    """
     folded: dict[str, LineHits] = {}
     for path, hits in report.items():
         if path not in targets:
@@ -72,7 +81,11 @@ def fold_statements(report: Mapping[str, LineHits], targets: StatementTargets) -
         lines: LineHits = {}
         for number, count in hits.items():
             target = file_targets.get(number, number)
+            if target == NOT_CODE:
+                continue
             lines[target] = max(lines.get(target, 0), count)
+        if hits and not lines:
+            continue
         folded[path] = lines
     return folded
 

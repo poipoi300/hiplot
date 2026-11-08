@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { main, statementTargets } from "./statement_starts";
+import { main, NOT_CODE, statementTargets } from "./statement_starts";
 
 const lines = (...source: string[]): string => source.join("\n");
 
@@ -116,4 +116,29 @@ test("the command line writes the map of every source under its POSIX path", () 
 
 test("the command line refuses to run without sources", () => {
   expect(() => main(["map.json"])).toThrow("Usage: bun tools/statement_starts.ts");
+});
+
+test("blank lines, comments and erased declarations hold no code", () => {
+  const source = lines(
+    "/** Doc. */",
+    "interface Shape {",
+    "  size: number;",
+    "}",
+    "",
+    "// A note.",
+    "class Box {",
+    "  private readonly size: number;",
+    "  private count = 0;",
+    "}",
+    "const text = `a",
+    "",
+    "b`;",
+  );
+  const targets = statementTargets("a.ts", source);
+  for (const line of [1, 2, 3, 4, 5, 6, 8]) {
+    expect(targets.get(line)).toBe(NOT_CODE);
+  }
+  expect(targets.has(7)).toBe(false);
+  expect(targets.has(9)).toBe(false);
+  expect(targets.get(12)).toBe(11);
 });

@@ -10,6 +10,11 @@
  * to the function's first statement, which runs exactly when the function
  * does. Every other line maps to itself.
  *
+ * bun also lists lines no runtime can execute: blank and comment-only lines,
+ * and TypeScript-only declarations the compiler erases (interfaces, type
+ * aliases, class fields without an initializer). Those map to NOT_CODE, and
+ * the merge drops them.
+ *
  * Usage: bun tools/statement_starts.ts OUTPUT.json SOURCE...
  * OUTPUT maps each repo-relative POSIX source path to {line: target line} for
  * the lines whose target differs from the line itself.
@@ -17,6 +22,41 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import ts from "typescript";
+
+/** Target of the lines that hold no executable code. */
+export const NOT_CODE = 0;
+
+/** Declarations that exist for the type checker only. */
+function isErased(node: ts.Node): boolean {
+  return (
+    ts.isInterfaceDeclaration(node) ||
+    ts.isTypeAliasDeclaration(node) ||
+    (ts.isPropertyDeclaration(node) && node.initializer === undefined)
+  );
+}
+
+/** Lines holding at least one token of the source, comments and blanks excluded. */
+function codeLines(file: ts.SourceFile, lineOf: (position: number) => number): Set<number> {
+  const lines = new Set<number>();
+  const visit = (node: ts.Node): void => {
+    if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode) {
+      return;
+    }
+    const children = node.getChildren(file);
+    if (children.length > 0) {
+      children.forEach(visit);
+      return;
+    }
+    if (node.kind === ts.SyntaxKind.EndOfFileToken) {
+      return;
+    }
+    for (let line = lineOf(node.getStart(file)); line <= lineOf(node.getEnd()); ++line) {
+      lines.add(line);
+    }
+  };
+  visit(file);
+  return lines;
+}
 
 /** Statement kinds that are declarations or containers, not executed statements. */
 const NOT_EXECUTED = new Set<ts.SyntaxKind>([
@@ -83,7 +123,9 @@ export function statementTargets(fileName: string, source: string): Map<number, 
   const visit = (node: ts.Node, depth: number): void => {
     const first = lineOf(node.getStart(file));
     const last = lineOf(node.getEnd());
-    if (isExecutedStatement(node)) {
+    if (isErased(node)) {
+      paintings.push({ first, last, target: NOT_CODE, depth });
+    } else if (isExecutedStatement(node)) {
       paintings.push({ first, last, target: first, depth });
       statementStarts.add(first);
     } else {
@@ -109,6 +151,12 @@ export function statementTargets(fileName: string, source: string): Map<number, 
   // A statement's own first line is always counted under that statement.
   for (const line of statementStarts) {
     targets.delete(line);
+  }
+  const code = codeLines(file, lineOf);
+  for (let line = 1; line <= lineOf(file.getEnd()); ++line) {
+    if (!code.has(line)) {
+      targets.set(line, NOT_CODE);
+    }
   }
   for (const [line, target] of targets) {
     if (line === target) {
