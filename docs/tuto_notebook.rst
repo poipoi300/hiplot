@@ -22,7 +22,9 @@ and restored when :meth:`hiplot.Experiment.display` is called a second time late
     data = [{'dropout':0.1, 'lr': 0.001, 'loss': 10.0, 'optimizer': 'SGD'},
             {'dropout':0.15, 'lr': 0.01, 'loss': 3.5, 'optimizer': 'Adam'},
             {'dropout':0.3, 'lr': 0.1, 'loss': 4.5, 'optimizer': 'Adam'}]
-    hip.Experiment.from_iterable(data).display(store_state_key="cell1")
+    exp = hip.Experiment.from_iterable(data)
+    exp.colorby = "loss"
+    exp.display(store_state_key="cell1")
 
 
 
@@ -51,7 +53,9 @@ about selected datapoints, filtering, ...
     data = [{'dropout':0.1, 'lr': 0.001, 'loss': 10.0, 'optimizer': 'SGD'},
             {'dropout':0.15, 'lr': 0.01, 'loss': 3.5, 'optimizer': 'Adam'},
             {'dropout':0.3, 'lr': 0.1, 'loss': 4.5, 'optimizer': 'Adam'}]
-    displayed_exp = hip.Experiment.from_iterable(data).display()
+    exp = hip.Experiment.from_iterable(data)
+    exp.colorby = "loss"
+    displayed_exp = exp.display()
 
 
 .. figure:: ../assets/displayed_experiment.png

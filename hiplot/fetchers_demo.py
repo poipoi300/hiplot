@@ -36,7 +36,9 @@ def demo_basic_usage() -> hip.Experiment:
         {"dropout": 0.15, "lr": 0.01, "loss": 3.5, "optimizer": "Adam"},
         {"dropout": 0.3, "lr": 0.1, "loss": 4.5, "optimizer": "Adam"},
     ]
-    return hip.Experiment.from_iterable(data)
+    exp = hip.Experiment.from_iterable(data)
+    exp.colorby = "loss"
+    return exp
 
 
 def demo_line_xy() -> hip.Experiment:

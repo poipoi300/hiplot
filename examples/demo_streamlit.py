@@ -18,6 +18,7 @@ data = [
     {"uid": "c", "dropout": 0.3, "lr": 0.1, "loss": 4.5, "optimizer": "Adam", "x": x3},
 ]
 xp = hip.Experiment.from_iterable(data)
+xp.colorby = "loss"
 
 # Instead of calling directly `.display()`
 # just convert it to a streamlit component with `.to_streamlit()` before

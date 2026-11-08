@@ -60,7 +60,9 @@ Once we have created this object, we can display it with :class:`hiplot.Experime
     data = [{'dropout':0.1, 'lr': 0.001, 'loss': 10.0, 'optimizer': 'SGD'},
             {'dropout':0.15, 'lr': 0.01, 'loss': 3.5, 'optimizer': 'Adam'},
             {'dropout':0.3, 'lr': 0.1, 'loss': 4.5, 'optimizer': 'Adam'}]
-    hip.Experiment.from_iterable(data).display()
+    exp = hip.Experiment.from_iterable(data)
+    exp.colorby = "loss"
+    exp.display()
 
 
 .. raw:: html

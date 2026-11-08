@@ -76,7 +76,9 @@ data = [
     {"dropout": 0.15, "lr": 0.01, "loss": 3.5, "optimizer": "Adam"},
     {"dropout": 0.3, "lr": 0.1, "loss": 4.5, "optimizer": "Adam"},
 ]
-hip.Experiment.from_iterable(data).display()
+exp = hip.Experiment.from_iterable(data)
+exp.colorby = "loss"
+exp.display()
 ```
 
 ### [See the live result](https://poipoi300.github.io/hiplot/_static/demo/demo_basic_usage.html)
