@@ -1,7 +1,7 @@
 # HiPlot (hiplot-mm)
 
-HiPlot draws high-dimensional data as interactive parallel coordinates, an XY
-scatter, per-column distributions and a table, from Python (notebooks,
+HiPlot draws high-dimensional data as interactive parallel coordinates,
+scatter panels (one-axis distributions, XY, 3D) and a table, from Python (notebooks,
 Streamlit, a web server, standalone HTML) or as a JavaScript library. This
 repository is the community fork published on PyPI as `hiplot-mm`; the import
 package stays `hiplot`.
@@ -59,7 +59,7 @@ breaking it.
   and `src/types.ts`.
 - **payload** — the serialized experiment the Python side embeds in a page or
   sends to the browser; both sides change together.
-- **display / plugin** — one view (parallel plot, XY, distribution, table),
+- **display / plugin** — one view (parallel plot, scatter panels, table),
   a React component receiving `HiPlotPluginData` (`src/plugin.ts`).
 - **filtered rows / selected rows** — rows left after Keep/Exclude, and the
   subset of those inside the current brushes.
@@ -133,8 +133,10 @@ the first run instead of iterating against the gates.
 - `src/` — the TypeScript frontend (React 19 class components, d3 v7).
   - `component.tsx` — the `HiPlot` root: loading, filtering, selection state.
   - `parallel/`, `plotxy.tsx`, `distribution/`, `rowsdisplaytable.tsx` — the
-    displays; `plots/` holds the scatter and distribution panel lists, the
-    3D scatter and its camera.
+    displays; `plots/` holds the scatter panel list (one-axis, XY, 3D), the
+    3D scatter, its camera and lasso, and the scatter statistics.
+  - `stats/` — pure statistics (correlation, regression, distribution fits),
+    computed in the browser because they follow the live selection.
   - `infertypes.ts` — column type inference, scales and colors;
     `filters.ts` — serializable row filters; `lib/` — scales, persisted
     state, helpers.

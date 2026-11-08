@@ -33,6 +33,26 @@ The selected axes are persisted through persistent state (`axis_x`, `axis_y`).
 - **Hover highlighting**: moving over points can highlight parent or child chains.
 - **Context menu mode**: switch highlight mode between `parent` and `children`.
 
+## Statistics
+
+Under each XY scatter, a table gives the selected rows' Pearson r, Spearman
+ρ and n, and the plot draws a fit of y against x in a color chosen away from
+the active color map:
+
+- two numeric columns: a least-squares line, or the means of y in 12 equal
+  bins of x (the toggle beside the table);
+- a category and a number: the number's mean per category with its 95%
+  Student t interval;
+- log axes are fitted in log space (log10 of the values).
+
+## 3D scatter
+
+With Z set the panel is a WebGL 3D scatter: drag to turn, right-, middle- or
+shift-drag to pan, wheel to zoom (only for wheel gestures that start on the
+plot), ctrl-drag or the Select tool to lasso points into the selection,
+double-click to reset. A least-squares plane through the selected points,
+fitted in axis space, is drawn as a grid, unless an axis is categorical.
+
 ## Rendering model
 
 The XY plugin uses layered rendering:

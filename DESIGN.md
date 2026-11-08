@@ -180,8 +180,13 @@ pills. Borders are 1 px hairlines in `--hip-rule`.
 - **Toast**: bottom-right, surface background, floating shadow, ink text;
   errors carry a red dot like Exclude. Disappears after a few seconds or on
   dismiss.
-- **Badges over plots**: pills in the background color with ink text, at
-  reduced opacity so the lines beneath stay legible.
+- **Flow badges**: right of each category next to a brushed axis, a pill in
+  the background color at 82 % opacity with a hairline rule, a muted arrow
+  pointing the way the selection flows and the count in 10.5 px/600 ink.
+- **Fits**: 2 px lines (1.25 px for the 3D plane grid) in the fit color,
+  chosen per color map and theme as the candidate hue furthest in Lab from
+  every data color with ≥ 3:1 contrast on the background; reference
+  curves (KDE) are dashed in Pencil. A caption states the method.
 
 ## Do's and Don'ts
 

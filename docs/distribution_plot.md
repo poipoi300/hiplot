@@ -1,11 +1,28 @@
-# Distribution Plot
+# One-axis plot (distribution)
 
-This page explains how HiPlot's Distribution plot is computed and rendered.
+This page explains how HiPlot draws the distribution of one column. It is a
+scatter panel with only X set: pick X alone in a scatter panel, or choose
+**View distribution** in a column's right-click menu, which opens (or reuses)
+such a panel. There is no separate Distributions section any more; pages
+saved with distribution plots, and `exp.display_data(hip.Displays.DISTRIBUTION)`
+with an `axis`, open one-axis panels instead, and its `nbins` sets their bins.
 
 ## Key files
 
-- `src/distribution/plugin.tsx`: plugin wiring, axis selection, and data sources.
+- `src/distribution/plugin.tsx`: `DistributionView`, the one-axis plot of a scatter panel.
 - `src/distribution/plot.tsx`: histogram binning, axis layout, and SVG rendering.
+- `src/distribution/fit.ts`, `src/stats/distributions.ts`: the fitted density.
+
+## Fitted density
+
+For numeric columns the plot draws, over the selected rows' histogram, the
+distribution that fits the selection best by BIC among normal, log-normal,
+exponential and gamma (positive values), beta (values in (0, 1)) and
+Student t, plus a dashed kernel density estimate for reference. The caption
+states the winner with its fitted parameters and formula, the runner-up and
+its ΔBIC. Beyond 5,000 values an evenly spaced sample is fitted.
+
+A row hovered anywhere on the page is marked across the plot in its color.
 
 ## Data sources
 
