@@ -279,6 +279,94 @@ for (const deviceScaleFactor of [0.5, 1, 2]) {
   });
 }
 
+// A hairline (ratio 0.5) is too faint for its 8-bit opacity to measure this.
+for (const deviceScaleFactor of [1, 2]) {
+  test.describe(`at device pixel ratio ${deviceScaleFactor}`, () => {
+    test.use({ deviceScaleFactor });
+
+    test("a line keeps one intensity along its length at any slope", async ({ page }) => {
+      // One row over twelve axes, its segments as steep as 0.14 to 4.2
+      // pixels per pixel; the range rows run along the top and bottom.
+      const line = [0.5, 0.45, 0.2, 0.9, 0.1, 0.6, 0.55, 0.58, 0.3, 0.95, 0.05, 0.5];
+      const names = [...line.map((_, i) => `c${i}`), "k"];
+      const rows = [
+        [...line, 0],
+        [...line.map(() => 0), 1],
+        [...line.map(() => 1), 2],
+      ];
+      await uploadRows(page, names, rows, "k");
+      // Per segment, the opacity summed across the line in each pixel column
+      // (each pixel row where the line is steep), times the cosine (sine) of
+      // its angle: the line's intensity per unit length, which exact pixel
+      // coverage keeps whatever the line's offset between pixel centers. Its
+      // coefficient of variation along the segment, clear of the axes.
+      const variations = await page.evaluate(() => {
+        const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
+          | (ParallelPlotHandle & CoverageProbe & BundleProbe)
+          | null;
+        const canvas = pp?.foreground_ref.current;
+        if (!pp || !canvas) {
+          throw new Error("No parallel plot");
+        }
+        pp.redrawLines();
+        const copy = document.createElement("canvas");
+        copy.width = canvas.width;
+        copy.height = canvas.height;
+        const context = copy.getContext("2d");
+        if (context === null) {
+          throw new Error("No 2D context");
+        }
+        // Same task as the draw, so a WebGL buffer has not been presented and cleared yet.
+        context.drawImage(canvas, 0, 0);
+        const { data } = context.getImageData(0, 0, copy.width, copy.height);
+        const alphaAt = (x: number, y: number) => data[(y * copy.width + x) * 4 + 3] / 255;
+        const row = pp.props.rows_filtered[0];
+        const ratio = pp.pixelRatio;
+        const points = pp.state.dimensions.map((dimension) => [
+          (pp.position(dimension) - pp.scrollLeft) * ratio,
+          pp.yscale[dimension](row[dimension]) * ratio,
+        ]);
+        const result: { slope: number; variation: number }[] = [];
+        for (let i = 1; i < points.length; ++i) {
+          const [[x0, y0], [x1, y1]] = [points[i - 1], points[i]];
+          const slope = (y1 - y0) / (x1 - x0);
+          const steep = Math.abs(slope) > 1;
+          // Across the line: rows of a column, or columns of a row.
+          const [from, to] = steep ? [y0, y1] : [x0, x1];
+          const projection = steep
+            ? Math.abs(Math.sin(Math.atan(slope)))
+            : Math.cos(Math.atan(slope));
+          const sums: number[] = [];
+          for (
+            let along = Math.ceil(Math.min(from, to) + 0.15 * Math.abs(to - from));
+            along < Math.max(from, to) - 0.15 * Math.abs(to - from);
+            ++along
+          ) {
+            const center = steep
+              ? x0 + (along + 0.5 - y0) / slope
+              : y0 + (along + 0.5 - x0) * slope;
+            let sum = 0;
+            for (let across = Math.floor(center) - 4; across <= Math.ceil(center) + 4; ++across) {
+              sum += steep ? alphaAt(across, along) : alphaAt(along, across);
+            }
+            sums.push(sum * projection);
+          }
+          const mean = sums.reduce((total, sum) => total + sum, 0) / sums.length;
+          const variance = sums.reduce((total, sum) => total + (sum - mean) ** 2, 0) / sums.length;
+          result.push({ slope, variation: Math.sqrt(variance) / mean });
+        }
+        return result;
+      });
+      expect(variations).toHaveLength(11);
+      // Exact coverage varies by 0.25% at most before the canvas rounds each
+      // pixel's opacity to 8 bits; a tent of coverage, by up to 6%.
+      for (const { slope, variation } of variations) {
+        expect({ slope, variation: variation < 0.02 }).toEqual({ slope, variation: true });
+      }
+    });
+  });
+}
+
 for (const [mode, expected] of [
   ["mean", "the color map at their mean value"],
   ["lowest", "the lowest value's color"],

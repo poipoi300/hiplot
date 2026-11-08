@@ -105,9 +105,10 @@ const MITER_LIMIT = 4;
 /**
  * One instance per segment of a line. A segment is a triangle strip through
  * `u_samples` points along it, widened on both sides by half the line's
- * footprint (see COVERAGE) plus half a device pixel, where coverage reaches
- * zero; `v_across` is the signed distance from the center line in device
- * pixels, from which fragments take their coverage.
+ * footprint (see COVERAGE) plus the half extent of a device pixel across
+ * the line, where coverage reaches zero; `v_across` is the signed distance
+ * from the center line in device pixels and `v_footprint` the pixel's
+ * extents across it, from which fragments take their coverage.
  *
  * The strip is a polyline of chords between the sampled points, so each
  * point is pushed out along the miter of its two chords: every chord then
@@ -146,6 +147,7 @@ out vec3 v_rgb;
 flat out float v_value;
 out float v_selected;
 out float v_across;
+out vec2 v_footprint;
 
 ivec2 at(int index) {
   return ivec2(index % u_textureWidth, index / u_textureWidth);
@@ -278,6 +280,7 @@ void main() {
     v_value = -1.0;
     v_selected = 0.0;
     v_across = 0.0;
+    v_footprint = vec2(1.0, 0.0);
     return;
   }
 
@@ -287,7 +290,9 @@ void main() {
   float step = 1.0 / float(u_samples - 1);
   float t = float(point) * step;
   vec2 position = pointOf(current, t);
-  float extent = max(u_halfWidth, 0.5) + 0.5;
+  // Plain lines cover their pixels fully: a pixel is one pixel wide across a level line.
+  vec2 footprint = vec2(1.0, 0.0);
+  float extent = 0.0;
   if (u_antialiased) {
     // The chords into and out of this point; at a segment's end, from the
     // segment it joins (an axis the row has a value on).
@@ -311,6 +316,10 @@ void main() {
     }
     vec2 normalIn = chordNormal(before, position);
     vec2 normalOut = chordNormal(position, after);
+    // A pixel spans |n.x| + |n.y| across a line of unit normal n, here the
+    // chord of this segment the point starts (or, at its end, finishes).
+    footprint = abs(point < u_samples - 1 ? normalOut : normalIn);
+    extent = max(u_halfWidth, 0.5) + 0.5 * (footprint.x + footprint.y);
     vec2 offset = hasBefore ? normalIn : normalOut;
     if (hasBefore && hasAfter) {
       vec2 miter = normalIn + normalOut;
@@ -331,22 +340,52 @@ void main() {
   v_value = int(bin) < u_colorMapBins ? float(bin) / float(u_colorMapBins - 1) : -1.0;
   v_selected = selected ? 1.0 : 0.0;
   v_across = side * extent;
+  v_footprint = footprint;
 }
 `;
 
 /**
  * Coverage of a device pixel `v_across` from the center of a line
- * `2 * u_halfWidth` wide: the overlap of the pixel with the line, measured
- * across it. A line narrower than a pixel keeps a one-pixel footprint and
- * fades with its width, as Canvas 2D hairlines do, so its coverage summed
- * across the line stays its width wherever it falls between pixel centers.
+ * `2 * u_halfWidth` wide: the exact fraction of the pixel's square inside
+ * the line, a box filter. Across a line of unit normal n, the square's area
+ * spreads as the sum of two uniform spans |n.x| and |n.y| wide, a
+ * trapezoid; the coverage is its share within the line's half width of the
+ * pixel center. Summed over a column of pixels, it is the line's area in
+ * that column, so a line's intensity per unit length is the same at every
+ * slope and wherever it falls between pixel centers. A line narrower than a
+ * pixel keeps a one-pixel footprint and fades with its width, as Canvas 2D
+ * hairlines do.
  */
 const COVERAGE = `
 uniform float u_halfWidth;
 in float v_across;
+in vec2 v_footprint;
+/** Share of the pixel's square within \`x\` across the line of its center. */
+float squareBelow(float x, float narrow, float wide) {
+  float outer = 0.5 * (narrow + wide);
+  float inner = 0.5 * (wide - narrow);
+  if (x <= -outer) {
+    return 0.0;
+  }
+  if (x >= outer) {
+    return 1.0;
+  }
+  if (x < -inner) {
+    return (x + outer) * (x + outer) / (2.0 * narrow * wide);
+  }
+  if (x <= inner) {
+    return 0.5 + x / wide;
+  }
+  return 1.0 - (outer - x) * (outer - x) / (2.0 * narrow * wide);
+}
 float coverage() {
   float halfFootprint = max(u_halfWidth, 0.5);
-  return clamp(halfFootprint + 0.5 - abs(v_across), 0.0, 1.0) * min(2.0 * u_halfWidth, 1.0);
+  vec2 spans = normalize(v_footprint);
+  float narrow = min(spans.x, spans.y);
+  float wide = max(spans.x, spans.y);
+  float inside = squareBelow(v_across + halfFootprint, narrow, wide) -
+    squareBelow(v_across - halfFootprint, narrow, wide);
+  return inside * min(2.0 * u_halfWidth, 1.0);
 }
 `;
 
