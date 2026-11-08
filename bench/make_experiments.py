@@ -20,7 +20,7 @@ from pathlib import Path
 
 import hiplot as hip
 
-DEFAULT_SIZES = ("5000x20", "20000x30", "50000x50")
+DEFAULT_SIZES = ("5000x20", "20000x30", "50000x50", "100000x30")
 CATEGORY_POOLS = (
     ("adam", "sgd", "rmsprop", "adagrad"),
     ("relu", "gelu", "tanh", "silu", "elu", "mish"),

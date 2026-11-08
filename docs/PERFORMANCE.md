@@ -5,7 +5,7 @@ to the rendering path is measured against the same numbers.
 
 ## Method
 
-`bench/make_experiments.py` generates three seeded experiments and renders
+`bench/make_experiments.py` generates four seeded experiments and renders
 each to a standalone HTML page:
 
 | Size | Rows | Columns | Column mix |
@@ -13,7 +13,7 @@ each to a standalone HTML page:
 | 5k × 20 | 5,000 | 20 | linear numeric, log-scale numeric (seven decades), categorical (3 to 12 values), sparse numeric with 2% inf and 3% NaN |
 | 20k × 30 | 20,000 | 30 | same rotation |
 | 50k × 50 | 50,000 | 50 | same rotation |
-| 100k × 30 | 100,000 | 30 | same rotation (measured from the second round on; `--sizes 100000x30`) |
+| 100k × 30 | 100,000 | 30 | same rotation (measured from the second round on, and part of the default run since the seventh) |
 
 `bench/run.ts` opens each page in headless Chromium (full build, GPU enabled,
 1600 × 1000 viewport) and measures, per page load:
