@@ -18,8 +18,10 @@ async function loadDemo(page: Page, query = ""): Promise<void> {
 }
 
 const axes = (page: Page) => page.locator("svg g.dimension");
-const columnBox = (page: Page, name: string) =>
-  page.getByRole("dialog", { name: "Columns shown as axes" }).getByRole("checkbox", { name });
+const columnOption = (page: Page, name: string) =>
+  page
+    .getByRole("dialog", { name: "Columns shown as axes" })
+    .getByRole("option", { name, exact: true });
 
 test("showing a column hidden since the page loaded adds its axis", async ({ page }) => {
   const errors: string[] = [];
@@ -27,9 +29,9 @@ test("showing a column hidden since the page loaded adds its axis", async ({ pag
   await loadDemo(page, `?hip.PARALLEL_PLOT.hide=${encodeURIComponent('["lr","optimizer"]')}`);
   const before = await axes(page).count();
   await page.getByTestId("columns-button").click();
-  await columnBox(page, "lr").check();
+  await columnOption(page, "lr").click();
   await expect(axes(page)).toHaveCount(before + 1);
-  await columnBox(page, "optimizer").check();
+  await columnOption(page, "optimizer").click();
   await expect(axes(page)).toHaveCount(before + 2);
   await expect(page.getByTestId("toast")).toHaveCount(0);
   expect(errors).toEqual([]);
@@ -48,8 +50,8 @@ test("a column whose axis cannot be built is refused and the columns stay", asyn
     };
   });
   await page.getByTestId("columns-button").click();
-  // A plain click: the refused box does not stay ticked.
-  await columnBox(page, "lr").click();
+  await columnOption(page, "lr").click();
+  await expect(columnOption(page, "lr")).toHaveAttribute("aria-selected", "false");
   await expect(page.getByTestId("toast")).toContainText('Could not show "lr"');
   await expect(page.getByTestId("toast")).toContainText("no scale for this column");
   await expect(axes(page)).toHaveCount(before);
@@ -71,7 +73,7 @@ test("a display that crashes applying a change is rebuilt with its previous stat
     };
   });
   await page.getByTestId("columns-button").click();
-  await columnBox(page, "lr").click();
+  await columnOption(page, "lr").click();
   await expect(page.getByTestId("toast")).toContainText("was restored: layout failed");
   // The rebuilt plot is a fresh instance, without the broken layout, at the previous columns.
   await expect(axes(page)).toHaveCount(before);

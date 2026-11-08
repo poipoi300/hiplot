@@ -112,8 +112,8 @@ test.describe("column menu", () => {
     const before = await axisNames(page);
     await page.getByTestId("columns-button").click();
     const menu = page.getByRole("dialog", { name: "Columns shown as axes" });
-    await menu.getByRole("searchbox", { name: "Filter columns" }).fill("option");
-    await expect(menu.getByRole("checkbox")).toHaveCount(2);
+    await menu.getByRole("combobox", { name: "Filter columns" }).fill("option");
+    await expect(menu.getByRole("option")).toHaveCount(2);
     await menu.getByRole("button", { name: "Deselect all", exact: true }).click();
     await expect.poll(() => axisNames(page)).toHaveLength(before.length - 2);
     expect(await axisNames(page)).not.toContain("optionA");
@@ -121,25 +121,90 @@ test.describe("column menu", () => {
     await expect.poll(() => axisNames(page)).toHaveLength(before.length);
   });
 
-  test("a checkbox toggles one column and the badge counts the shown ones", async ({ page }) => {
+  test("an option toggles one column and the badge counts the shown ones", async ({ page }) => {
     await loadDemo(page);
     const button = page.getByTestId("columns-button");
     const total = (await axisNames(page)).length;
     await expect(button).toContainText(`${total}/`);
     await button.click();
     const menu = page.getByRole("dialog", { name: "Columns shown as axes" });
-    await menu.getByRole("checkbox", { name: "seed" }).uncheck();
+    const seed = menu.getByRole("option", { name: "seed", exact: true });
+    await expect(seed).toHaveAttribute("aria-selected", "true");
+    await seed.click();
     await expect.poll(() => axisNames(page)).not.toContain("seed");
+    await expect(seed).toHaveAttribute("aria-selected", "false");
     await expect(button).toContainText(`${total - 1}/`);
-    await menu.getByRole("checkbox", { name: "seed" }).check();
+    await seed.click();
     await expect.poll(() => axisNames(page)).toContain("seed");
+  });
+
+  test("the arrow keys walk the list from the filter and Enter toggles a column", async ({
+    page,
+  }) => {
+    await loadDemo(page);
+    await page.getByTestId("columns-button").click();
+    const menu = page.getByRole("dialog", { name: "Columns shown as axes" });
+    const filter = menu.getByRole("combobox", { name: "Filter columns" });
+    await filter.fill("seed");
+    const seed = menu.getByRole("option", { name: "seed", exact: true });
+    await expect(filter).toHaveAttribute(
+      "aria-activedescendant",
+      (await seed.getAttribute("id")) ?? "",
+    );
+    await expect(seed).toHaveAttribute("aria-selected", "true");
+    await filter.press("Enter");
+    await expect.poll(() => axisNames(page)).not.toContain("seed");
+    await expect(seed).toHaveAttribute("aria-selected", "false");
+    await filter.fill("");
+    await expect(filter).not.toHaveAttribute("aria-activedescendant");
+    await filter.press("ArrowDown");
+    await filter.press("ArrowDown");
+    const second = menu.getByRole("option").nth(1);
+    await expect(second).toHaveAttribute("data-keyboard", "true");
+    await expect(filter).toHaveAttribute(
+      "aria-activedescendant",
+      (await second.getAttribute("id")) ?? "",
+    );
+    await expect(filter).toBeFocused();
+  });
+
+  test("the list sits flush in its panel: no list padding, rows inset alike", async ({ page }) => {
+    await loadDemo(page);
+    await page.getByTestId("columns-button").click();
+    const menu = page.getByRole("dialog", { name: "Columns shown as axes" });
+    const geometry = await menu.evaluate((panel) => {
+      const list = panel.querySelector("[role=listbox]");
+      const option = panel.querySelector("[role=option]");
+      const filter = panel.querySelector("input");
+      if (list === null || option === null || filter === null) {
+        throw new Error("No list");
+      }
+      const label = option.firstElementChild;
+      if (label === null) {
+        throw new Error("No option label");
+      }
+      const listStyle = getComputedStyle(list);
+      return {
+        bottomGap: panel.getBoundingClientRect().bottom - list.getBoundingClientRect().bottom,
+        paddingLeft: listStyle.paddingLeft,
+        textInset: label.getBoundingClientRect().left - filter.getBoundingClientRect().left,
+        rowInset: option.getBoundingClientRect().left - panel.getBoundingClientRect().left,
+        fontSize: getComputedStyle(option).fontSize,
+      };
+    });
+    expect(geometry.bottomGap).toBeLessThanOrEqual(11);
+    expect(geometry.paddingLeft).toBe("0px");
+    // Row text lines up with the filter's text: its border and padding.
+    expect(Math.abs(geometry.textInset - 10)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(geometry.rowInset - 7)).toBeLessThanOrEqual(0.5);
+    expect(geometry.fontSize).toBe("14px");
   });
 
   test("Escape closes the menu and returns focus to its button", async ({ page }) => {
     await loadDemo(page);
     await page.getByTestId("columns-button").click();
     const menu = page.getByRole("dialog", { name: "Columns shown as axes" });
-    await expect(menu.getByRole("searchbox")).toBeFocused();
+    await expect(menu.getByRole("combobox")).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(menu).toBeHidden();
     await expect(page.getByTestId("columns-button")).toBeFocused();
@@ -149,7 +214,7 @@ test.describe("column menu", () => {
     await loadDemo(page);
     await page.getByTestId("columns-button").click();
     const menu = page.getByRole("dialog", { name: "Columns shown as axes" });
-    await menu.getByRole("searchbox").fill("no such column");
+    await menu.getByRole("combobox").fill("no such column");
     await expect(menu).toContainText("No column matches");
     await page.mouse.click(5, 5);
     await expect(menu).toBeHidden();

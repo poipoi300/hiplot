@@ -24,6 +24,7 @@ import {
 } from "../infertypes";
 import { IS_MOBILE } from "../lib/browsercompat";
 import type { RGB } from "../lib/colors";
+import { ColumnPicker, type PickableColumn } from "../lib/columnpicker";
 import controls from "../lib/controls.module.css";
 import { labelTextFromHtml } from "../lib/escape";
 import { mounted } from "../lib/refs";
@@ -56,7 +57,6 @@ import {
   savedBrushIntervals,
 } from "./brushes";
 import { categoryTagTexts, placeBrushTags, type TagTexts } from "./brushtags";
-import { ColumnPicker, type PickableColumn } from "./columnpicker";
 import { categoryIndices, countByCategory, type FlowAxis, flowAxes } from "./flow";
 import { LineGeometry } from "./geometry";
 import pstyle from "./parallel.module.css";

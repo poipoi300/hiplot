@@ -1,0 +1,153 @@
+/*
+ * The column picker: a filter box over a list of columns. Rows bleed toward
+ * the panel's edges so their highlight has room, and their text lines up
+ * with the filter's. The list is made of divs: the scoped Bootstrap reboot
+ * would pad and space a `ul`.
+ */
+.badge {
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--hip-brush-fill);
+  color: var(--hip-fg);
+  font-size: 11px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.search {
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--hip-rule);
+  border-radius: 6px;
+  background: var(--hip-bg);
+  color: var(--hip-fg);
+  font: inherit;
+  font-size: 14px;
+}
+.search::placeholder {
+  color: var(--hip-muted);
+  opacity: 1;
+}
+.search:focus {
+  outline: 2px solid var(--hip-accent);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+
+/* The first action's text lines up with the rows'. */
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 -4px 0 2px;
+}
+.actions button {
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--hip-accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms ease-out;
+}
+.actions button:hover:not(:disabled) {
+  background: var(--hip-brush-fill);
+}
+.actions button:focus-visible {
+  outline: 2px solid var(--hip-accent);
+  outline-offset: -2px;
+}
+.actions button:disabled {
+  color: var(--hip-muted);
+  opacity: 0.6;
+  cursor: default;
+}
+.count {
+  margin-left: auto;
+  padding-right: 4px;
+  color: var(--hip-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  max-height: min(380px, 55vh);
+  margin: 0 -4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--hip-axis) transparent;
+}
+.option {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 0 10px 0 14px;
+  border-radius: 6px;
+  color: var(--hip-fg);
+  font-size: 14px;
+  line-height: 20px;
+  cursor: pointer;
+  transition: background-color 80ms ease-out;
+}
+/* Selected rows tint one band: corners only where a run of them starts and ends. */
+.option[aria-selected="true"] {
+  background: color-mix(in srgb, var(--hip-accent) 8%, transparent);
+}
+.option[aria-selected="true"] + .option[aria-selected="true"]:not([data-active="true"]) {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.option[aria-selected="true"]:not([data-active="true"]):has(+ .option[aria-selected="true"]) {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.option[data-active="true"] {
+  background: color-mix(in srgb, var(--hip-fg) 7%, transparent);
+}
+.option[aria-selected="true"][data-active="true"] {
+  background: color-mix(in srgb, var(--hip-accent) 16%, transparent);
+}
+.option[data-keyboard="true"] {
+  box-shadow: inset 0 0 0 2px var(--hip-accent);
+}
+.label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.none .label {
+  color: var(--hip-muted);
+}
+.check {
+  flex: none;
+  color: var(--hip-accent);
+  visibility: hidden;
+}
+.option[aria-selected="true"] .check {
+  visibility: visible;
+}
+.empty {
+  margin: 0;
+  padding: 2px 5px;
+  color: var(--hip-muted);
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .option,
+  .actions button {
+    transition: none;
+  }
+}
