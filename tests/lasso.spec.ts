@@ -92,6 +92,63 @@ async function lasso(
   await page.keyboard.up(modifier);
 }
 
+/** An XY scatter of two linear columns, whose ticks follow a zoom. */
+async function openXY(page: Page): Promise<Locator> {
+  await page.getByRole("button", { name: "Add scatter plot" }).click();
+  const panel = page.getByTestId("scatter-panel").last();
+  await pickColumn(panel, "X", "r");
+  await pickColumn(panel, "Y", "pct_success");
+  const svg = panel.getByRole("img", { name: /XY scatter plot/ });
+  await expect(svg.locator(".tick text").first()).toBeAttached();
+  await svg.scrollIntoViewIfNeeded();
+  return svg;
+}
+
+test("a Ctrl-drag lassos the XY scatter, deselected points included; a drag still zooms", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  await brushAxis(page, "lr", 0.05, 0.2);
+  const brushed = new Set(await selectedUids(page));
+  const svg = await openXY(page);
+  const ticks = () => svg.locator(".tick text").allTextContents();
+  const unzoomed = await ticks();
+  await lasso(page, svg, [0.15, 0.15], [0.85, 0.75]);
+  await expect(page.getByTestId("lasso-selection")).toBeVisible();
+  const lassoed = await selectedUids(page);
+  expect(lassoed.length).toBeGreaterThan(0);
+  expect(lassoed.some((uid) => !brushed.has(uid))).toBe(true);
+  // The lasso did not zoom.
+  expect(await ticks()).toEqual(unzoomed);
+  await expect(page.getByTestId("scatter-panel").last().getByTestId("scatter-hint")).toHaveText(
+    "Drag to zoom · Click to zoom out · Ctrl-drag to lasso",
+  );
+
+  const box = await boxOf(svg);
+  await page.mouse.move(box.x + box.width * 0.3, box.y + box.height * 0.3);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.6, box.y + box.height * 0.6, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(ticks).not.toEqual(unzoomed);
+  expect(await selectedUids(page)).toEqual(lassoed);
+});
+
+test("a lasso over a zoomed XY scatter takes only the points in view", async ({ page }) => {
+  await loadDemo(page);
+  const svg = await openXY(page);
+  const box = await boxOf(svg);
+  // Zooms into the left half of the plot.
+  await page.mouse.move(box.x + box.width * 0.1, box.y + box.height * 0.1);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.45, box.y + box.height * 0.8, { steps: 6 });
+  await page.mouse.up();
+  // A lasso around the whole panel, margins included.
+  await lasso(page, svg, [0.01, 0.01], [0.99, 0.99]);
+  const lassoed = await selectedUids(page);
+  expect(lassoed.length).toBeGreaterThan(0);
+  expect(lassoed.length).toBeLessThan(await filteredCount(page));
+});
+
 async function open3D(page: Page): Promise<Locator> {
   await page.getByRole("button", { name: "Add scatter plot" }).click();
   const panel = page.getByTestId("scatter-panel").last();

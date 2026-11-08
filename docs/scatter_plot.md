@@ -36,7 +36,10 @@ The panels and their columns are persisted in the page state (`panels`).
 ## Interactions
 
 - **Brush zoom**: drag in the XY panel to zoom into a rectangular region.
-- **Reset zoom**: clear the brush selection.
+- **Reset zoom**: click the plot without dragging.
+- **Lasso**: ctrl-drag (cmd-drag on a Mac) around points to select them (see
+  Lasso selection below). Rows outside the selection are drawn as faint gray
+  dots beneath it, so they can be lassoed too.
 - **Hover highlighting**: moving over points can highlight parent or child chains.
 - **Context menu mode**: switch highlight mode between `parent` and `children`.
 

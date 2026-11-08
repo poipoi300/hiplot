@@ -10,6 +10,7 @@ import $ from "jquery";
 import React from "react";
 import _ from "underscore";
 import { ContextMenu } from "./contextmenu";
+import { lassoFilter } from "./filters";
 import style from "./hiplot.module.css";
 import { create_d3_scale, type ParamDef, type ParamScale } from "./infertypes";
 import { IS_MOBILE } from "./lib/browsercompat";
@@ -22,6 +23,9 @@ import { mounted } from "./lib/refs";
 import { ResizableH } from "./lib/resizable";
 import { isString, readState } from "./lib/savedstate";
 import { columnAxisStyle, valueFormatter } from "./parallel/axisformat";
+import { LASSO_GESTURE, lassoed, type ScreenPoint } from "./plots/lasso";
+import { LassoSurface } from "./plots/lassosurface";
+import pstyle from "./plots/plots.module.css";
 import { type FitMode, isFitMode, type ScatterStats, scatterStats } from "./plots/scatterstats";
 import type { HiPlotPluginData } from "./plugin";
 import { formatParameter } from "./stats/distributions";
@@ -71,6 +75,10 @@ interface PlotXYState extends PlotXYDisplayData {
 }
 
 const COUNT_FORMAT = new Intl.NumberFormat("en-US");
+/** Opacity of the dots of rows outside the selection, per theme. */
+const CONTEXT_DOT_ALPHA = { light: 0.28, dark: 0.32 } as const;
+/** The controls, as the hint under the plot lists them. */
+const CONTROLS_HINT = `Drag to zoom · Click to zoom out · ${LASSO_GESTURE} to lasso`;
 /** Distinguishes the clip paths of the fits of several scatters on one page. */
 let fitClipCount = 0;
 /** Width of the caps at the ends of a category mean's interval. */
@@ -184,6 +192,7 @@ function buildAxis(
 interface PlotXYInternal {
   svg: SvgSelection;
   clear_canvas: () => void;
+  lassoed_rows: (polygon: ReadonlyArray<ScreenPoint>) => Datapoint[];
   update_axis: () => void;
   recompute_scale: () => void;
   draw_selected_rows: () => void;
@@ -489,6 +498,8 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
       };
       zoom_brush = d3
         .brush()
+        // A Ctrl- or Cmd-drag is a lasso (see LassoSurface), not a zoom.
+        .filter((event: MouseEvent) => !event.button && !event.ctrlKey && !event.metaKey)
         .extent([
           [margin.left, margin.top],
           [me.state.width - margin.right, me.state.height - margin.bottom],
@@ -666,6 +677,53 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
 
     hover(svg);
 
+    function is_err(value: DatapointValue, scaled_value: number, def: ParamDef) {
+      return (
+        value === undefined ||
+        value === null ||
+        Number.isNaN(scaled_value) ||
+        (def.numeric && (value === "inf" || value === "-inf"))
+      );
+    }
+    /** Where a row's point is drawn, in the SVG's pixels; null when it lacks a value. */
+    function svg_position(point: Datapoint, axes: { x: string; y: string }): ScreenPoint | null {
+      const x = x_scale(point[axes.x]);
+      const y = y_scale(point[axes.y]);
+      if (
+        is_err(point[axes.x], x, me.props.params_def[axes.x]) ||
+        is_err(point[axes.y], y, me.props.params_def[axes.y])
+      ) {
+        return null;
+      }
+      return { x, y };
+    }
+    /**
+     * The rows Keep and Exclude left, selected or not, whose points fall inside
+     * a lasso drawn over the plot, at the current zoom: points zoomed out of
+     * the plot area are not drawn, so a lasso cannot take them.
+     */
+    function lassoed_rows(polygon: ReadonlyArray<ScreenPoint>): Datapoint[] {
+      const axes = me.requireAxes();
+      const rows = me.props.rows_filtered;
+      const right = me.state.width - margin.right;
+      const bottom = me.state.height - margin.bottom;
+      const inside = lassoed(
+        rows.length,
+        (index) => {
+          const point = svg_position(rows[index], axes);
+          return point !== null &&
+            point.x >= margin.left &&
+            point.x <= right &&
+            point.y >= margin.top &&
+            point.y <= bottom
+            ? point
+            : null;
+        },
+        polygon,
+      );
+      return inside.map((index) => rows[index]);
+    }
+
     function render_dp(
       dp: Datapoint,
       ctx: CanvasRenderingContext2D,
@@ -675,34 +733,15 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
       if (c.lines_color) ctx.strokeStyle = c.lines_color;
       if (c.dots_color) ctx.fillStyle = c.dots_color;
       if (c.lines_width) ctx.lineWidth = c.lines_width;
-      const pdx = me.props.params_def[axes.x];
-      const pdy = me.props.params_def[axes.y];
-      function is_err(value: DatapointValue, scaled_value: number, def: ParamDef) {
-        return (
-          value === undefined ||
-          value === null ||
-          Number.isNaN(scaled_value) ||
-          (def.numeric && (value === "inf" || value === "-inf"))
-        );
-      }
       function render_point_position(point: Datapoint) {
-        let x = x_scale(point[axes.x]);
-        let y = y_scale(point[axes.y]);
-        x -= margin.left;
-        y -= margin.top;
-
-        const err = is_err(point[axes.x], x, pdx) || is_err(point[axes.y], y, pdy);
-        if (err) {
+        const position = svg_position(point, axes);
+        if (position === null) {
           return null;
         }
         if (c.remember) {
-          currently_displayed.push({
-            layerX: x + margin.left,
-            layerY: y + margin.top,
-            dp: point,
-          });
+          currently_displayed.push({ layerX: position.x, layerY: position.y, dp: point });
         }
-        return { x: x, y: y };
+        return { x: position.x - margin.left, y: position.y - margin.top };
       }
       const pos = render_point_position(dp);
       if (pos === null) {
@@ -830,6 +869,37 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
           axes,
         );
       });
+      draw_context_rows(axes);
+    }
+
+    /**
+     * The rows outside the selection, as faint dots beneath it: they are
+     * still there to be lassoed. Drawn after the selection, which the
+     * "destination-over" compositing keeps on top.
+     */
+    function draw_context_rows(axes: { x: string; y: string }): void {
+      const { rows_selected, rows_filtered } = me.props;
+      if (rows_selected === rows_filtered) {
+        return;
+      }
+      const chosen = new Set(rows_selected);
+      const token = getComputedStyle(mounted(me.root_ref)).getPropertyValue("--hip-context-line");
+      const color = d3.color(token.trim());
+      if (color === null) {
+        throw new Error(`--hip-context-line is not a color: "${token}"`);
+      }
+      color.opacity = me.props.dark ? CONTEXT_DOT_ALPHA.dark : CONTEXT_DOT_ALPHA.light;
+      const contextStyle: DrawStyle = {
+        lines_color: "",
+        lines_width: 0,
+        dots_color: color.formatRgb(),
+        dots_thickness: me.props.dots_thickness,
+      };
+      for (const dp of rows_filtered) {
+        if (!chosen.has(dp)) {
+          render_dp(dp, graph_lines, contextStyle, axes);
+        }
+      }
     }
 
     function clear_canvas() {
@@ -929,6 +999,7 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
     return {
       svg: svg,
       clear_canvas: clear_canvas,
+      lassoed_rows: lassoed_rows,
       update_axis: update_axis,
       recompute_scale: recompute_scale,
       draw_selected_rows: draw_selected_rows,
@@ -946,6 +1017,14 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
       this.setState({ height: height, width: width });
     }
   }, 100);
+  /** A lasso's rows replace the selection. */
+  onLasso = (polygon: ReadonlyArray<ScreenPoint>): void => {
+    if (this.plot === null) {
+      throw new Error("A lasso was drawn over an XY plot that is not drawn");
+    }
+    const rows = this.plot.lassoed_rows(polygon);
+    this.props.setSelected(rows, lassoFilter(rows));
+  };
   disable(): void {
     if (this.props.onClose !== undefined) {
       this.props.onClose();
@@ -973,22 +1052,27 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
       >
         <ContextMenu ref={this.plotXYcontextMenuRef} />
         {this.state.width > 0 && (
-          <div
-            role="application"
-            aria-label="XY plot, right click for highlight options"
-            onContextMenu={this.plotXYcontextMenuRef.current?.onContextMenu}
-            ref={this.root_ref}
-            style={{ height: this.state.height }}
-          >
-            <canvas ref={this.canvas_lines_ref} style={{ position: "absolute" }}></canvas>
-            <canvas ref={this.canvas_highlighted_ref} style={{ position: "absolute" }}></canvas>
-            <svg
-              className={style["plotxy-graph-svg"]}
-              style={{ position: "absolute" }}
-              role="img"
-              aria-label="XY scatter plot"
-            ></svg>
-          </div>
+          <LassoSurface onLasso={this.onLasso}>
+            <div
+              role="application"
+              aria-label="XY plot, right click for highlight options"
+              onContextMenu={this.plotXYcontextMenuRef.current?.onContextMenu}
+              ref={this.root_ref}
+              style={{ height: this.state.height }}
+            >
+              <canvas ref={this.canvas_lines_ref} style={{ position: "absolute" }}></canvas>
+              <canvas ref={this.canvas_highlighted_ref} style={{ position: "absolute" }}></canvas>
+              <svg
+                className={style["plotxy-graph-svg"]}
+                style={{ position: "absolute" }}
+                role="img"
+                aria-label={`XY scatter plot. ${CONTROLS_HINT}`}
+              ></svg>
+            </div>
+            <div className={pstyle.hint} data-testid="scatter-hint">
+              {CONTROLS_HINT}
+            </div>
+          </LassoSurface>
         )}
       </ResizableH>
     );
@@ -1177,6 +1261,7 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
       }
       if (
         this.props.rows_selected !== prevProps.rows_selected ||
+        this.props.dark !== prevProps.dark ||
         scaleRecomputed ||
         colorByChange
       ) {
