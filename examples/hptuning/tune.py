@@ -18,10 +18,11 @@ and writes every trial to a standalone HiPlot page. With --from-parquet, the
 page is rendered again from the trials a previous run wrote with --parquet,
 without training; that path imports neither torch nor optuna.
 
-Recorded per trial: the hyperparameters, the final train and validation
-loss, the best validation loss and its epoch, the validation accuracy, the
-parameter count, a divergence flag, and the wall time the model occupied the
-GPU (the round's time scaled by the model's share of the round's steps).
+Recorded per trial: the hyperparameters; at the kept epoch (lowest unsmoothed
+validation cross entropy, which TPE minimizes) best_val_loss, best_val_accuracy, best_train_loss and
+best_epoch; the same metrics at the last epoch as last_*; the parameter count;
+a divergence flag; and the wall time the model occupied the GPU (the round's
+time scaled by the model's share of the round's steps).
 
 Usage:
     uv run examples/hptuning/tune.py --out hptuning.html [--trials 10000] [--parquet hptuning.parquet]
@@ -36,17 +37,21 @@ import polars as pl
 
 import hiplot as hip
 
+LOG_COLUMNS = ("lr", "weight_decay", "best_val_loss", "best_train_loss", "last_val_loss", "last_train_loss")
+
 
 def write_page(experiment: hip.Experiment, out: Path) -> None:
-    """Writes the trials as a HiPlot page: log axes for rates and losses, colored by accuracy.
+    """Writes the trials as a HiPlot page: log axes for rates and losses, led by the objective.
 
-    The uid is the trial's index in the search, shown as a number next to the
-    accuracy: how many trials it took to get close to the best.
+    The search minimizes best_val_loss, so the page colors, sorts and plots by
+    it. best_* metrics come from each trial's kept epoch; last_* are last-epoch
+    diagnostics, hidden by default. The uid is the trial's index in the search,
+    shown next to the objective: how many trials it took to get close to the best.
     """
-    for log_column in ("lr", "weight_decay", "val_loss", "best_val_loss", "train_loss"):
+    for log_column in LOG_COLUMNS:
         experiment.parameters_definition[log_column].type = hip.ValueType.NUMERIC_LOG
     experiment.parameters_definition["uid"].type = hip.ValueType.NUMERIC
-    experiment.colorby = "val_accuracy"
+    experiment.colorby = "best_val_loss"
     experiment.display_data(hip.Displays.PARALLEL_PLOT).update(
         {
             "order": [
@@ -61,17 +66,17 @@ def write_page(experiment: hip.Experiment, out: Path) -> None:
                 "label_smoothing",
                 "epochs",
                 "best_epoch",
-                "train_loss",
-                "val_loss",
-                "val_accuracy",
+                "best_train_loss",
+                "best_val_accuracy",
+                "best_val_loss",
                 "uid",
                 "diverged",
             ],
-            "hide": ["params", "wall_time_s", "best_val_loss"],
+            "hide": ["params", "wall_time_s", "last_train_loss", "last_val_loss", "last_val_accuracy"],
         }
     )
-    experiment.display_data(hip.Displays.XY).update({"axis_x": "lr", "axis_y": "val_accuracy"})
-    experiment.display_data(hip.Displays.TABLE).update({"order_by": [["val_accuracy", "desc"]]})
+    experiment.display_data(hip.Displays.XY).update({"axis_x": "lr", "axis_y": "best_val_loss"})
+    experiment.display_data(hip.Displays.TABLE).update({"order_by": [["best_val_loss", "asc"]]})
     out.parent.mkdir(parents=True, exist_ok=True)
     experiment.to_html(out)
 

@@ -177,6 +177,16 @@ class Population:
         per_row = (1.0 - self.smoothing) * nll + self.smoothing * smooth
         return (per_row * rows).sum(dim=1) / rows.sum(dim=1)
 
+    def validation_losses(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """Mean plain cross entropy per model [models, rows].
+
+        Label smoothing is a training regularizer: a smoothed loss has a floor
+        that grows with the smoothing amount, so scoring validation with it
+        would rank trials by their smoothing rather than their predictions.
+        """
+        log_probs = torch.log_softmax(logits, dim=-1)
+        return -log_probs.gather(-1, labels.unsqueeze(-1)).squeeze(-1).mean(dim=1)
+
     def step(self, active: torch.Tensor, step_number: int) -> None:
         """One optimizer step for the `active` models: SGD with momentum, Adam or AdamW."""
         with torch.no_grad():
@@ -243,15 +253,16 @@ def train_group(trials: Sequence[Trial], data: Digits, device: torch.device, see
 
     epoch_loss_sum = torch.zeros(count, device=device)
     epoch_loss_steps = torch.zeros(count, device=device)
-    train_loss = torch.full((count,), math.nan, device=device)
-    val_loss = torch.full((count,), math.nan, device=device)
-    val_accuracy = torch.full((count,), math.nan, device=device)
+    last_train_loss = torch.full((count,), math.nan, device=device)
+    last_val_loss = torch.full((count,), math.nan, device=device)
+    last_val_accuracy = torch.full((count,), math.nan, device=device)
     best_val_loss = torch.full((count,), math.inf, device=device)
+    best_val_accuracy = torch.full((count,), math.nan, device=device)
+    best_train_loss = torch.full((count,), math.nan, device=device)
     best_epoch = torch.zeros(count, dtype=torch.long, device=device)
     diverged = torch.zeros(count, dtype=torch.bool, device=device)
     x_val = data.x_val.unsqueeze(0).expand(count, -1, -1)
     y_val = data.y_val.unsqueeze(0).expand(count, -1)
-    val_rows = torch.ones((count, len(data.y_val)), device=device)
 
     started = time.perf_counter()
     for step in range(longest):
@@ -273,14 +284,19 @@ def train_group(trials: Sequence[Trial], data: Digits, device: torch.device, see
             if not bool(ends.any()):
                 continue
             val_logits = population.forward(x_val, train=False, generator=generator)
-            losses_val = population.losses(val_logits, y_val, val_rows)
+            losses_val = population.validation_losses(val_logits, y_val)
             accuracy = (val_logits.argmax(dim=-1) == y_val).float().mean(dim=1)
             epoch = (step + 1) // epoch_length
-            train_loss = torch.where(ends, epoch_loss_sum / epoch_loss_steps.clamp(min=1), train_loss)
-            val_loss = torch.where(ends, losses_val, val_loss)
-            val_accuracy = torch.where(ends, accuracy, val_accuracy)
+            epoch_train_loss = epoch_loss_sum / epoch_loss_steps.clamp(min=1)
+            last_train_loss = torch.where(ends, epoch_train_loss, last_train_loss)
+            last_val_loss = torch.where(ends, losses_val, last_val_loss)
+            last_val_accuracy = torch.where(ends, accuracy, last_val_accuracy)
+            # The kept checkpoint is the epoch with the lowest validation loss; every
+            # best_* metric is read at that same epoch.
             improved = ends & (losses_val < best_val_loss)
             best_val_loss = torch.where(improved, losses_val, best_val_loss)
+            best_val_accuracy = torch.where(improved, accuracy, best_val_accuracy)
+            best_train_loss = torch.where(improved, epoch_train_loss, best_train_loss)
             best_epoch = torch.where(improved, epoch, best_epoch)
             epoch_loss_sum = torch.where(ends, torch.zeros_like(epoch_loss_sum), epoch_loss_sum)
             epoch_loss_steps = torch.where(ends, torch.zeros_like(epoch_loss_steps), epoch_loss_steps)
@@ -291,6 +307,9 @@ def train_group(trials: Sequence[Trial], data: Digits, device: torch.device, see
     results: list[dict[str, Any]] = []
     for index, trial in enumerate(trials):
         failed = bool(diverged[index].item())
+        # A trial that diverged after an improving epoch still has a valid kept
+        # checkpoint; its last-epoch values describe a run that never finished.
+        kept = int(best_epoch[index].item()) > 0
         results.append(
             {
                 "uid": str(trial.number),
@@ -305,11 +324,13 @@ def train_group(trials: Sequence[Trial], data: Digits, device: torch.device, see
                 "epochs": trial.epochs,
                 "label_smoothing": trial.label_smoothing,
                 "params": parameter_count(trial),
-                "train_loss": math.nan if failed else float(train_loss[index].item()),
-                "val_loss": math.nan if failed else float(val_loss[index].item()),
-                "best_val_loss": math.nan if failed else float(best_val_loss[index].item()),
+                "best_val_loss": float(best_val_loss[index].item()) if kept else math.nan,
+                "best_val_accuracy": float(best_val_accuracy[index].item()) if kept else math.nan,
+                "best_train_loss": float(best_train_loss[index].item()) if kept else math.nan,
                 "best_epoch": int(best_epoch[index].item()),
-                "val_accuracy": float(val_accuracy[index].item()) if not failed else math.nan,
+                "last_val_loss": math.nan if failed else float(last_val_loss[index].item()),
+                "last_val_accuracy": math.nan if failed else float(last_val_accuracy[index].item()),
+                "last_train_loss": math.nan if failed else float(last_train_loss[index].item()),
                 "diverged": failed,
                 "wall_time_s": elapsed * float(total_steps[index].item()) / longest,
             }
@@ -318,7 +339,7 @@ def train_group(trials: Sequence[Trial], data: Digits, device: torch.device, see
 
 
 def objective_value(row: dict[str, Any]) -> float:
-    """What TPE minimizes: the best validation loss, with diverged runs as failures."""
+    """What TPE minimizes: the kept checkpoint's validation loss; runs without one score as failures."""
     loss = float(row["best_val_loss"])
     return loss if math.isfinite(loss) else 10.0 * DIVERGED_LOSS
 
