@@ -385,3 +385,28 @@ Reading it:
   1,209 / 1,588 ms DOM ready / initial drawn against 1,691 / 2,036 ms) on
   code that did not change the load path. Read it as drift between
   sessions, as in earlier rounds, not as a gain.
+
+## Eighth round: crisp axis labels, lassos and the column picker
+
+The eighth round put axes and tick labels on device pixels (each tick
+label is measured, then shifted, once its axis is drawn), made lassos
+replace the selection in every scatter, and redesigned the column picker.
+Only the label snapping runs on the parallel plot's load path; nothing
+runs per drag frame. Measured at the commit that batches the label
+measurements, same harness and machine, medians of three page loads.
+
+| Size | HTML MB | decode ms | DOM ready ms | initial drawn ms | full redraw ms | drag frame p50 / p95 / max ms | stalls | brush end → lines ms | brush end → table ms | JS heap MB |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5k × 20 | 2.6 | 2 | 84 | 140 | 2 | 8 / 8 / 9 | 0/120 | 2 | 15 | 33 |
+| 20k × 30 | 7.8 | 14 | 257 | 361 | 4 | 8 / 8 / 9 | 0/120 | 2 | 27 | 113 |
+| 50k × 50 | 27.3 | 54 | 955 | 1194 | 6 | 8 / 8 / 9 | 0/120 | 3 | 60 | 302 |
+| 100k × 30 | 32.8 | 69 | 1158 | 1484 | 9 | 8 / 8 / 17 | 0/120 | 3 | 86 | 350 |
+
+Reading it:
+
+- Measuring and shifting every tick label one text at a time forced a
+  layout per label: 50k × 50 (about 500 labels) drew in 1,313 ms against
+  1,166 ms in round 7. Measuring them all before moving any brings it to
+  1,194 ms, within the drift between sessions.
+- Drag frames stay at 8 ms median and p95 with no stall; the 17 ms max at
+  100k × 30 is one late frame in one of three loads, as in round 5.

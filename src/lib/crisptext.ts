@@ -42,12 +42,14 @@ export function runStart(anchor: number, length: number, textAnchor: string): nu
  * glyphs and its baseline fall on device pixels. Its `x`, `y` and `dy` stay
  * as d3 set them: an axis redrawn later keeps working, and the shift is
  * computed again from them. Texts in a rotated or skewed group are left
- * alone, as no translation puts them on the grid.
+ * alone, as no translation puts them on the grid. Every text is measured
+ * before any moves, so the layout is computed once, not once per text.
  */
 export function snapTextsToDevicePixels(
   texts: Iterable<SVGTextElement>,
   ratio: number = window.devicePixelRatio,
 ): void {
+  const shifts: { text: SVGTextElement; dx: number; dy: number }[] = [];
   for (const text of texts) {
     const parent = text.parentElement;
     if (!(parent instanceof SVGGraphicsElement)) {
@@ -64,8 +66,13 @@ export function snapTextsToDevicePixels(
       lengthInPixels(text.getAttribute("y"), fontSize) +
       lengthInPixels(text.getAttribute("dy"), fontSize);
     const start = runStart(anchor, text.getComputedTextLength(), style.textAnchor);
-    const dx = devicePixelShift(frame.e + start * frame.a, ratio) / frame.a;
-    const dy = devicePixelShift(frame.f + baseline * frame.d, ratio) / frame.d;
+    shifts.push({
+      text,
+      dx: devicePixelShift(frame.e + start * frame.a, ratio) / frame.a,
+      dy: devicePixelShift(frame.f + baseline * frame.d, ratio) / frame.d,
+    });
+  }
+  for (const { text, dx, dy } of shifts) {
     text.setAttribute("transform", `translate(${dx.toFixed(3)},${dy.toFixed(3)})`);
   }
 }
