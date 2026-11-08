@@ -534,13 +534,20 @@ export class WebGLLineRenderer {
   private constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
     this.directProgram = new Program(gl, VERTEX_SHADER, DIRECT_FRAGMENT_SHADER);
-    this.densityPrograms =
-      gl.getExtension("EXT_color_buffer_float") === null
-        ? null
-        : {
-            lines: new Program(gl, VERTEX_SHADER, DENSITY_FRAGMENT_SHADER),
-            composite: new Program(gl, COMPOSITE_VERTEX_SHADER, COMPOSITE_FRAGMENT_SHADER),
-          };
+    // Densities sum thousands of coverages per pixel: a half-float sum stops
+    // growing once its spacing exceeds twice the added coverage, at a point
+    // that depends on that coverage, so the summed colors of a dense bundle
+    // drift from pixel to pixel. They are summed in single floats, which need
+    // both renderable float targets and blending on them.
+    const floatTargets =
+      gl.getExtension("EXT_color_buffer_float") !== null &&
+      gl.getExtension("EXT_float_blend") !== null;
+    this.densityPrograms = !floatTargets
+      ? null
+      : {
+          lines: new Program(gl, VERTEX_SHADER, DENSITY_FRAGMENT_SHADER),
+          composite: new Program(gl, COMPOSITE_VERTEX_SHADER, COMPOSITE_FRAGMENT_SHADER),
+        };
     const textures: Partial<Record<SamplerName, WebGLTexture>> = {};
     for (const name of Object.keys(UNITS) as SamplerName[]) {
       const texture = gl.createTexture();
@@ -741,8 +748,8 @@ export class WebGLLineRenderer {
       gl.texStorage2D(gl.TEXTURE_2D, 1, format, width, height);
       return texture;
     };
-    const selected = target(gl.RGBA16F);
-    const coverageSums = target(gl.RGBA16F);
+    const selected = target(gl.RGBA32F);
+    const coverageSums = target(gl.RGBA32F);
     const framebuffer = gl.createFramebuffer();
     if (framebuffer === null) {
       throw new Error("Could not create a WebGL framebuffer");

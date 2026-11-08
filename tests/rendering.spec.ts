@@ -260,5 +260,124 @@ for (const deviceScaleFactor of [0.5, 1, 2]) {
         expect(drawn / reference).toBeLessThan(1.15);
       }
     });
+
+    test("a dense bundle of identical lines keeps one color along its length", async ({ page }) => {
+      // Five thousand rows share one segment and one color: every pixel the
+      // bundle crosses sums thousands of coverages, where a half-float sum
+      // stops growing at a point that depends on the pixel's coverage.
+      const bundle = Array.from({ length: 5000 }, () => [0, 3, 0.5]);
+      await uploadRows(page, ["a", "b", "c"], [...bundle, ...RANGE_ROWS], "c");
+      const profile = await segmentProfile(page);
+      expect(profile.length).toBeGreaterThan(40 * deviceScaleFactor);
+      const median = (values: number[]) => [...values].sort((x, y) => x - y)[values.length >> 1];
+      for (const channel of [0, 1, 2]) {
+        const values = profile.map((column) => column.color[channel]);
+        const center = median(values);
+        expect(Math.max(...values.map((value) => Math.abs(value - center)))).toBeLessThan(6);
+      }
+    });
   });
+}
+
+/**
+ * Rows that give the axes of `a` (0 to 1), `b` (0 to 10) and the color column
+ * `c` (0 to 1, with enough distinct values to stay numeric) their ranges. In
+ * either axis order none comes near the middle of the segment from a = 0 to
+ * b = 3: they run along the top and bottom of the plot.
+ */
+const RANGE_ROWS = [
+  [0, 0, 0],
+  [1, 10, 0.25],
+  [1, 10, 0.6],
+  [1, 10, 0.75],
+  [1, 10, 1],
+];
+
+/** Loads `rows` of the `names` columns from a CSV upload, colored by `colorBy`, straight lines. */
+async function uploadRows(
+  page: Page,
+  names: ReadonlyArray<string>,
+  rows: ReadonlyArray<ReadonlyArray<number>>,
+  colorBy: string,
+): Promise<void> {
+  const hidden = encodeURIComponent(JSON.stringify(["uid", colorBy]));
+  await page.goto(
+    `/?provider=upload&hip.PARALLEL_PLOT.hide=${hidden}&hip.color_by=${encodeURIComponent(JSON.stringify(colorBy))}`,
+  );
+  await page.locator("input[type=file]").setInputFiles({
+    name: "rows.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from([names, ...rows].map((row) => row.join(",")).join("\n")),
+  });
+  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
+  await page.getByRole("button", { name: "Straight", exact: true }).click();
+}
+
+/** What the line canvas shows in one device pixel column across a segment. */
+interface ColumnProfile {
+  /** Opacity summed over the column's window around the segment. */
+  alpha: number;
+  /** Opacity-weighted mean color of the window, 0-255 per channel. */
+  color: [number, number, number];
+}
+
+/**
+ * Per device pixel column from `from` to `to` of the way along the segment
+ * of the first row between the first two axes: what the canvas shows within
+ * `radius` pixels of where the segment crosses the column.
+ */
+async function segmentProfile(
+  page: Page,
+  { from = 0.1, to = 0.4, radius = 6 } = {},
+): Promise<ColumnProfile[]> {
+  return page.evaluate(
+    ({ from, to, radius }) => {
+      const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
+        | (ParallelPlotHandle & CoverageProbe & BundleProbe)
+        | null;
+      const canvas = pp?.foreground_ref.current;
+      if (!pp || !canvas) {
+        throw new Error("No parallel plot");
+      }
+      pp.redrawLines();
+      const copy = document.createElement("canvas");
+      copy.width = canvas.width;
+      copy.height = canvas.height;
+      const context = copy.getContext("2d");
+      if (context === null) {
+        throw new Error("No 2D context");
+      }
+      // Same task as the draw, so a WebGL buffer has not been presented and cleared yet.
+      context.drawImage(canvas, 0, 0);
+      const { data } = context.getImageData(0, 0, copy.width, copy.height);
+      const [first, second] = pp.state.dimensions;
+      const row = pp.props.rows_filtered[0];
+      const ratio = pp.pixelRatio;
+      const [x0, y0] = [
+        (pp.position(first) - pp.scrollLeft) * ratio,
+        pp.yscale[first](row[first]) * ratio,
+      ];
+      const [x1, y1] = [
+        (pp.position(second) - pp.scrollLeft) * ratio,
+        pp.yscale[second](row[second]) * ratio,
+      ];
+      const columns: ColumnProfile[] = [];
+      for (let x = Math.ceil(x0 + from * (x1 - x0)); x < x0 + to * (x1 - x0); ++x) {
+        const crossing = y0 + ((x + 0.5 - x0) / (x1 - x0)) * (y1 - y0);
+        const column: ColumnProfile = { alpha: 0, color: [0, 0, 0] };
+        for (let y = Math.floor(crossing) - radius; y <= Math.ceil(crossing) + radius; ++y) {
+          const index = (y * copy.width + x) * 4;
+          const alpha = data[index + 3] / 255;
+          column.alpha += alpha;
+          for (const channel of [0, 1, 2]) {
+            column.color[channel] += data[index + channel] * alpha;
+          }
+        }
+        column.color = column.color.map((sum) => sum / column.alpha) as [number, number, number];
+        columns.push(column);
+      }
+      return columns;
+    },
+    { from, to, radius },
+  );
 }
