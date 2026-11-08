@@ -173,7 +173,9 @@ export function infertypes(
   function infertype(key: string, hint: HiPlotValueDef | undefined): ParamDef {
     const url_state = url_states.children(key);
     let optional = false;
-    let numeric = ["uid", "from_uid"].indexOf(key) === -1;
+    // A row's uid is a column like any other (a trial index is worth an
+    // axis); from_uid only names another row.
+    let numeric = key !== "from_uid";
     let can_be_timestamp = numeric;
     let valueCount = 0;
     const distinct = new Set<DatapointValue>();

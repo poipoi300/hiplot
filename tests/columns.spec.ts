@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
+import { pickColumn } from "./plot";
 
 interface ParallelPlotHandle {
   createScale: (column: string) => unknown;
@@ -89,4 +90,41 @@ test("saved state of the wrong shape falls back to defaults with a toast", async
   expect(await axes(page).count()).toBeGreaterThan(2);
   await page.getByTestId("toast").getByRole("button", { name: "Dismiss" }).click();
   await expect(page.getByTestId("toast")).toHaveCount(0);
+});
+
+test("a numeric uid is offered as a column, and is a numeric axis and scatter axis", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const input = page.locator('textarea[placeholder="Experiments to load"]');
+  await input.fill("demo_line_xy");
+  await input.press("Enter");
+  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
+  const uidAxis = page
+    .locator("svg g.dimension")
+    .filter({ has: page.locator(".pplot-label[data-dimension='uid']") });
+  await uidAxis.locator(".pplot-label").click({ button: "right" });
+  await expect(page.locator(".context-menu .dropdown-item.disabled")).toContainText(["Number"]);
+  await page.keyboard.press("Escape");
+  await page.mouse.click(5, 5);
+
+  await page.getByTestId("columns-button").click();
+  const uid = columnOption(page, "uid");
+  await expect(uid).toHaveAttribute("aria-selected", "true");
+  await uid.click();
+  await expect(uidAxis).toHaveCount(0);
+  await uid.click();
+  await expect(uidAxis).toHaveCount(1);
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "Add scatter plot" }).click();
+  const panel = page.getByTestId("scatter-panel").last();
+  await pickColumn(panel, "X", "uid");
+  await pickColumn(panel, "Y", "loss");
+  const ticks = panel.getByRole("img", { name: /XY scatter plot/ }).locator(".tick text");
+  await expect(ticks.first()).toBeAttached();
+  // Trial indices on a number line: 0, 50, 100… rather than one category per row.
+  const labels = await ticks.allTextContents();
+  expect(labels).toContain("100");
+  expect(labels.length).toBeLessThan(40);
 });

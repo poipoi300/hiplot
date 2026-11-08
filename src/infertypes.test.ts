@@ -25,6 +25,29 @@ const range = (count: number, map: (i: number) => number): number[] =>
   Array.from({ length: count }, (_, i) => map(i));
 
 describe("type inference", () => {
+  test("numeric uids make a numeric column, as a trial index", () => {
+    const table = rows(
+      "loss",
+      range(300, (i) => i),
+    );
+    const pd = infertypes(new PersistentStateInMemory("", {}), table).uid;
+    expect(pd.type).toBe(ParamType.NUMERIC);
+    expect(pd.numeric).toBe(true);
+    expect(pd.distinct_values).toHaveLength(300);
+  });
+
+  test("uids that are not numbers stay categorical, and from_uid always does", () => {
+    const table: Datapoint[] = [
+      { uid: "run_a", from_uid: null, loss: 1 },
+      { uid: "run_b", from_uid: "1", loss: 2 },
+      { uid: "run_c", from_uid: "2", loss: 3 },
+    ];
+    const defs = infertypes(new PersistentStateInMemory("", {}), table);
+    expect(defs.uid.type).toBe(ParamType.CATEGORICAL);
+    expect(defs.from_uid.numeric).toBe(false);
+    expect(defs.from_uid.type).toBe(ParamType.CATEGORICAL);
+  });
+
   test("strings make a column categorical and non-numeric", () => {
     const pd = infer("optimizer", ["adam", "sgd", "adam"]);
     expect(pd.type).toBe(ParamType.CATEGORICAL);
