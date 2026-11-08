@@ -24,7 +24,6 @@ import LogoSVGW from "../hiplot/static/logo-w.svg";
 import { ContextMenu } from "./contextmenu";
 import { type HiPlotDataControlProps, SelectedCountProgressBar } from "./controls";
 import { StaticDataProvider } from "./dataproviders/static";
-import { HiPlotDistributionPlugin } from "./distribution/plugin";
 import { apply_filter, apply_filters, type Filter, FilterType, isFilter } from "./filters";
 import { ErrorDisplay, HeaderBar } from "./header";
 import style from "./hiplot.module.css";
@@ -48,8 +47,14 @@ import {
 import { storeThemeChoice, type ThemeChoice } from "./lib/theme";
 import { type Toast, Toasts } from "./lib/toast";
 import { ParallelPlot } from "./parallel/parallel";
+import { distributionAxesToMigrate } from "./plots/panels";
 import { ScatterPlots } from "./plots/scatterplots";
-import type { DataProviderClass, HiPlotPluginData, PluginWindowState } from "./plugin";
+import {
+  type DataProviderClass,
+  DefaultPlugins,
+  type HiPlotPluginData,
+  type PluginWindowState,
+} from "./plugin";
 import { RowsDisplayTable } from "./rowsdisplaytable";
 import {
   type Datapoint,
@@ -151,7 +156,11 @@ class PluginBoundary extends React.Component<PluginBoundaryProps, PluginBoundary
   }
 }
 
-type PluginProps = HiPlotPluginData & React.RefAttributes<React.Component<HiPlotPluginData>>;
+type PluginProps = HiPlotPluginData &
+  React.RefAttributes<React.Component<HiPlotPluginData>> & {
+    /** For the scatter plots: columns of saved distribution plots, to show as one-axis panels. */
+    migrated_distribution_axes?: ReadonlyArray<string>;
+  };
 
 // Makes a Promise cancelable
 interface CancelablePromise {
@@ -227,6 +236,11 @@ interface HiPlotState extends IDatasets {
   toasts: Toast[];
   /** The header row's slot for display controls, once mounted. */
   headerToolbar: HTMLDivElement | null;
+  /**
+   * Columns of distribution plots saved by an older page, handed to the
+   * scatter plots once as one-axis panels.
+   */
+  migratedDistributionAxes: ReadonlyArray<string>;
 }
 
 function detectIsDarkTheme(): boolean {
@@ -302,18 +316,11 @@ function resolveDarkModeSetting(setting: HiPlotDarkMode): boolean {
   return setting === "auto" ? detectIsDarkTheme() : setting;
 }
 
-export enum DefaultPlugins {
-  // Names correspond to values of (python) hip.Displays
-  PARALLEL_PLOT = "PARALLEL_PLOT",
-  XY = "XY",
-  DISTRIBUTION = "DISTRIBUTION",
-  TABLE = "TABLE",
-}
+export { DefaultPlugins };
 
 export const defaultPlugins: PluginsMap = {
   [DefaultPlugins.PARALLEL_PLOT]: definePlugin(ParallelPlot),
   [DefaultPlugins.XY]: definePlugin(ScatterPlots),
-  [DefaultPlugins.DISTRIBUTION]: definePlugin(HiPlotDistributionPlugin),
   [DefaultPlugins.TABLE]: definePlugin(RowsDisplayTable),
 };
 
@@ -368,6 +375,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       dataProvider: this.props.dataProvider ? this.props.dataProvider : StaticDataProvider,
       toasts: [],
       headerToolbar: null,
+      migratedDistributionAxes: [],
     };
     Object.keys(props.plugins).forEach((name, _index) => {
       this.plugins_window_state[name] = {};
@@ -573,6 +581,21 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       );
       return possibles[0];
     }
+    // Distribution plots are one-axis scatter panels now: their saved columns
+    // move over, and the old list is emptied so they move only once.
+    const distributionState = this.state.persistentState.children(DefaultPlugins.DISTRIBUTION);
+    const migratedDistributionAxes = distributionAxesToMigrate(
+      { panels: distributionState.get("panels"), axis: distributionState.get("axis") },
+      {
+        enabled:
+          experiment.enabled_displays === undefined ||
+          experiment.enabled_displays.includes(DefaultPlugins.DISTRIBUTION),
+        axis: experiment.display_data?.[DefaultPlugins.DISTRIBUTION]?.axis,
+      },
+    );
+    if (migratedDistributionAxes.length > 0) {
+      distributionState.set("panels", []);
+    }
     const persistedColorby = this.state.persistentState.get(PSTATE_COLOR_BY);
     const colorby =
       typeof persistedColorby === "string" && params_def[persistedColorby] !== undefined
@@ -587,6 +610,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       params_def: params_def,
       params_def_unfiltered: params_def_unfiltered,
       rows_filtered_filters: initFilters,
+      migratedDistributionAxes,
       ...datasets,
     });
   }
@@ -944,6 +968,9 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
         header_toolbar: this.state.headerToolbar,
         asserts: this.props.asserts,
       };
+      if (name === DefaultPlugins.XY) {
+        baseProps.migrated_distribution_axes = this.state.migratedDistributionAxes;
+      }
       return baseProps;
     };
     const experiment = this.state.experiment;
@@ -991,16 +1018,18 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
           <Toasts toasts={this.state.toasts} onDismiss={this.dismissToast} />
           {this.state.loadStatus === HiPlotLoadStatus.Loaded && experiment !== null && (
             <div>
-              {(experiment.enabled_displays ?? Object.keys(this.props.plugins)).map(
-                (display_name: string) => (
+              {(experiment.enabled_displays ?? Object.keys(this.props.plugins))
+                // Displays this page has no plugin for (distribution plots, in
+                // payloads from before they became scatter panels) are skipped.
+                .filter((display_name) => this.props.plugins[display_name] !== undefined)
+                .map((display_name: string) => (
                   <PluginBoundary key={display_name} name={display_name} notify={this.notify}>
                     {React.createElement(
                       this.props.plugins[display_name],
                       createPluginProps(experiment, display_name),
                     )}
                   </PluginBoundary>
-                ),
-              )}
+                ))}
             </div>
           )}
         </div>

@@ -98,6 +98,8 @@ export class DistributionView extends React.Component<
             param_def={param_def}
             nbins={this.props.nbins}
             animateMs={this.props.animateMs}
+            highlighted={this.props.rows_highlighted}
+            colorOf={(row) => this.props.get_color_for_row(row, 1)}
           />
         )}
       </ResizableH>

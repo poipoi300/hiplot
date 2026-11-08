@@ -12,7 +12,7 @@ import { DistributionView } from "../distribution/plugin";
 import { ResizableH } from "../lib/resizable";
 import { isString, readState } from "../lib/savedstate";
 import { PlotXY, type PlotXYDisplayData } from "../plotxy";
-import type { HiPlotPluginData, PluginWindowState } from "../plugin";
+import { DefaultPlugins, type HiPlotPluginData, type PluginWindowState } from "../plugin";
 import { ColumnSelect, PanelHeader, SectionBar } from "./frame";
 import {
   isScatterPanels,
@@ -20,11 +20,18 @@ import {
   normalizeScatterPanel,
   type ScatterPanel,
   scatterKind,
+  withOneAxisPanels,
 } from "./panels";
 import style from "./plots.module.css";
 import { Scatter3D, type ScatterAxes } from "./scatter3d";
 
-interface ScatterPlotsProps extends HiPlotPluginData, PlotXYDisplayData {}
+interface ScatterPlotsProps extends HiPlotPluginData, PlotXYDisplayData {
+  /** Columns of distribution plots an older page saved, shown as one-axis panels. */
+  migrated_distribution_axes?: ReadonlyArray<string>;
+}
+
+/** Bins of a one-axis plot, unless the experiment set them for its distribution plots. */
+const DEFAULT_ONE_AXIS_BINS = 20;
 
 interface ScatterPlotsState {
   panels: ScatterPanel[];
@@ -101,14 +108,27 @@ export class ScatterPlots extends React.Component<ScatterPlotsProps, ScatterPlot
       x === null ? [] : [{ id: "1", x, y: legacy("axis_y"), z: null }],
     );
     const columns = new Set(Object.keys(props.params_def));
-    this.state = { panels: saved.map((panel) => normalizeScatterPanel(panel, columns)) };
+    this.state = {
+      panels: withOneAxisPanels(saved, props.migrated_distribution_axes ?? []).map((panel) =>
+        normalizeScatterPanel(panel, columns),
+      ),
+    };
   }
   static defaultProps = PlotXY.defaultProps;
 
   componentDidMount() {
+    if ((this.props.migrated_distribution_axes ?? []).length > 0) {
+      this.props.persistentState.set("panels", this.state.panels);
+    }
     this.props.context_menu_ref?.current?.addCallback((column, cm) => {
       const contextmenu = $(cm);
       contextmenu.append($('<div class="dropdown-divider"></div>'));
+      const distribution = $('<a class="dropdown-item" href="#">').text("View distribution");
+      distribution.on("click", (event) => {
+        this.showDistribution(column);
+        event.preventDefault();
+      });
+      contextmenu.append(distribution);
       contextmenu.append($('<h6 class="dropdown-header">Scatter plot</h6>'));
       const last = this.state.panels[this.state.panels.length - 1];
       (["x", "y", "z"] as const).forEach((axis) => {
@@ -151,6 +171,10 @@ export class ScatterPlots extends React.Component<ScatterPlotsProps, ScatterPlot
       return [...panels.slice(0, -1), { ...last, [axis]: column }];
     });
   }
+  /** Shows the distribution of `column` in a one-axis panel, adding one unless it has one. */
+  showDistribution(column: string): void {
+    this.setPanels((panels) => withOneAxisPanels(panels, [column]));
+  }
   addPanel = (): void => {
     this.setPanels((panels) => [...panels, { id: nextPanelId(panels), x: null, y: null, z: null }]);
   };
@@ -162,6 +186,13 @@ export class ScatterPlots extends React.Component<ScatterPlotsProps, ScatterPlot
   closePanel(id: string): void {
     this.windowStates.delete(id);
     this.setPanels((panels) => panels.filter((panel) => panel.id !== id));
+  }
+  /** The bins the experiment set for its distribution plots, which one-axis panels now show. */
+  private oneAxisBins(): number {
+    const nbins = this.props.experiment.display_data?.[DefaultPlugins.DISTRIBUTION]?.nbins;
+    return typeof nbins === "number" && Number.isInteger(nbins) && nbins > 0
+      ? nbins
+      : DEFAULT_ONE_AXIS_BINS;
   }
   private windowState(id: string): PluginWindowState {
     const existing = this.windowStates.get(id);
@@ -187,7 +218,7 @@ export class ScatterPlots extends React.Component<ScatterPlotsProps, ScatterPlot
         <DistributionView
           key={x}
           {...this.props}
-          nbins={20}
+          nbins={this.oneAxisBins()}
           animateMs={0}
           axis={x}
           onClose={close}

@@ -64,6 +64,15 @@ export interface DistributionPlotData {
   histData: HistogramData;
   param_def: ParamDef;
   animateMs: number;
+  /** Rows hovered anywhere on the page, marked where their value falls. */
+  highlighted: ReadonlyArray<Datapoint>;
+  colorOf: (row: Datapoint) => string;
+}
+
+/** A highlighted row and where its value falls along the data axis, in pixels. */
+interface HighlightMark {
+  row: Datapoint;
+  position: number;
 }
 
 // Inspired by https://www.d3-graph-gallery.com/graph/histogram_binSize.html
@@ -80,6 +89,9 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
   svgContainer = React.createRef<SVGGElement>();
   histAll = React.createRef<SVGGElement>();
   histSelected = React.createRef<SVGGElement>();
+  highlightLayer = React.createRef<SVGGElement>();
+  /** Where a row's value falls along the data axis, as the bars were last drawn. */
+  private positionOf: ((row: Datapoint) => number | null) | null = null;
 
   dataScale: Scale = create_d3_scale_without_outliers(this.props.param_def);
 
@@ -296,6 +308,57 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
     Object.values(allHist).forEach((v) => {
       v.draw_fn(v, densityScale, animate, displayIndexByOriginal);
     });
+
+    const fractionOf = histogram.value();
+    const pixelOf = d3.scaleLinear().range(this.dataScale.range());
+    const binCount = allHist.all.bins.length;
+    const vertical = this.isVertical();
+    this.positionOf = (row) => {
+      const fraction = fractionOf(row, 0, []);
+      if (!Number.isFinite(fraction)) {
+        return null;
+      }
+      if (vertical) {
+        return pixelOf(fraction);
+      }
+      // Categories reordered by density sit at their display slot.
+      const bin = Math.min(binCount - 1, Math.floor(fraction * binCount));
+      return pixelOf((displayIndexByOriginal[bin] + 0.5) / binCount);
+    };
+    this.drawHighlight();
+  }
+
+  /** A line across the plot at each highlighted row's value, in the row's color. */
+  drawHighlight(): void {
+    const positionOf = this.positionOf;
+    const marks: HighlightMark[] =
+      positionOf === null
+        ? []
+        : this.props.highlighted.flatMap((row) => {
+            const position = positionOf(row);
+            return position === null ? [] : [{ row, position }];
+          });
+    const vertical = this.isVertical();
+    const across = vertical ? this.figureHeight() : this.figureWidth();
+    d3.select(mounted(this.highlightLayer))
+      .selectAll<SVGGElement, HighlightMark>("g")
+      .data(marks)
+      .join((enter) => {
+        const mark = enter.append("g").attr("data-testid", "distribution-highlight");
+        mark.append("line").classed(style.distributionHighlightHalo, true);
+        mark.append("line").classed(style.distributionHighlight, true);
+        return mark;
+      })
+      .each(function (this: SVGGElement, mark) {
+        d3.select(this)
+          .selectAll("line")
+          .attr("x1", vertical ? mark.position : 0)
+          .attr("x2", vertical ? mark.position : across)
+          .attr("y1", vertical ? 0 : mark.position)
+          .attr("y2", vertical ? across : mark.position);
+      })
+      .select(`.${style.distributionHighlight}`)
+      .attr("stroke", (mark) => this.props.colorOf(mark.row));
   }
 
   drawHistogramLines(
@@ -409,6 +472,8 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
       const animate =
         prevProps.nbins !== this.props.nbins || prevProps.histData !== this.props.histData;
       this.drawAllHistograms(animate);
+    } else if (prevProps.highlighted !== this.props.highlighted) {
+      this.drawHighlight();
     }
   }
 
@@ -444,6 +509,7 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
               className={style.histSelected}
               ref={this.histSelected}
             ></g>
+            <g ref={this.highlightLayer} pointerEvents="none"></g>
             <g className="axisLeft" ref={this.axisLeft}></g>
             <g
               className="axisRight"

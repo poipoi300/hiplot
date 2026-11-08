@@ -1,10 +1,12 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
+  distributionAxesToMigrate,
   isDistributionPanels,
   isScatterPanels,
   nextPanelId,
   normalizeScatterPanel,
   scatterKind,
+  withOneAxisPanels,
 } from "./panels";
 
 test("saved panel lists are validated before use", () => {
@@ -36,4 +38,54 @@ test("unknown columns are dropped, and each coordinate needs the previous one", 
     z: null,
   });
   expect(normalizeScatterPanel({ id: "1", x: "a", y: "b", z: "c" }, columns).z).toBe("c");
+});
+
+describe("distribution plots saved by older pages", () => {
+  test("saved distribution panels move over by column", () => {
+    expect(
+      distributionAxesToMigrate(
+        {
+          panels: [
+            { id: "1", axis: "lr" },
+            { id: "2", axis: null },
+            { id: "3", axis: "optimizer" },
+          ],
+          axis: "ignored",
+        },
+        { enabled: true, axis: "also ignored" },
+      ),
+    ).toEqual(["lr", "optimizer"]);
+  });
+
+  test("the single axis of older pages moves over", () => {
+    expect(
+      distributionAxesToMigrate({ panels: undefined, axis: "lr" }, { enabled: false, axis: null }),
+    ).toEqual(["lr"]);
+  });
+
+  test("the axis an experiment asked for applies only while nothing is saved", () => {
+    const requested = { enabled: true, axis: "c" };
+    expect(distributionAxesToMigrate({ panels: undefined, axis: undefined }, requested)).toEqual([
+      "c",
+    ]);
+    // An emptied list records that the columns already moved.
+    expect(distributionAxesToMigrate({ panels: [], axis: undefined }, requested)).toEqual([]);
+    expect(
+      distributionAxesToMigrate(
+        { panels: undefined, axis: undefined },
+        { enabled: false, axis: "c" },
+      ),
+    ).toEqual([]);
+  });
+
+  test("columns become one-axis panels unless they already have one", () => {
+    const panels = [
+      { id: "1", x: "lr", y: "loss", z: null },
+      { id: "2", x: "optimizer", y: null, z: null },
+    ];
+    expect(withOneAxisPanels(panels, ["lr", "optimizer"])).toEqual([
+      ...panels,
+      { id: "3", x: "lr", y: null, z: null },
+    ]);
+  });
 });

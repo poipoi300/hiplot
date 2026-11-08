@@ -90,18 +90,55 @@ test("closing a scatter plot removes it for good", async ({ page }) => {
   await expect(scatterPanels(page)).toHaveCount(count - 1);
 });
 
-test("distribution plots can be added, pointed at a column and closed", async ({ page }) => {
+test("there is no separate distributions section; the axis menu opens a one-axis plot", async ({
+  page,
+}) => {
   await loadDemo(page);
-  const panels = page.getByTestId("distribution-panel");
-  await page.getByRole("button", { name: "Add distribution" }).click();
-  await page.getByRole("button", { name: "Add distribution" }).click();
-  await expect(panels).toHaveCount(2);
-  await panels.first().getByLabel("Column", { exact: true }).selectOption("optimizer");
-  await expect(panels.first().locator("svg").first()).toBeVisible();
-  await expect(panels.last()).toContainText("Pick a column");
-  await panels.last().getByRole("button", { name: "Close distribution" }).click();
-  await expect(panels).toHaveCount(1);
+  await expect(page.getByTestId("distribution-plots")).toHaveCount(0);
+  const before = await scatterPanels(page).count();
+  await page.locator(".pplot-label[data-dimension='optimizer']").click({ button: "right" });
+  await page.locator(".context-menu .dropdown-item", { hasText: "View distribution" }).click();
+  await expect(scatterPanels(page)).toHaveCount(before + 1);
+  await expect(select(page, "X")).toHaveValue("optimizer");
+  await expect(
+    page.locator('[data-testid="distribution-plot"][data-axis="optimizer"]'),
+  ).toBeVisible();
+  // Asking again shows the same panel rather than a second one.
+  await page.locator(".pplot-label[data-dimension='optimizer']").click({ button: "right" });
+  await page.locator(".context-menu .dropdown-item", { hasText: "View distribution" }).click();
+  await expect(scatterPanels(page)).toHaveCount(before + 1);
+});
+
+test("distribution plots saved by an older page open as one-axis plots, once", async ({ page }) => {
+  const saved = encodeURIComponent(
+    JSON.stringify([
+      { id: "1", axis: "optimizer" },
+      { id: "2", axis: null },
+    ]),
+  );
+  await page.goto(`/?hip.DISTRIBUTION.panels=${saved}`);
+  const input = page.locator('textarea[placeholder="Experiments to load"]');
+  await input.fill("demo");
+  await input.press("Enter");
+  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
+  const plot = page.locator('[data-testid="distribution-plot"][data-axis="optimizer"]');
+  await expect(plot).toHaveCount(1);
+  const count = await scatterPanels(page).count();
   await reloadDemo(page);
-  await expect(panels).toHaveCount(1);
-  await expect(panels.first().getByLabel("Column", { exact: true })).toHaveValue("optimizer");
+  await expect(plot).toHaveCount(1);
+  await expect(scatterPanels(page)).toHaveCount(count);
+});
+
+test("a row hovered elsewhere is marked in a one-axis plot", async ({ page }) => {
+  await loadDemo(page);
+  await page.locator(".pplot-label[data-dimension='lr']").click({ button: "right" });
+  await page.locator(".context-menu .dropdown-item", { hasText: "View distribution" }).click();
+  const plot = page.locator('[data-testid="distribution-plot"][data-axis="lr"]');
+  await expect(plot).toBeVisible();
+  const marks = plot.getByTestId("distribution-highlight");
+  await expect(marks).toHaveCount(0);
+  await page.locator("table.sample-rows-table tbody tr").first().hover();
+  await expect(marks).toHaveCount(1);
+  await page.locator(".dt-info").hover();
+  await expect(marks).toHaveCount(0);
 });

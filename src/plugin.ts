@@ -20,6 +20,16 @@ import type {
   LoadURIPromise,
 } from "./types";
 
+export enum DefaultPlugins {
+  // Names correspond to values of (python) hip.Displays. DISTRIBUTION has no
+  // display of its own any more: distribution plots are one-axis scatter
+  // panels, and saved ones move there (see distributionAxesToMigrate).
+  PARALLEL_PLOT = "PARALLEL_PLOT",
+  XY = "XY",
+  DISTRIBUTION = "DISTRIBUTION",
+  TABLE = "TABLE",
+}
+
 /** Per-plugin state that lives as long as the page (not persisted). */
 export interface PluginWindowState {
   height?: number;

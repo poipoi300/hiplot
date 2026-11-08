@@ -43,6 +43,39 @@ export const isDistributionPanels = (value: unknown): value is DistributionPanel
     (panel) => isRecord(panel) && typeof panel.id === "string" && isColumnOrNull(panel.axis),
   );
 
+/**
+ * The columns of distribution plots a page saved before they became one-axis
+ * scatter panels: its saved panels, else the single axis older pages kept,
+ * else, the first time a page shows its experiment, the axis the
+ * experiment asked for.
+ */
+export function distributionAxesToMigrate(
+  saved: { panels: unknown; axis: unknown },
+  requested: { enabled: boolean; axis: unknown },
+): string[] {
+  if (isDistributionPanels(saved.panels)) {
+    return saved.panels.flatMap((panel) => (panel.axis === null ? [] : [panel.axis]));
+  }
+  if (typeof saved.axis === "string") {
+    return [saved.axis];
+  }
+  return requested.enabled && typeof requested.axis === "string" ? [requested.axis] : [];
+}
+
+/** `panels`, plus a one-axis panel for each of `columns` that has none yet. */
+export function withOneAxisPanels(
+  panels: ReadonlyArray<ScatterPanel>,
+  columns: ReadonlyArray<string>,
+): ScatterPanel[] {
+  const result = [...panels];
+  for (const column of columns) {
+    if (!result.some((panel) => panel.x === column && panel.y === null)) {
+      result.push({ id: nextPanelId(result), x: column, y: null, z: null });
+    }
+  }
+  return result;
+}
+
 /** An id no panel of `panels` has: one more than the largest numeric id. */
 export function nextPanelId(panels: ReadonlyArray<{ id: string }>): string {
   const largest = panels.reduce((most, panel) => Math.max(most, Number(panel.id) || 0), 0);
