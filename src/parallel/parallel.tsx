@@ -798,7 +798,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.props.persistentState.set("order", this.state.order);
     }
   }
-  /** Whether a brush or an axis is being dragged (see `antialiasedLines`). */
+  /** Whether a brush or an axis is being dragged (see `draftFrame`). */
   private interacting = false;
 
   /**
@@ -2303,13 +2303,14 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   /**
-   * Lines are anti-aliased except while a brush or an axis is dragged over
-   * more than LIGHT_DRAG_ROWS rows: anti-aliasing doubles the fragments of a
-   * frame, which then no longer fits the frame budget. The picture is
-   * anti-aliased again as soon as the drag ends.
+   * Frames are drafts while a brush or an axis is dragged over more than
+   * LIGHT_DRAG_ROWS rows: anti-aliasing doubles the fragments of a frame,
+   * and summing densities exactly doubles the bandwidth, either of which
+   * no longer fits the frame budget (see LineFrame.draft). The picture is
+   * final again as soon as the drag ends.
    */
-  antialiasedLines(): boolean {
-    return !this.interacting || this.props.rows_filtered.length <= LIGHT_DRAG_ROWS;
+  draftFrame(): boolean {
+    return this.interacting && this.props.rows_filtered.length > LIGHT_DRAG_ROWS;
   }
 
   /** Curves between axes unless the user chose straight lines, or "auto" meets many rows. */
@@ -2351,7 +2352,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       lineWidth: LINE_WIDTH,
       pixelRatio: this.pixelRatio,
       curved: this.curvedLines(),
-      antialiased: this.antialiasedLines(),
+      draft: this.draftFrame(),
       selectedCount,
       contextCount: mask.length - selectedCount,
       contextColor: this.contextColor(),

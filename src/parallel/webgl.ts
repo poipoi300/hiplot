@@ -35,10 +35,12 @@ export interface LineFrame {
   /** Monotone splines through the axes, or straight segments. */
   curved: boolean;
   /**
-   * Anti-aliased strips, or one-pixel lines: half the fragments, for the
-   * frames of a brush or axis drag over many rows (see ParallelPlot).
+   * A frame of a brush or axis drag over many rows (see ParallelPlot), drawn
+   * to fit the frame budget: one-pixel lines instead of anti-aliased strips,
+   * half the fragments, with their densities summed in half floats, half the
+   * bandwidth (see DensityPrecision).
    */
-  antialiased: boolean;
+  draft: boolean;
   /** Selected and deselected line counts, which set the density scale. */
   selectedCount: number;
   contextCount: number;
@@ -403,32 +405,37 @@ const COLOR_MODE_CODES: Record<ColorMode, number> = { mean: 0, lowest: 1, highes
 
 /**
  * The line that a pixel shows on top in the "lowest" and "highest" color
- * modes, kept by MAX blending as one float: 1 + rank * ON_TOP_RANKS +
- * coverage, both quantized to integers below ON_TOP_RANKS, where the rank is
- * the value counted toward the end on top. The highest rank wins, then the
- * highest coverage; 0 means no line. Exact in single floats (below 2^24).
+ * modes, kept by MAX blending as one float: 1 + rank * levels + coverage,
+ * the rank being the color map bin counted toward the end on top (0 to 255)
+ * and the coverage quantized to `levels` steps, the most that keeps every
+ * key an exact integer in the target's format. The highest rank wins, then
+ * the highest coverage; 0 means no line.
  */
-const ON_TOP_RANKS = 1024;
+const ON_TOP_COVERAGE_LEVELS = { half: 8, single: 1024 } as const;
 
 /**
- * Accumulates line density into two targets (see `draw`). Target 0 adds up,
- * per selected line, its coverage-weighted color (r, g, b) and its coverage
- * (a). The color is the line's palette color for a categorical column; for a
- * numeric one, its value on the color map (r) and, for a missing value, its
- * coverage (g) instead. Target 1 keeps the maximum of its color channels: the
- * selected and deselected peak coverages and the line on top (see
- * ON_TOP_RANKS); and adds up the deselected coverage in alpha.
+ * Accumulates line density into three targets (see `draw`), which add up
+ * their color channels and keep the maximum of their alpha channels.
+ * Target 0 adds up, per selected line, its coverage-weighted color and keeps
+ * the selected peak coverage. The color is the line's palette color for a
+ * categorical column; for a numeric one, its value on the color map (r),
+ * its coverage if its value is missing (g) and its coverage (b). Target 1
+ * adds up the selected (r) and deselected (g) coverages and keeps the
+ * deselected peak; target 2, drawn in the "lowest" and "highest" modes
+ * only, keeps the line on top (see ON_TOP_COVERAGE_LEVELS).
  */
 const DENSITY_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
 ${COVERAGE}
 uniform bool u_valueColors;
 uniform int u_colorMode;
+uniform float u_onTopLevels;
 in vec3 v_rgb;
 flat in float v_value;
 in float v_selected;
 layout(location = 0) out vec4 selectedSums;
-layout(location = 1) out vec4 layers;
+layout(location = 1) out vec4 coverageSums;
+layout(location = 2) out vec4 onTop;
 void main() {
   float covered = coverage();
   float selectedCoverage = v_selected * covered;
@@ -436,15 +443,15 @@ void main() {
   bool valued = v_value >= 0.0;
   selectedSums = !u_valueColors
     ? vec4(v_rgb * selectedCoverage, selectedCoverage)
-    : vec4(valued ? v_value * selectedCoverage : 0.0, valued ? 0.0 : selectedCoverage, 0.0,
-        selectedCoverage);
-  float onTop = 0.0;
+    : vec4(valued ? v_value * selectedCoverage : 0.0, valued ? 0.0 : selectedCoverage,
+        selectedCoverage, selectedCoverage);
+  coverageSums = vec4(selectedCoverage, contextCoverage, 0.0, contextCoverage);
+  float key = 0.0;
   if (u_colorMode != ${COLOR_MODE_CODES.mean} && valued && selectedCoverage > 0.0) {
     float rank = u_colorMode == ${COLOR_MODE_CODES.highest} ? v_value : 1.0 - v_value;
-    float steps = ${(ON_TOP_RANKS - 1).toFixed(1)};
-    onTop = 1.0 + round(rank * steps) * ${ON_TOP_RANKS.toFixed(1)} + round(selectedCoverage * steps);
+    key = 1.0 + round(rank * 255.0) * u_onTopLevels + round(selectedCoverage * (u_onTopLevels - 1.0));
   }
-  layers = vec4(selectedCoverage, contextCoverage, onTop, contextCoverage);
+  onTop = vec4(0.0, 0.0, 0.0, key);
 }
 `;
 
@@ -504,12 +511,14 @@ void main() {
 const COMPOSITE_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
 uniform sampler2D u_selectedSums;
-uniform sampler2D u_layers;
+uniform sampler2D u_coverageSums;
+uniform sampler2D u_onTop;
 uniform sampler2D u_palette;
 uniform int u_paletteWidth;
 uniform bool u_valueColors;
 uniform int u_colorMapBins;
 uniform int u_colorMode;
+uniform float u_onTopLevels;
 uniform float u_selectedReference;
 uniform float u_contextReference;
 uniform vec3 u_contextColor;
@@ -536,30 +545,31 @@ vec3 colorMapAt(float value) {
   int above = min(below + 1, u_colorMapBins - 1);
   return mix(paletteColor(below), paletteColor(above), position - float(below));
 }
-vec3 selectedColor(vec4 sums, vec4 layers) {
+/** The color of the selected lines crossing \`pixel\` (see DENSITY_FRAGMENT_SHADER). */
+vec3 selectedColor(ivec2 pixel, vec4 sums, float selectedCoverage) {
   if (!u_valueColors) {
-    return sums.rgb / sums.a;
+    return sums.rgb / selectedCoverage;
   }
-  float valuedCoverage = sums.a - sums.g;
+  // Summed in the same target as the values, at the same precision.
+  float valuedCoverage = sums.b - sums.g;
   vec3 mixed = valuedCoverage > 0.0 ? colorMapAt(sums.r / valuedCoverage) : vec3(0.0);
-  mixed = mix(mixed, paletteColor(u_colorMapBins), sums.g / sums.a);
-  if (layers.b <= 0.0) {
+  mixed = mix(mixed, paletteColor(u_colorMapBins), sums.g / sums.b);
+  float key = u_colorMode == ${COLOR_MODE_CODES.mean} ? 0.0 : texelFetch(u_onTop, pixel, 0).a;
+  if (key <= 0.0) {
     return mixed;
   }
-  float onTop = layers.b - 1.0;
-  float steps = ${(ON_TOP_RANKS - 1).toFixed(1)};
-  float rank = floor(onTop / ${ON_TOP_RANKS.toFixed(1)}) / steps;
-  float coverage = mod(onTop, ${ON_TOP_RANKS.toFixed(1)}) / steps;
+  float rank = floor((key - 1.0) / u_onTopLevels) / 255.0;
+  float coverage = mod(key - 1.0, u_onTopLevels) / (u_onTopLevels - 1.0);
   float value = u_colorMode == ${COLOR_MODE_CODES.highest} ? rank : 1.0 - rank;
-  return mix(mixed, colorMapAt(value), min(coverage / layers.r, 1.0));
+  return mix(mixed, colorMapAt(value), min(coverage / sums.a, 1.0));
 }
 void main() {
   ivec2 pixel = ivec2(gl_FragCoord.xy);
   vec4 sums = texelFetch(u_selectedSums, pixel, 0);
-  vec4 layers = texelFetch(u_layers, pixel, 0);
-  float selectedAlpha = toneMapped(sums.a, layers.r, u_selectedReference);
-  float contextAlpha = u_contextAlpha * toneMapped(layers.a, layers.g, u_contextReference);
-  vec3 selectedColor = sums.a > 0.0 ? selectedColor(sums, layers) : vec3(0.0);
+  vec4 coverage = texelFetch(u_coverageSums, pixel, 0);
+  float selectedAlpha = toneMapped(coverage.r, sums.a, u_selectedReference);
+  float contextAlpha = u_contextAlpha * toneMapped(coverage.g, coverage.a, u_contextReference);
+  vec3 selectedColor = coverage.r > 0.0 ? selectedColor(pixel, sums, coverage.r) : vec3(0.0);
   color = vec4(
     selectedColor * selectedAlpha + u_contextColor * contextAlpha * (1.0 - selectedAlpha),
     selectedAlpha + contextAlpha * (1.0 - selectedAlpha)
@@ -587,8 +597,25 @@ const LINE_SAMPLERS = {
 type SamplerName = keyof typeof LINE_SAMPLERS;
 const UNITS = LINE_SAMPLERS;
 /** Texture units of the density targets, read by the composite pass. */
-const SELECTED_SUMS_UNIT = 6;
-const LAYERS_UNIT = 7;
+const DENSITY_UNITS = { selectedSums: 6, coverageSums: 7, onTop: 8 } as const;
+
+/**
+ * Float formats of the density targets. A half float holds 11 significant
+ * bits: summing thousands of coverages per pixel, as a bundle of identical
+ * segments between two discrete axes does, its sum stops growing once its
+ * spacing exceeds twice the added coverage, at a point that depends on that
+ * coverage, so a sum of colors over a sum of coverages drifts from pixel to
+ * pixel. Single floats sum them exactly, at twice the bandwidth: the line
+ * pass is bound by blending into these targets, and single floats take
+ * three times as long at 100,000 rows. So only the sums that a color is
+ * divided by take single floats, and draft frames sum everything in half
+ * floats, which may bead dense bundles until the drag ends.
+ */
+interface DensityPrecision {
+  selectedSums: number;
+  coverageSums: number;
+  onTop: number;
+}
 
 /**
  * Lines crossing a pixel at which the density reaches full opacity. Densities
@@ -647,7 +674,9 @@ class Program {
 interface DensityTargets {
   framebuffer: WebGLFramebuffer;
   selectedSums: WebGLTexture;
-  layers: WebGLTexture;
+  coverageSums: WebGLTexture;
+  onTop: WebGLTexture;
+  precision: DensityPrecision;
   width: number;
   height: number;
 }
@@ -662,12 +691,7 @@ interface DensityTargets {
 export class WebGLLineRenderer {
   private readonly gl: WebGL2RenderingContext;
   /** Density accumulation then tone mapping, when float render targets exist. */
-  private readonly densityPrograms: {
-    lines: Program;
-    composite: Program;
-    /** Sets each target's blending (see DENSITY_FRAGMENT_SHADER). */
-    indexedBlending: OES_draw_buffers_indexed;
-  } | null;
+  private readonly densityPrograms: { lines: Program; composite: Program } | null;
   /** Alpha-blended lines, the fallback without float render targets. */
   private readonly directProgram: Program;
   private density: DensityTargets | null = null;
@@ -700,24 +724,17 @@ export class WebGLLineRenderer {
   private constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
     this.directProgram = new Program(gl, VERTEX_SHADER, DIRECT_FRAGMENT_SHADER);
-    // Densities sum thousands of coverages per pixel: a half-float sum stops
-    // growing once its spacing exceeds twice the added coverage, at a point
-    // that depends on that coverage, so the summed colors of a dense bundle
-    // drift from pixel to pixel. They are summed in single floats, which need
-    // both renderable float targets and blending on them, and the two
-    // targets blend differently.
+    // Single-float sums (see DensityPrecision) need both renderable float
+    // targets and blending on them.
     const floatTargets =
       gl.getExtension("EXT_color_buffer_float") !== null &&
       gl.getExtension("EXT_float_blend") !== null;
-    const indexedBlending = gl.getExtension("OES_draw_buffers_indexed");
-    this.densityPrograms =
-      !floatTargets || indexedBlending === null
-        ? null
-        : {
-            lines: new Program(gl, VERTEX_SHADER, DENSITY_FRAGMENT_SHADER),
-            composite: new Program(gl, COMPOSITE_VERTEX_SHADER, COMPOSITE_FRAGMENT_SHADER),
-            indexedBlending,
-          };
+    this.densityPrograms = !floatTargets
+      ? null
+      : {
+          lines: new Program(gl, VERTEX_SHADER, DENSITY_FRAGMENT_SHADER),
+          composite: new Program(gl, COMPOSITE_VERTEX_SHADER, COMPOSITE_FRAGMENT_SHADER),
+        };
     const textures: Partial<Record<SamplerName, WebGLTexture>> = {};
     for (const name of Object.keys(UNITS) as SamplerName[]) {
       const texture = gl.createTexture();
@@ -924,15 +941,45 @@ export class WebGLLineRenderer {
     return this.densityPrograms !== null;
   }
 
-  private densityTargets(width: number, height: number): DensityTargets {
-    if (this.density !== null && this.density.width === width && this.density.height === height) {
-      return this.density;
+  /**
+   * The formats a frame sums its densities in (see DensityPrecision): a
+   * numeric color is divided by a coverage summed next to it in target 0, a
+   * categorical one by the coverage sum in target 1.
+   */
+  private densityPrecision(frame: LineFrame): DensityPrecision {
+    const gl = this.gl;
+    if (frame.draft) {
+      return { selectedSums: gl.RGBA16F, coverageSums: gl.RGBA16F, onTop: gl.RGBA16F };
+    }
+    return {
+      selectedSums: gl.RGBA32F,
+      coverageSums: this.colorMapBins > 0 ? gl.RGBA16F : gl.RGBA32F,
+      onTop: gl.RGBA32F,
+    };
+  }
+
+  private densityTargets(
+    width: number,
+    height: number,
+    precision: DensityPrecision,
+  ): DensityTargets {
+    const current = this.density;
+    if (
+      current !== null &&
+      current.width === width &&
+      current.height === height &&
+      current.precision.selectedSums === precision.selectedSums &&
+      current.precision.coverageSums === precision.coverageSums &&
+      current.precision.onTop === precision.onTop
+    ) {
+      return current;
     }
     const gl = this.gl;
-    if (this.density !== null) {
-      gl.deleteFramebuffer(this.density.framebuffer);
-      gl.deleteTexture(this.density.selectedSums);
-      gl.deleteTexture(this.density.layers);
+    if (current !== null) {
+      gl.deleteFramebuffer(current.framebuffer);
+      gl.deleteTexture(current.selectedSums);
+      gl.deleteTexture(current.coverageSums);
+      gl.deleteTexture(current.onTop);
     }
     const target = (format: number): WebGLTexture => {
       const texture = gl.createTexture();
@@ -945,18 +992,19 @@ export class WebGLLineRenderer {
       gl.texStorage2D(gl.TEXTURE_2D, 1, format, width, height);
       return texture;
     };
-    const selectedSums = target(gl.RGBA32F);
-    const layers = target(gl.RGBA32F);
+    const selectedSums = target(precision.selectedSums);
+    const coverageSums = target(precision.coverageSums);
+    const onTop = target(precision.onTop);
     const framebuffer = gl.createFramebuffer();
     if (framebuffer === null) {
       throw new Error("Could not create a WebGL framebuffer");
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, selectedSums, 0);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, layers, 0);
-    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, coverageSums, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, onTop, 0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    this.density = { framebuffer, selectedSums, layers, width, height };
+    this.density = { framebuffer, selectedSums, coverageSums, onTop, precision, width, height };
     return this.density;
   }
 
@@ -983,11 +1031,11 @@ export class WebGLLineRenderer {
       gl.drawingBufferHeight / Math.max(1, frame.height),
     );
     gl.uniform2f(program.uniform("u_viewport"), gl.drawingBufferWidth, gl.drawingBufferHeight);
-    gl.uniform1i(program.uniform("u_antialiased"), frame.antialiased ? 1 : 0);
+    gl.uniform1i(program.uniform("u_antialiased"), frame.draft ? 0 : 1);
     // Plain lines cover their pixels fully: coverage() is 1 at v_across = 0.
     gl.uniform1f(
       program.uniform("u_halfWidth"),
-      frame.antialiased ? (frame.lineWidth * frame.pixelRatio) / 2 : 0.5,
+      frame.draft ? 0.5 : (frame.lineWidth * frame.pixelRatio) / 2,
     );
     return samples;
   }
@@ -996,9 +1044,9 @@ export class WebGLLineRenderer {
     const gl = this.gl;
     gl.bindVertexArray(this.vertexArray);
     gl.drawArraysInstanced(
-      frame.antialiased ? gl.TRIANGLE_STRIP : gl.LINE_STRIP,
+      frame.draft ? gl.LINE_STRIP : gl.TRIANGLE_STRIP,
       0,
-      frame.antialiased ? 2 * samples : samples,
+      frame.draft ? samples : 2 * samples,
       this.rowCount * segmentsPerLine(frame.axes.length),
     );
     gl.bindVertexArray(null);
@@ -1063,21 +1111,34 @@ export class WebGLLineRenderer {
     }
 
     // One pass accumulates both layers; a second tone-maps them onto the canvas.
-    const targets = this.densityTargets(width, height);
-    const { lines, composite, indexedBlending } = this.densityPrograms;
+    const targets = this.densityTargets(width, height, this.densityPrecision(frame));
+    const { lines, composite } = this.densityPrograms;
+    const onTopLevels =
+      ON_TOP_COVERAGE_LEVELS[targets.precision.onTop === gl.RGBA32F ? "single" : "half"];
     const valueColors = this.colorMapBins > 0;
     const colorMode = COLOR_MODE_CODES[frame.colorMode];
+    // The line on top only matters in the modes that show it; others skip its bandwidth.
+    const withOnTop = valueColors && frame.colorMode !== "mean";
     gl.bindFramebuffer(gl.FRAMEBUFFER, targets.framebuffer);
+    gl.drawBuffers([
+      gl.COLOR_ATTACHMENT0,
+      gl.COLOR_ATTACHMENT1,
+      withOnTop ? gl.COLOR_ATTACHMENT2 : gl.NONE,
+    ]);
     gl.viewport(0, 0, width, height);
     gl.clearBufferfv(gl.COLOR, 0, [0, 0, 0, 0]);
     gl.clearBufferfv(gl.COLOR, 1, [0, 0, 0, 0]);
+    if (withOnTop) {
+      gl.clearBufferfv(gl.COLOR, 2, [0, 0, 0, 0]);
+    }
+    // Colors add up and alphas keep the maximum, in every target.
     gl.blendFunc(gl.ONE, gl.ONE);
-    indexedBlending.blendEquationiOES(0, gl.FUNC_ADD);
-    indexedBlending.blendEquationSeparateiOES(1, gl.MAX, gl.FUNC_ADD);
+    gl.blendEquationSeparate(gl.FUNC_ADD, gl.MAX);
     const samples = this.prepareLines(lines, frame);
     gl.uniform1i(lines.uniform("u_keep"), DRAW_ALL);
     gl.uniform1i(lines.uniform("u_valueColors"), valueColors ? 1 : 0);
     gl.uniform1i(lines.uniform("u_colorMode"), colorMode);
+    gl.uniform1f(lines.uniform("u_onTopLevels"), onTopLevels);
     this.drawLines(frame, samples);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -1085,18 +1146,18 @@ export class WebGLLineRenderer {
     gl.disable(gl.BLEND);
     // biome-ignore lint/correctness/useHookAtTopLevel: WebGL2RenderingContext.useProgram, not a React hook.
     gl.useProgram(composite.program);
-    gl.activeTexture(gl.TEXTURE0 + SELECTED_SUMS_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, targets.selectedSums);
-    gl.activeTexture(gl.TEXTURE0 + LAYERS_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, targets.layers);
+    for (const name of ["selectedSums", "coverageSums", "onTop"] as const) {
+      gl.activeTexture(gl.TEXTURE0 + DENSITY_UNITS[name]);
+      gl.bindTexture(gl.TEXTURE_2D, targets[name]);
+      gl.uniform1i(composite.uniform(`u_${name}`), DENSITY_UNITS[name]);
+    }
     this.bind("u_palette");
-    gl.uniform1i(composite.uniform("u_selectedSums"), SELECTED_SUMS_UNIT);
-    gl.uniform1i(composite.uniform("u_layers"), LAYERS_UNIT);
     gl.uniform1i(composite.uniform("u_palette"), UNITS.u_palette);
     gl.uniform1i(composite.uniform("u_paletteWidth"), this.layout.width);
     gl.uniform1i(composite.uniform("u_valueColors"), valueColors ? 1 : 0);
     gl.uniform1i(composite.uniform("u_colorMapBins"), this.colorMapBins);
     gl.uniform1i(composite.uniform("u_colorMode"), colorMode);
+    gl.uniform1f(composite.uniform("u_onTopLevels"), onTopLevels);
     gl.uniform1f(
       composite.uniform("u_selectedReference"),
       densityReference(frame.selectedCount, frame.height),
@@ -1111,9 +1172,9 @@ export class WebGLLineRenderer {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindVertexArray(null);
     // Unbound so the next line pass, which renders into them, has no feedback loop.
-    gl.activeTexture(gl.TEXTURE0 + SELECTED_SUMS_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, null);
-    gl.activeTexture(gl.TEXTURE0 + LAYERS_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D, null);
+    for (const unit of Object.values(DENSITY_UNITS)) {
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
   }
 }
