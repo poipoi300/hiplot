@@ -37,6 +37,12 @@ title = "Anti-aliased splines, plot panels and 3D scatter, table filters, theme 
 weight = 4
 done = true
 
+[[v1.milestones]]
+id = "redesign-round-3"
+title = "One-row header, flow badges, unbroken steep lines, 3D lasso and pan, statistics, one notation per axis"
+weight = 4
+done = true
+
 [[checks]]
 id = "pytest"
 label = "Python tests"
