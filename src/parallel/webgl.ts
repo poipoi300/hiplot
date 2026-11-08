@@ -77,11 +77,26 @@ const DRAW_CONTEXT = 1;
 const DRAW_ALL = 2;
 
 /**
+ * Longest a strip corner may stretch, in half widths, where a line turns
+ * sharply; beyond it the corner is cut, as a canvas `miterLimit` does.
+ */
+const MITER_LIMIT = 4;
+
+/**
  * One instance per segment of a line. A segment is a triangle strip through
  * `u_samples` points along it, widened on both sides by the half line width
  * plus half a device pixel, where coverage reaches zero; `v_across` is the
  * signed distance from the center line in device pixels, from which
  * fragments take their coverage.
+ *
+ * The strip is a polyline of chords between the sampled points, so each
+ * point is pushed out along the miter of its two chords: every chord then
+ * has the full width perpendicular to itself, which `v_across` assumes. At
+ * the ends of a segment the neighbor chord comes from the adjacent segment,
+ * so segments join without seams. (Offsetting along the curve's tangent
+ * instead pinches a chord that is steeper than the tangent at its end, as
+ * on straight segments, whose tangents at the axes are level: steep lines
+ * then rasterize as broken one-pixel dots.)
  */
 const VERTEX_SHADER = `#version 300 es
 precision highp float;
@@ -145,6 +160,70 @@ float slopeAt(int i, int row, float y) {
     min(min(abs(slopeBefore), abs(slopeAfter)), 0.5 * abs(parabola));
 }
 
+/** One segment of a row's line: a cubic Bezier between two axes, or a stub. */
+struct Segment {
+  bool drawn;
+  bool hasLeft;
+  bool hasRight;
+  vec2 p0;
+  vec2 p1;
+  vec2 p2;
+  vec2 p3;
+};
+
+Segment segmentOf(int segment, int row) {
+  Segment s;
+  float yLeft = segment >= 1 ? pixelY(segment - 1, row) : ${MISSING_THRESHOLD * 10};
+  float yRight = segment < u_axisCount ? pixelY(segment, row) : ${MISSING_THRESHOLD * 10};
+  s.hasLeft = yLeft > ${MISSING_THRESHOLD};
+  s.hasRight = yRight > ${MISSING_THRESHOLD};
+  s.drawn = s.hasLeft || s.hasRight;
+  float xLeft = 0.0;
+  float xRight = 0.0;
+  float slopeLeft = 0.0;
+  float slopeRight = 0.0;
+  if (s.hasLeft && s.hasRight) {
+    xLeft = axis(segment - 1).x;
+    xRight = axis(segment).x;
+    if (u_curved) {
+      slopeLeft = slopeAt(segment - 1, row, yLeft);
+      slopeRight = slopeAt(segment, row, yRight);
+    }
+  } else if (s.hasRight) {
+    // Stub leading into the first axis, or into an axis after a missing value.
+    xRight = axis(segment).x;
+    xLeft = xRight - 15.0;
+    yLeft = yRight;
+  } else if (s.hasLeft) {
+    // Stub leaving the last axis, or an axis before a missing value.
+    xLeft = axis(segment - 1).x;
+    xRight = xLeft + 15.0;
+    yRight = yLeft;
+  }
+  float handle = ${SPLINE_HANDLE.toFixed(6)} * (xRight - xLeft);
+  s.p0 = vec2(xLeft, yLeft);
+  s.p1 = vec2(xLeft + handle, yLeft + handle * slopeLeft);
+  s.p2 = vec2(xRight - handle, yRight - handle * slopeRight);
+  s.p3 = vec2(xRight, yRight);
+  return s;
+}
+
+/** A point of the segment, in device pixels. */
+vec2 pointOf(Segment s, float t) {
+  float u = 1.0 - t;
+  vec2 position = u * u * u * s.p0 + 3.0 * u * u * t * s.p1 + 3.0 * u * t * t * s.p2 +
+    t * t * t * s.p3;
+  return position * u_deviceScale;
+}
+
+/** The left-hand unit normal of the chord from \`from\` to \`to\`. */
+vec2 chordNormal(vec2 from, vec2 to) {
+  vec2 chord = to - from;
+  float length2 = dot(chord, chord);
+  vec2 direction = length2 > 1e-12 ? chord * inversesqrt(length2) : vec2(1.0, 0.0);
+  return vec2(-direction.y, direction.x);
+}
+
 void main() {
   int segments = u_axisCount + 1;
   int line = gl_InstanceID / segments;
@@ -153,58 +232,50 @@ void main() {
   bool selected = texelFetch(u_selected, at(row), 0).r > 0u;
   bool kept = u_keep == ${DRAW_ALL} || (u_keep == ${DRAW_SELECTED}) == selected;
 
-  float yLeft = segment >= 1 ? pixelY(segment - 1, row) : ${MISSING_THRESHOLD * 10};
-  float yRight = segment < u_axisCount ? pixelY(segment, row) : ${MISSING_THRESHOLD * 10};
-  bool hasLeft = yLeft > ${MISSING_THRESHOLD};
-  bool hasRight = yRight > ${MISSING_THRESHOLD};
-  if (!kept || (!hasLeft && !hasRight)) {
+  Segment current = segmentOf(segment, row);
+  if (!kept || !current.drawn) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     v_rgb = vec3(0.0);
     v_selected = 0.0;
     v_across = 0.0;
     return;
   }
-  float xLeft;
-  float xRight;
-  float slopeLeft = 0.0;
-  float slopeRight = 0.0;
-  if (hasLeft && hasRight) {
-    xLeft = axis(segment - 1).x;
-    xRight = axis(segment).x;
-    if (u_curved) {
-      slopeLeft = slopeAt(segment - 1, row, yLeft);
-      slopeRight = slopeAt(segment, row, yRight);
-    }
-  } else if (hasRight) {
-    // Stub leading into the first axis, or into an axis after a missing value.
-    xRight = axis(segment).x;
-    xLeft = xRight - 15.0;
-    yLeft = yRight;
-  } else {
-    // Stub leaving the last axis, or an axis before a missing value.
-    xLeft = axis(segment - 1).x;
-    xRight = xLeft + 15.0;
-    yRight = yLeft;
-  }
 
   // Strips take two vertices per point, one on each side; plain lines one.
   int point = u_antialiased ? gl_VertexID / 2 : gl_VertexID;
   float side = !u_antialiased ? 0.0 : (gl_VertexID & 1) == 0 ? -1.0 : 1.0;
-  float t = float(point) / float(u_samples - 1);
-  float u = 1.0 - t;
-  float handle = ${SPLINE_HANDLE.toFixed(6)} * (xRight - xLeft);
-  vec2 p0 = vec2(xLeft, yLeft);
-  vec2 p1 = vec2(xLeft + handle, yLeft + handle * slopeLeft);
-  vec2 p2 = vec2(xRight - handle, yRight - handle * slopeRight);
-  vec2 p3 = vec2(xRight, yRight);
-  vec2 position = u * u * u * p0 + 3.0 * u * u * t * p1 + 3.0 * u * t * t * p2 + t * t * t * p3;
-  vec2 tangent = 3.0 * u * u * (p1 - p0) + 6.0 * u * t * (p2 - p1) + 3.0 * t * t * (p3 - p2);
-  // Device pixels from here on, so the line width does not depend on the pixel ratio.
-  position *= u_deviceScale;
-  tangent *= u_deviceScale;
-  vec2 direction = dot(tangent, tangent) > 1e-12 ? normalize(tangent) : vec2(1.0, 0.0);
+  float step = 1.0 / float(u_samples - 1);
+  float t = float(point) * step;
+  vec2 position = pointOf(current, t);
   float extent = u_halfWidth + 0.5;
-  position += vec2(-direction.y, direction.x) * side * extent;
+  if (u_antialiased) {
+    // The chords into and out of this point; at a segment's end, from the
+    // segment it joins (an axis the row has a value on).
+    bool hasBefore = point > 0 || (current.hasLeft && segment > 0);
+    bool hasAfter = point < u_samples - 1 || (current.hasRight && segment < u_axisCount);
+    vec2 before = position;
+    vec2 after = position;
+    if (point > 0) {
+      before = pointOf(current, t - step);
+    } else if (hasBefore) {
+      before = pointOf(segmentOf(segment - 1, row), 1.0 - step);
+    }
+    if (point < u_samples - 1) {
+      after = pointOf(current, t + step);
+    } else if (hasAfter) {
+      after = pointOf(segmentOf(segment + 1, row), step);
+    }
+    vec2 normalIn = chordNormal(before, position);
+    vec2 normalOut = chordNormal(position, after);
+    vec2 offset = hasBefore ? normalIn : normalOut;
+    if (hasBefore && hasAfter) {
+      vec2 miter = normalIn + normalOut;
+      float miterLength2 = dot(miter, miter);
+      vec2 direction = miterLength2 > 1e-6 ? miter * inversesqrt(miterLength2) : normalIn;
+      offset = direction / max(dot(direction, normalIn), ${(1 / MITER_LIMIT).toFixed(6)});
+    }
+    position += offset * side * extent;
+  }
   gl_Position = vec4(
     position.x / u_viewport.x * 2.0 - 1.0,
     1.0 - position.y / u_viewport.y * 2.0,

@@ -94,3 +94,71 @@ test("parallel lines fall back to Canvas 2D without WebGL2", async ({ page }) =>
   await page.mouse.up();
   await expect.poll(() => countLine.textContent()).not.toBe(before);
 });
+
+interface CoverageProbe {
+  position: (dimension: string) => number;
+  yscale: { [dimension: string]: (value: number) => number };
+  scrollLeft: number;
+  pixelRatio: number;
+  state: { dimensions: string[] };
+}
+
+test("a steep straight line keeps its width instead of breaking into dots", async ({ page }) => {
+  // Two mirrored rows over twelve close axes: each runs from the bottom of an
+  // axis to the top of the next, so every segment is steep.
+  const names = Array.from({ length: 12 }, (_, i) => `c${i}`);
+  const rising = names.map((_, i) => i % 2);
+  const falling = names.map((_, i) => 1 - (i % 2));
+  await page.goto("/?provider=upload");
+  await page.locator("input[type=file]").setInputFiles({
+    name: "steep.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from([names, rising, falling].map((row) => row.join(",")).join("\n")),
+  });
+  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
+  await page.getByRole("button", { name: "Straight", exact: true }).click();
+
+  // Coverage of the rising line per pixel row, in a window around where it
+  // crosses the row, over the part of the gap the other line keeps clear of.
+  const rowSums = await page.evaluate(() => {
+    const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
+      | (ParallelPlotHandle & CoverageProbe)
+      | null;
+    const canvas = pp?.foreground_ref.current;
+    if (!pp || !canvas) {
+      throw new Error("No parallel plot");
+    }
+    pp.redrawLines();
+    const copy = document.createElement("canvas");
+    copy.width = canvas.width;
+    copy.height = canvas.height;
+    const context = copy.getContext("2d");
+    if (context === null) {
+      throw new Error("No 2D context");
+    }
+    context.drawImage(canvas, 0, 0);
+    const [first, second] = pp.state.dimensions;
+    const ratio = pp.pixelRatio;
+    const left = (pp.position(first) - pp.scrollLeft) * ratio;
+    const right = (pp.position(second) - pp.scrollLeft) * ratio;
+    const bottom = pp.yscale[first](0) * ratio;
+    const top = pp.yscale[second](1) * ratio;
+    const { data } = context.getImageData(0, 0, copy.width, copy.height);
+    const sums: number[] = [];
+    for (
+      let y = Math.round(bottom - 0.1 * (bottom - top));
+      y > bottom - 0.4 * (bottom - top);
+      --y
+    ) {
+      const crossing = left + ((bottom - y) / (bottom - top)) * (right - left);
+      let sum = 0;
+      for (let x = Math.floor(crossing) - 3; x <= Math.ceil(crossing) + 3; ++x) {
+        sum += data[(y * copy.width + x) * 4 + 3];
+      }
+      sums.push(sum);
+    }
+    return sums;
+  });
+  expect(rowSums.length).toBeGreaterThan(40);
+  expect(Math.min(...rowSums)).toBeGreaterThan(0.6 * Math.max(...rowSums));
+});
