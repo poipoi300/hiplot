@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["torch>=2.7", "optuna>=4.0", "scikit-learn>=1.5", "hiplot-mm"]
+# dependencies = ["torch>=2.7", "optuna>=4.0", "scikit-learn>=1.5", "polars>=1.0", "hiplot-mm"]
 #
 # [tool.uv.sources]
 # torch = [{ index = "pytorch-cu128", marker = "sys_platform != 'darwin'" }]
@@ -14,9 +14,9 @@
 """A real hyperparameter search, rendered with HiPlot.
 
 Trains thousands of small MLPs on the UCI handwritten digits (see search.py)
-and writes every trial to a standalone HiPlot page. With --from-csv, the page
-is rendered again from the trials a previous run wrote with --csv, without
-training; that path imports neither torch nor optuna.
+and writes every trial to a standalone HiPlot page. With --from-parquet, the
+page is rendered again from the trials a previous run wrote with --parquet,
+without training; that path imports neither torch nor optuna.
 
 Recorded per trial: the hyperparameters, the final train and validation
 loss, the best validation loss and its epoch, the validation accuracy, the
@@ -24,13 +24,15 @@ parameter count, a divergence flag, and the wall time the model occupied the
 GPU (the round's time scaled by the model's share of the round's steps).
 
 Usage:
-    uv run examples/hptuning/tune.py --out hptuning.html [--trials 10000] [--csv hptuning.csv]
-    uv run examples/hptuning/tune.py --out hptuning.html --from-csv hptuning.csv
+    uv run examples/hptuning/tune.py --out hptuning.html [--trials 10000] [--parquet hptuning.parquet]
+    uv run examples/hptuning/tune.py --out hptuning.html --from-parquet hptuning.parquet
 """
 
 import argparse
 from collections.abc import Sequence
 from pathlib import Path
+
+import polars as pl
 
 import hiplot as hip
 
@@ -77,8 +79,8 @@ def write_page(experiment: hip.Experiment, out: Path) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", type=Path, required=True, help="HiPlot page to write")
-    parser.add_argument("--from-csv", type=Path, help="render the trials of this CSV instead of searching")
-    parser.add_argument("--csv", type=Path, help="also write the trials as CSV")
+    parser.add_argument("--from-parquet", type=Path, help="render the trials of this Parquet file instead of searching")
+    parser.add_argument("--parquet", type=Path, help="also write the trials as Parquet")
     parser.add_argument("--trials", type=int, default=10_000)
     parser.add_argument("--round", type=int, default=1000, help="trials proposed at once")
     parser.add_argument("--group", type=int, default=250, help="trials trained at once")
@@ -86,12 +88,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--window", type=int, default=1000, help="recent trials TPE learns from")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
-    if args.from_csv is not None:
-        if args.csv is not None:
-            parser.error("--csv writes the trials of a search, --from-csv reads them back: pass one")
-        experiment = hip.Experiment.from_csv(args.from_csv)
+    if args.from_parquet is not None:
+        if args.parquet is not None:
+            parser.error("--parquet writes the trials of a search, --from-parquet reads them back: pass one")
+        experiment = hip.Experiment.from_iterable(pl.read_parquet(args.from_parquet).to_dicts())
         write_page(experiment, args.out)
-        print(f"wrote {args.out} ({len(experiment.datapoints)} trials from {args.from_csv})")
+        print(f"wrote {args.out} ({len(experiment.datapoints)} trials from {args.from_parquet})")
         return 0
 
     # Imported here so that rendering from a CSV needs neither torch nor optuna.
@@ -107,13 +109,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             seed=args.seed,
         )
     )
+    # Trials are written before the page, so a failed render never loses a search.
+    if args.parquet is not None:
+        args.parquet.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(rows).write_parquet(args.parquet)
+        print(f"wrote {args.parquet}")
     experiment = hip.Experiment.from_iterable(rows)
     write_page(experiment, args.out)
     print(f"wrote {args.out}")
-    if args.csv is not None:
-        with args.csv.open("w", encoding="utf-8", newline="") as csv_file:
-            experiment.to_csv(csv_file)
-        print(f"wrote {args.csv}")
     return 0
 
 
