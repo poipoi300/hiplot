@@ -207,7 +207,11 @@ test("the 3D scatter pans with a right-drag, draws its plane fit and lassos a se
 
 test("the 3D scatter zooms only for wheel gestures that start on it", async ({ page }) => {
   const { box, label } = await open3D(page);
-  await page.evaluate(() => window.scrollBy(0, -200));
+  // Room to scroll on past the plot, however tall the page is.
+  await page.evaluate(() => {
+    document.body.style.paddingBottom = "1500px";
+    window.scrollBy(0, -200);
+  });
   const canvas = await scatterPanels(page)
     .last()
     .getByRole("img", { name: /3D scatter plot/ })
@@ -240,4 +244,43 @@ test("the 3D scatter zooms only for wheel gestures that start on it", async ({ p
   await page.mouse.wheel(0, -120);
   await expect.poll(() => label.getAttribute("style")).not.toBe(unzoomed);
   expect(await page.evaluate(() => window.scrollY)).toBe(settled);
+});
+
+test("a scatter shows the correlations of the selection and fits it", async ({ page }) => {
+  await loadDemo(page);
+  await page.getByRole("button", { name: "Add scatter plot" }).click();
+  await select(page, "X").selectOption("lr");
+  await select(page, "Y").selectOption("exp_metric");
+  const panel = scatterPanels(page).last();
+  const stats = panel.getByTestId("scatter-stats");
+  const table = stats.getByRole("table", { name: "Correlation of the selected rows" });
+  await expect(table).toContainText("Pearson r");
+  await expect(table).toContainText("Spearman ρ");
+  const selected =
+    (await page.getByTestId("selection-count").locator("strong").textContent()) ?? "";
+  await expect(table.locator("td").nth(2)).toHaveText(selected);
+  await expect(panel.getByTestId("scatter-fit")).toHaveAttribute("d", /^M/);
+  await expect(stats).toContainText("Least squares: log₁₀(exp_metric) =");
+  await expect(stats).toContainText("log₁₀(lr)");
+
+  await stats.getByRole("button", { name: "Binned means" }).click();
+  await expect(stats).toContainText("12 equal bins");
+  await expect(panel.getByTestId("scatter-fit")).toHaveAttribute("d", /^M/);
+
+  await select(page, "X").selectOption("optimizer");
+  await expect(panel.getByTestId("scatter-category-mean")).toHaveCount(3);
+  await expect(stats).toContainText("per optimizer, with its 95% interval");
+});
+
+test("a one-axis plot draws the best-fitting distribution and states it", async ({ page }) => {
+  await loadDemo(page);
+  await page.locator(".pplot-label[data-dimension='exp_metric']").click({ button: "right" });
+  await page.locator(".context-menu .dropdown-item", { hasText: "View distribution" }).click();
+  const plot = page.locator('[data-testid="distribution-plot"][data-axis="exp_metric"]');
+  await expect(plot.getByTestId("density-fit")).toHaveAttribute("d", /^M/);
+  await expect(plot.getByTestId("density-kde")).toHaveAttribute("d", /^M/);
+  const caption = plot.getByTestId("distribution-fit");
+  await expect(caption).toContainText("f(x) =");
+  await expect(caption).toContainText("Lowest BIC");
+  await expect(caption).toContainText(/n = [\d,]+/);
 });

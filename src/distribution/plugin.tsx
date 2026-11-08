@@ -8,6 +8,7 @@
 import $ from "jquery";
 import React from "react";
 import _ from "underscore";
+import { fitColor } from "../lib/fitcolor";
 import { ResizableH } from "../lib/resizable";
 import { isString, readState } from "../lib/savedstate";
 import { ColumnSelect, PanelHeader, SectionBar } from "../plots/frame";
@@ -100,6 +101,10 @@ export class DistributionView extends React.Component<
             animateMs={this.props.animateMs}
             highlighted={this.props.rows_highlighted}
             colorOf={(row) => this.props.get_color_for_row(row, 1)}
+            fitColor={fitColor(
+              this.props.color_binning.palette,
+              this.props.dark ? "dark" : "light",
+            )}
           />
         )}
       </ResizableH>

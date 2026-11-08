@@ -20,6 +20,7 @@ import { labelTextFromHtml } from "../lib/escape";
 import { powerOfTenLabels } from "../lib/numberformat";
 import { mounted } from "../lib/refs";
 import { type Datapoint, ParamType } from "../types";
+import { type ColumnFit, densityCurve, fitColumn } from "./fit";
 
 const margin = { top: 20, right: 20, bottom: 50, left: 60 };
 
@@ -67,7 +68,13 @@ export interface DistributionPlotData {
   /** Rows hovered anywhere on the page, marked where their value falls. */
   highlighted: ReadonlyArray<Datapoint>;
   colorOf: (row: Datapoint) => string;
+  /** Color of the fitted density, away from the data's colors. */
+  fitColor: string;
 }
+
+/** Points of a density curve across the plot. */
+const CURVE_STEPS = 160;
+const COUNT_FORMAT = new Intl.NumberFormat("en-US");
 
 /** A highlighted row and where its value falls along the data axis, in pixels. */
 interface HighlightMark {
@@ -90,6 +97,13 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
   histAll = React.createRef<SVGGElement>();
   histSelected = React.createRef<SVGGElement>();
   highlightLayer = React.createRef<SVGGElement>();
+  fitLayer = React.createRef<SVGGElement>();
+  /** The fit of the selected values, kept while the selection and column are. */
+  private fitCache: {
+    rows: ReadonlyArray<Datapoint>;
+    paramDef: ParamDef;
+    fit: ColumnFit | null;
+  } | null = null;
   /** Where a row's value falls along the data axis, as the bars were last drawn. */
   private positionOf: ((row: Datapoint) => number | null) | null = null;
 
@@ -257,7 +271,13 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
         return total ? hist.bins.map((d) => d.length / total) : [0];
       }),
     );
-    let densityScale = d3.scaleLinear().domain([0, maxDensityHistogram]);
+    // The fitted density of the selection, in the histogram's units, sets the
+    // scale's top too: a narrow peak must not leave the plot.
+    const curves = this.fitCurves(allHist.all.bins.length);
+    const maxCurve = Math.max(0, ...curves.flatMap((curve) => curve.points.map(([, y]) => y)));
+    let densityScale = d3
+      .scaleLinear()
+      .domain([0, Math.max(maxDensityHistogram, Math.min(maxCurve, 2 * maxDensityHistogram))]);
     // Map from original bin index -> displayed slot index.
     // In horizontal categorical mode we reorder categories by selected density.
     const displayIndexByOriginal = allHist.all.bins.map((_, i) => i);
@@ -308,6 +328,19 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
     Object.values(allHist).forEach((v) => {
       v.draw_fn(v, densityScale, animate, displayIndexByOriginal);
     });
+    const along = d3.scaleLinear().range(this.dataScale.range());
+    const line = d3
+      .line<[number, number]>()
+      .x(([position]) => along(position))
+      .y(([, share]) => densityScale(Math.min(share, densityScale.domain()[1])));
+    d3.select(mounted(this.fitLayer))
+      .selectAll<SVGPathElement, (typeof curves)[number]>("path")
+      .data(curves, (curve) => curve.kind)
+      .join("path")
+      .attr("class", (curve) => (curve.kind === "fit" ? style.densityFit : style.densityKde))
+      .attr("data-testid", (curve) => `density-${curve.kind}`)
+      .attr("stroke", (curve) => (curve.kind === "fit" ? this.props.fitColor : null))
+      .attr("d", (curve) => line(curve.points));
 
     const fractionOf = histogram.value();
     const pixelOf = d3.scaleLinear().range(this.dataScale.range());
@@ -326,6 +359,80 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
       return pixelOf((displayIndexByOriginal[bin] + 0.5) / binCount);
     };
     this.drawHighlight();
+  }
+
+  /** The fit of the selected values of a continuous column; null for categories. */
+  columnFit(): ColumnFit | null {
+    if (this.props.param_def.type === ParamType.CATEGORICAL) {
+      return null;
+    }
+    const rows = this.props.histData.selected;
+    const cached = this.fitCache;
+    if (cached !== null && cached.rows === rows && cached.paramDef === this.props.param_def) {
+      return cached.fit;
+    }
+    const axis = this.props.axis;
+    const values = rows.map((row) => row[axis]).filter((value) => typeof value === "number");
+    const fit = fitColumn(values);
+    this.fitCache = { rows, paramDef: this.props.param_def, fit };
+    return fit;
+  }
+
+  /** The fitted density and its KDE reference as shares of `binCount` bins along the axis. */
+  private fitCurves(binCount: number): Array<{ kind: "fit" | "kde"; points: [number, number][] }> {
+    const fit = this.columnFit();
+    if (fit === null || this.dataScale.kind !== "continuous") {
+      return [];
+    }
+    const valueAt = this.dataScale.copy().range([0, 1]);
+    const at = (position: number) => valueAt.invert(position);
+    const curves: Array<{ kind: "fit" | "kde"; points: [number, number][] }> = [
+      { kind: "fit", points: densityCurve((x) => fit.best.pdf(x), at, binCount, CURVE_STEPS) },
+    ];
+    const kde = fit.kde;
+    if (kde !== null) {
+      curves.push({
+        kind: "kde",
+        points: densityCurve((x) => kde.pdf(x), at, binCount, CURVE_STEPS),
+      });
+    }
+    return curves;
+  }
+
+  /** What the fitted curve is: the distribution, its formula and how it was chosen. */
+  private renderFitCaption(): React.ReactNode {
+    if (this.props.param_def.type === ParamType.CATEGORICAL) {
+      return null;
+    }
+    const fit = this.columnFit();
+    if (fit === null) {
+      return (
+        <div className={style.fitCaption} data-testid="distribution-fit">
+          No density fit: too few distinct selected values.
+        </div>
+      );
+    }
+    const { best, runnerUp } = fit;
+    const sample =
+      fit.fitted < fit.total
+        ? `fitted on an even sample of ${COUNT_FORMAT.format(fit.fitted)} of ${COUNT_FORMAT.format(fit.total)} values`
+        : `n = ${COUNT_FORMAT.format(fit.total)}`;
+    return (
+      <div className={style.fitCaption} data-testid="distribution-fit">
+        <div>
+          <span className={style.fitSwatch} style={{ background: this.props.fitColor }} />
+          <strong>{best.label}</strong>: {best.formula}
+        </div>
+        <div className={style.fitMethod}>
+          Lowest BIC of the candidates (normal, log-normal, exponential, gamma, beta on (0, 1),
+          Student t)
+          {runnerUp === null
+            ? ""
+            : `; next: ${runnerUp.label}, ΔBIC ${(runnerUp.bic - best.bic).toFixed(1)}`}
+          ; dashed: kernel density estimate; {sample}.
+        </div>
+      </div>
+    );
   }
 
   /** A line across the plot at each highlighted row's value, in the row's color. */
@@ -509,6 +616,7 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
               className={style.histSelected}
               ref={this.histSelected}
             ></g>
+            <g ref={this.fitLayer} pointerEvents="none"></g>
             <g ref={this.highlightLayer} pointerEvents="none"></g>
             <g className="axisLeft" ref={this.axisLeft}></g>
             <g
@@ -529,6 +637,7 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
             ></g>
           </g>
         </svg>
+        {this.renderFitCaption()}
       </div>
     );
   }

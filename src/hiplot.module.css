@@ -131,6 +131,38 @@
   stroke-width: 5px;
 }
 
+/* The density fitted to a one-axis plot, its KDE reference, and what they are. */
+.densityFit {
+  fill: none;
+  stroke-width: 2px;
+}
+.densityKde {
+  fill: none;
+  stroke: var(--hip-muted);
+  stroke-width: 1.25px;
+  stroke-dasharray: 4 3;
+}
+.fitCaption {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 14px 10px 60px;
+  color: var(--hip-fg);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.fitMethod {
+  color: var(--hip-muted);
+}
+.fitSwatch {
+  display: inline-block;
+  width: 14px;
+  height: 3px;
+  margin-right: 8px;
+  border-radius: 2px;
+  vertical-align: 3px;
+}
+
 /* Histogram */
 .histSelected line {
   stroke: black;
@@ -150,6 +182,48 @@
 .plotxy-graph-svg :global(.plotxy-label) {
   font-size: 12px;
   font-weight: 600;
+}
+/* The fit of a scatter's selected rows and the correlations under it. */
+.plotxyFit {
+  pointer-events: none;
+}
+.plotxyFitLine {
+  fill: none;
+  stroke-width: 2px;
+}
+.plotxyFitMean {
+  r: 4px;
+  stroke: var(--hip-bg);
+  stroke-width: 1.5px;
+}
+.scatterStats {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 6px 20px 10px;
+  color: var(--hip-fg);
+  font-size: 12px;
+}
+.correlationTable {
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.correlationTable th {
+  padding: 0 12px 0 0;
+  color: var(--hip-muted);
+  font-weight: 500;
+  text-align: left;
+}
+.correlationTable td {
+  padding: 0 12px 0 0;
+  font-weight: 600;
+}
+.scatterStatsCount {
+  color: var(--hip-muted);
+}
+.scatterFit {
+  flex: 1;
+  min-width: 0;
 }
 /* The name of the point under the pointer, over the dots. */
 .plotxyHoverText {

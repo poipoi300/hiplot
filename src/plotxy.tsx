@@ -13,14 +13,18 @@ import { ContextMenu } from "./contextmenu";
 import style from "./hiplot.module.css";
 import { create_d3_scale, type ParamDef, type ParamScale } from "./infertypes";
 import { IS_MOBILE } from "./lib/browsercompat";
+import controls from "./lib/controls.module.css";
 import { getLogScaleTickValues, type Scale } from "./lib/d3_scales";
 import { labelTextFromHtml } from "./lib/escape";
+import { fitColor } from "./lib/fitcolor";
 import { powerOfTenLabels } from "./lib/numberformat";
 import { mounted } from "./lib/refs";
 import { ResizableH } from "./lib/resizable";
 import { isString, readState } from "./lib/savedstate";
 import { valueFormatter } from "./parallel/axisformat";
+import { type FitMode, isFitMode, type ScatterStats, scatterStats } from "./plots/scatterstats";
 import type { HiPlotPluginData } from "./plugin";
+import { formatParameter } from "./stats/distributions";
 import { type Datapoint, type DatapointValue, ParamType } from "./types";
 
 // DISPLAYS_DATA_DOC_BEGIN
@@ -60,7 +64,20 @@ interface PlotXYState extends PlotXYDisplayData {
   height: number;
   hover_uid: string | null;
   highlightType: HighlightType;
+  /** How two numeric columns are summarized: a straight fit or binned means. */
+  fitMode: FitMode;
+  /** Correlations and the fit of the selected rows, as last drawn. */
+  stats: ScatterStats | null;
 }
+
+const COUNT_FORMAT = new Intl.NumberFormat("en-US");
+/** Distinguishes the clip paths of the fits of several scatters on one page. */
+let fitClipCount = 0;
+/** Width of the caps at the ends of a category mean's interval. */
+const CAP_PIXELS = 6;
+
+/** A correlation coefficient to two decimals, or a dash when there is none. */
+const coefficient = (value: number): string => (Number.isFinite(value) ? value.toFixed(2) : "–");
 
 type AxisName = "axis_x" | "axis_y";
 type SvgSelection = d3.Selection<SVGSVGElement, unknown, null, undefined>;
@@ -218,6 +235,8 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
         isHighlightType,
         HIGHLIGHT_PARENT,
       ),
+      fitMode: readState(props.persistentState, "fit", isFitMode, "linear"),
+      stats: null,
     };
   }
   static defaultProps = {
@@ -282,6 +301,14 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
     const svg = div.select<SVGSVGElement>("svg");
     let currently_displayed: DisplayedPoint[] = [];
     let zoom_brush: d3.BrushBehavior<unknown>;
+
+    // The fit of the selected rows, over the dots and under the zoom brush.
+    const fitClipId = `plotxy-fit-clip-${++fitClipCount}`;
+    const fitClip = svg.append("clipPath").attr("id", fitClipId).append("rect");
+    const fitLayer = svg
+      .append("g")
+      .attr("class", style.plotxyFit)
+      .attr("clip-path", `url(#${fitClipId})`);
 
     // Lines
     const graph_lines = canvas2dContext(mounted(this.canvas_lines_ref));
@@ -696,12 +723,80 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
       }
     }
 
+    /** Draws the fit of `stats` with the current (possibly zoomed) scales. */
+    function draw_fit(stats: ScatterStats): void {
+      fitLayer.selectAll("*").remove();
+      // Fits stay inside the plot area, where their values are on the axes.
+      fitClip
+        .attr("x", margin.left)
+        .attr("y", margin.top)
+        .attr("width", Math.max(0, me.state.width - margin.left - margin.right))
+        .attr("height", Math.max(0, me.state.height - margin.top - margin.bottom));
+      const color = fitColor(me.props.color_binning.palette, me.props.dark ? "dark" : "light");
+      if (stats.kind === "numeric" && stats.fit !== null) {
+        const points = stats.fit.points
+          .map(([x, y]): [number, number] => [x_scale(x), y_scale(y)])
+          .filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y));
+        fitLayer
+          .append("path")
+          .attr("class", style.plotxyFitLine)
+          .attr("data-testid", "scatter-fit")
+          .attr("stroke", color)
+          .attr("d", d3.line()(points));
+        return;
+      }
+      if (stats.kind !== "categorical") {
+        return;
+      }
+      for (const mean of stats.means) {
+        const along = stats.categoriesOn === "x" ? x_scale : y_scale;
+        const across = stats.categoriesOn === "x" ? y_scale : x_scale;
+        const at = along(mean.category);
+        const [center, low, high] = [mean.mean, mean.lower, mean.upper].map((value) =>
+          across(value),
+        );
+        const place = (a: number, b: number): [number, number] =>
+          stats.categoriesOn === "x" ? [a, b] : [b, a];
+        const group = fitLayer
+          .append("g")
+          .attr("data-testid", "scatter-category-mean")
+          .attr("stroke", color)
+          .attr("fill", color);
+        if (Number.isFinite(low) && Number.isFinite(high)) {
+          const interval = [
+            [place(at, low), place(at, high)],
+            [place(at - CAP_PIXELS / 2, low), place(at + CAP_PIXELS / 2, low)],
+            [place(at - CAP_PIXELS / 2, high), place(at + CAP_PIXELS / 2, high)],
+          ];
+          for (const [[x1, y1], [x2, y2]] of interval) {
+            group
+              .append("line")
+              .attr("class", style.plotxyFitLine)
+              .attr("x1", x1)
+              .attr("y1", y1)
+              .attr("x2", x2)
+              .attr("y2", y2);
+          }
+        }
+        const [cx, cy] = place(at, center);
+        group.append("circle").attr("class", style.plotxyFitMean).attr("cx", cx).attr("cy", cy);
+      }
+    }
+
     function draw_selected_rows() {
       if (!me.isEnabled()) {
         return;
       }
       clear_canvas();
       const axes = me.requireAxes();
+      const stats = scatterStats(
+        me.props.rows_selected,
+        { column: axes.x, type: x_scale.paramType },
+        { column: axes.y, type: y_scale.paramType },
+        me.state.fitMode,
+      );
+      me.setState({ stats });
+      draw_fit(stats);
       const xp_config = me.props;
       const area = (me.state.height * me.state.width) / 400000;
       const lines_opacity =
@@ -854,6 +949,14 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
       return [];
     }
     return (
+      <>
+        {this.renderChart()}
+        {this.state.width > 0 && this.renderStats()}
+      </>
+    );
+  }
+  renderChart(): React.ReactNode {
+    return (
       <ResizableH
         initialHeight={this.state.height}
         onResize={this.onResize}
@@ -879,6 +982,95 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
           </div>
         )}
       </ResizableH>
+    );
+  }
+
+  /** The correlations of the selected rows and what the drawn fit is. */
+  renderStats(): React.ReactNode {
+    const stats = this.state.stats;
+    if (stats === null) {
+      return null;
+    }
+    const { x: axis_x, y: axis_y } = this.requireAxes();
+    const color = fitColor(this.props.color_binning.palette, this.props.dark ? "dark" : "light");
+    const swatch = <span className={style.fitSwatch} style={{ background: color }} />;
+    const term = (column: string, logged: boolean) => (logged ? `log₁₀(${column})` : column);
+    let description: React.ReactNode;
+    if (stats.kind === "none") {
+      description = stats.reason;
+    } else if (stats.kind === "categorical") {
+      const [categories, values] = stats.categoriesOn === "x" ? [axis_x, axis_y] : [axis_y, axis_x];
+      description = (
+        <>
+          {swatch}
+          {stats.logged ? "Geometric mean" : "Mean"} of {values} per {categories}, with its 95%
+          interval (Student t){stats.logged ? ", fitted in log space" : ""}
+        </>
+      );
+    } else if (stats.fit === null) {
+      description = "No fit: too few rows with both values";
+    } else if (stats.fit.mode === "linear") {
+      const { intercept, slope, r2 } = stats.fit;
+      description = (
+        <>
+          {swatch}
+          Least squares: {term(axis_y, stats.logY)} = {formatParameter(intercept).replace("-", "−")}{" "}
+          {slope < 0 ? "−" : "+"} {formatParameter(Math.abs(slope))}·{term(axis_x, stats.logX)}, R²{" "}
+          {r2.toFixed(2)}
+        </>
+      );
+    } else {
+      description = (
+        <>
+          {swatch}
+          Mean of {term(axis_y, stats.logY)} in 12 equal bins of {term(axis_x, stats.logX)}
+        </>
+      );
+    }
+    return (
+      <div className={style.scatterStats} data-testid="scatter-stats">
+        {stats.kind === "numeric" && (
+          <table className={style.correlationTable} aria-label="Correlation of the selected rows">
+            <thead>
+              <tr>
+                <th scope="col">Pearson r</th>
+                <th scope="col">Spearman ρ</th>
+                <th scope="col">n</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>{coefficient(stats.summary.pearson)}</td>
+                <td>{coefficient(stats.summary.spearman)}</td>
+                <td>{COUNT_FORMAT.format(stats.summary.n)}</td>
+              </tr>
+            </tbody>
+          </table>
+        )}
+        {stats.kind === "categorical" && (
+          <span className={style.scatterStatsCount}>n {COUNT_FORMAT.format(stats.n)}</span>
+        )}
+        <span className={style.scatterFit}>{description}</span>
+        {stats.kind === "numeric" && (
+          <fieldset className={controls.segmented} aria-label="Fit">
+            {(
+              [
+                ["linear", "Linear"],
+                ["binned", "Binned means"],
+              ] as const
+            ).map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={this.state.fitMode === mode}
+                onClick={() => this.setState({ fitMode: mode })}
+              >
+                {label}
+              </button>
+            ))}
+          </fieldset>
+        )}
+      </div>
     );
   }
   componentWillUnmount() {
@@ -919,6 +1111,10 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
     });
     if (this.state.highlightType !== prevState.highlightType) {
       this.props.persistentState.set("highlightType", this.state.highlightType);
+    }
+    if (this.state.fitMode !== prevState.fitMode) {
+      this.props.persistentState.set("fit", this.state.fitMode);
+      this.drawSelectedThrottled();
     }
     if (this.state.width === 0) {
       return; // Loading...
