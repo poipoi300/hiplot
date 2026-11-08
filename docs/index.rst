@@ -5,7 +5,8 @@
    :end-line: 14
 
 .. note::
-   HiPlot is now maintained as a community fork at `mindthemath/hiplot <https://github.com/mindthemath/hiplot>`_,
+   This is `poipoi300/hiplot <https://github.com/poipoi300/hiplot>`_, a fork of the
+   `mindthemath/hiplot <https://github.com/mindthemath/hiplot>`_ community fork, which kept HiPlot alive
    after the original `facebookresearch/hiplot <https://github.com/facebookresearch/hiplot>`_ repository was archived.
 
 HiPlot demonstration

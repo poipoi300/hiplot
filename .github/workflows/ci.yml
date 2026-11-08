@@ -150,7 +150,7 @@ jobs:
         run: |
           uv run --extra server hiplot --help
           uv run hiplot-render --help
-          uv run hiplot-mm --help
+          uv run hiplot-plus --help
 
   windows:
     needs: build-js
@@ -175,7 +175,7 @@ jobs:
         run: |
           uv run --extra server hiplot --help
           uv run hiplot-render --help
-          uv run hiplot-mm --help
+          uv run hiplot-plus --help
 
   package-verify:
     needs: build-js

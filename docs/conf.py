@@ -36,7 +36,7 @@ master_doc = "index"
 project = "HiPlot"
 copyright = "2020, Facebook AI Research (FAIR)"
 author = "Facebook AI Research (FAIR)"
-github_doc_root = "https://github.com/mindthemath/hiplot"
+github_doc_root = "https://github.com/poipoi300/hiplot"
 
 release = hiplot.pkginfo.__version__
 version = ".".join(release.split(".")[:2])
@@ -51,7 +51,7 @@ html_theme_path = guzzle_sphinx_theme.html_theme_path()
 html_theme = "guzzle_sphinx_theme"
 html_theme_options = {
     "project_nav_name": "HiPlot",
-    "base_url": "https://mindthemath.github.io/hiplot/",
+    "base_url": "https://poipoi300.github.io/hiplot/",
 }
 html_static_path = ["_static"]
 html_sidebars = {"**": ["logo-text.html", "globaltoc.html", "searchbox.html"]}
@@ -59,7 +59,7 @@ htmlhelp_basename = "HiPlotdoc"
 
 # External sites that frequently block automated link check user agents.
 linkcheck_ignore = [
-    r"https://www\.npmjs\.com/package/hiplot-mm",
+    r"https://www\.npmjs\.com/package/hiplot-plus",
 ]
 
 latex_documents = [

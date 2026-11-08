@@ -30,7 +30,7 @@ class _StreamlitHelpers:
             from streamlit import runtime
         except ImportError as e:
             raise ImportError(
-                "Streamlit is required for Streamlit support. Install it with: pip install hiplot-mm[streamlit]"
+                "Streamlit is required for Streamlit support. Install it with: pip install hiplot-plus[streamlit]"
             ) from e
         try:
             import streamlit.components.v1 as components
@@ -44,7 +44,7 @@ Please update streamlit with `pip install -U streamlit`""") from e
         built_path = (Path(__file__).parent / "static" / "built" / "streamlit_component").resolve()
         assert (built_path / "index.html").is_file(), f"""HiPlot component does not appear to exist in {built_path}
 If you did not install hiplot using official channels (pip, conda...), maybe you forgot to build javascript files?
-See https://mindthemath.github.io/hiplot/contributing.html#building-javascript-bundle
+See https://poipoi300.github.io/hiplot/contributing.html#building-javascript-bundle
 """
         component: tp.Callable[..., tp.Any] = components.declare_component("hiplot", path=str(built_path))
         cls.component = component

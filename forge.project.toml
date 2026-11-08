@@ -1,13 +1,13 @@
 schema = 1
 
 [project]
-name = "HiPlot (hiplot-mm)"
-id = "hiplot-mm"
+name = "HiPlot (hiplot-plus)"
+id = "hiplot-plus"
 summary = "Interactive parallel coordinates for high-dimensional data, from Python or the browser"
 kind = "library"
 languages = ["python", "typescript"]
 tags = ["visualization", "parallel-coordinates", "fork"]
-homepage = "https://github.com/mindthemath/hiplot"
+homepage = "https://github.com/poipoi300/hiplot"
 docs = "README.md"
 
 [v1]

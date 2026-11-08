@@ -26,7 +26,7 @@ def create_app(fetchers: Iterable[exp.ExperimentFetcher]) -> "Flask":
         from flask_compress import Compress
     except ImportError as e:
         raise ImportError(
-            "Flask is required to run the HiPlot server. Install it with: pip install hiplot-mm[server]"
+            "Flask is required to run the HiPlot server. Install it with: pip install hiplot-plus[server]"
         ) from e
 
     fetchers = list(fetchers)

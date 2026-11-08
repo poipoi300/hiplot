@@ -1,10 +1,10 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["torch>=2.7", "optuna>=4.0", "scikit-learn>=1.5", "polars>=1.0", "hiplot-mm"]
+# dependencies = ["torch>=2.7", "optuna>=4.0", "scikit-learn>=1.5", "polars>=1.0", "hiplot-plus"]
 #
 # [tool.uv.sources]
 # torch = [{ index = "pytorch-cu128", marker = "sys_platform != 'darwin'" }]
-# hiplot-mm = { path = "../..", editable = true }
+# hiplot-plus = { path = "../..", editable = true }
 #
 # [[tool.uv.index]]
 # name = "pytorch-cu128"

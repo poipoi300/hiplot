@@ -4,7 +4,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-package_name = "hiplot-mm"
+package_name = "hiplot-plus"
 
 # Dynamic version from installed package metadata
 # This ensures __version__ matches pyproject.toml when installed via pip

@@ -38,7 +38,7 @@ Within the activated environment, use the following command to install HiPlot:
 
 .. code-block:: bash
 
-    pip install -U "hiplot-mm>=0.0.4"
+    pip install -U "hiplot-plus>=0.0.4"
 
 
 Congratulation, HiPlot is now ready to use! You can either:

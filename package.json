@@ -1,16 +1,16 @@
 {
-  "name": "hiplot",
+  "name": "hiplot-plus",
   "version": "0.0.3",
   "description": "HiPlot is a lightweight interactive visualization tool to help AI researchers discover correlations and patterns in high-dimensional data using parallel plots and other graphical ways to represent information.",
-  "homepage": "https://github.com/mindthemath/hiplot#readme",
+  "homepage": "https://github.com/poipoi300/hiplot#readme",
   "bugs": {
-    "url": "https://github.com/mindthemath/hiplot/issues"
+    "url": "https://github.com/poipoi300/hiplot/issues"
   },
   "license": "MIT",
   "author": "Facebook AI Research",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mindthemath/hiplot.git"
+    "url": "https://github.com/poipoi300/hiplot.git"
   },
   "type": "module",
   "main": "npm-dist/hiplot.lib.js",

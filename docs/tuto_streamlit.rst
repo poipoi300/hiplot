@@ -10,9 +10,9 @@ HiPlot component for Streamlit
 Getting started
 ----------------------------------
 
-You'll need both Streamlit (>=0.63 for `components support <https://docs.streamlit.io/develop/concepts/custom-components/intro>`_) and HiPlot (hiplot-mm >= 0.0.4)
+You'll need both Streamlit (>=0.63 for `components support <https://docs.streamlit.io/develop/concepts/custom-components/intro>`_) and HiPlot (hiplot-plus >= 0.0.4)
 
->>> pip install -U streamlit "hiplot-mm>=0.0.4"
+>>> pip install -U streamlit "hiplot-plus>=0.0.4"
 
 
 Displaying an :class:`hiplot.Experiment`

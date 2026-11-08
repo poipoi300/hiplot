@@ -1,9 +1,10 @@
-# HiPlot (hiplot-mm)
+# HiPlot (hiplot-plus)
 
 HiPlot draws high-dimensional data as interactive parallel coordinates,
 scatter panels (one-axis distributions, XY, 3D) and a table, from Python (notebooks,
 Streamlit, a web server, standalone HTML) or as a JavaScript library. This
-repository is the community fork published on PyPI as `hiplot-mm`; the import
+repository is poipoi300's fork of the mindthemath community fork, published on
+PyPI as `hiplot-plus`; the import
 package stays `hiplot`.
 
 This file is the contributor instructions for coding agents. CLAUDE.md imports

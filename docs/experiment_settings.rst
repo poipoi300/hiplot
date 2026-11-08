@@ -22,7 +22,7 @@ Multiple points can share the same parent - this is especially useful when repre
 
 .. raw:: html
 
-    <iframe src="https://mindthemath.github.io/hiplot/_static/demo/demo_line_xy.html?hip.theme=light" height="1000px" style="width: 100%; border: 0;"></iframe>
+    <iframe src="https://poipoi300.github.io/hiplot/_static/demo/demo_line_xy.html?hip.theme=light" height="1000px" style="width: 100%; border: 0;"></iframe>
 
 
 .. _frontendRenderingSettings:

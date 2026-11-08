@@ -23,7 +23,7 @@ def _get_ipython_display() -> t.Any:
         return IPython.display
     except ImportError as e:
         raise ImportError(
-            "IPython is required for notebook support. Install it with: pip install hiplot-mm[notebook]"
+            "IPython is required for notebook support. Install it with: pip install hiplot-plus[notebook]"
         ) from e
 
 
@@ -33,7 +33,7 @@ def _require_ipykernel() -> None:
         import ipykernel.comm  # noqa: F401
     except ImportError as e:
         raise ImportError(
-            "ipykernel is required for notebook support. Install it with: pip install hiplot-mm[notebook]"
+            "ipykernel is required for notebook support. Install it with: pip install hiplot-plus[notebook]"
         ) from e
 
 
