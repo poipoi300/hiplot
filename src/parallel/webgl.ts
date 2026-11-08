@@ -494,6 +494,12 @@ void main() {
  * over that peak, and the opacity is the peak times its tone mapping. A lone
  * line or a bundle comes out exactly; where many lines cross a pixel at
  * different offsets the peak nears 1 and the density is the plain sum.
+ *
+ * The canvas holds 8 bits per channel. Where many lines fan out, opacity and
+ * color fade by about one level every few pixels, and rounding each pixel
+ * holds every level over a band; half a level of noise that differs between
+ * neighbors (interleaved gradient noise, Jimenez 2014) makes them round
+ * either way instead, which the eye averages back into the fade.
  */
 const COMPOSITE_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
@@ -509,6 +515,10 @@ uniform float u_contextReference;
 uniform vec3 u_contextColor;
 uniform float u_contextAlpha;
 out vec4 color;
+/** A threshold in [0, 1) per pixel, unlike its neighbors'. */
+float gradientNoise(vec2 pixel) {
+  return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+}
 float toneMapped(float coverageSum, float peakCoverage, float reference) {
   if (peakCoverage <= 0.0) {
     return 0.0;
@@ -554,6 +564,15 @@ void main() {
     selectedColor * selectedAlpha + u_contextColor * contextAlpha * (1.0 - selectedAlpha),
     selectedAlpha + contextAlpha * (1.0 - selectedAlpha)
   );
+  if (color.a <= 0.0) {
+    return;
+  }
+  // Color and opacity take noise from two patterns: over a background the
+  // shown color mixes both, and equal noise in both cancels over white.
+  color.rgb += (gradientNoise(gl_FragCoord.xy) - 0.5) / 255.0;
+  color.a += (gradientNoise(gl_FragCoord.yx) - 0.5) / 255.0;
+  color = clamp(color, 0.0, 1.0);
+  color.rgb = min(color.rgb, color.a);
 }
 `;
 

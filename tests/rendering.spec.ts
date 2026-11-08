@@ -421,6 +421,19 @@ test("pixels crossed by lines at every offset are fully opaque", async ({ page }
   expect(Math.min(...opacities)).toBeGreaterThanOrEqual(254);
 });
 
+test("a smooth fade of density is dithered rather than banded", async ({ page }) => {
+  const opacities = await fanOpacities(page, 0.2, 0.8);
+  // The fade spans tens of 8-bit levels over hundreds of pixels. Rounded,
+  // it holds each level over a run of pixels: a band. Dithered, neighbors
+  // round either way and runs stay short.
+  let runs = 1;
+  for (let i = 1; i < opacities.length; ++i) {
+    runs += opacities[i] === opacities[i - 1] ? 0 : 1;
+  }
+  expect(Math.max(...opacities) - Math.min(...opacities)).toBeGreaterThan(20);
+  expect(opacities.length / runs).toBeLessThan(2.5);
+});
+
 for (const [mode, expected] of [
   ["mean", "the color map at their mean value"],
   ["lowest", "the lowest value's color"],
