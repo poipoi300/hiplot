@@ -492,3 +492,85 @@ Reading it:
   8.3 ms frame on this machine, with no margin on a slower GPU.
 - Load columns move within the drift between sessions seen in earlier
   rounds; the JS heap is one sample after the run.
+
+## Million-row, unchanged-picture investigation
+
+The older benchmark above times **submission**, not GPU completion. The new
+`bench/parallel.ts` isolates the parallel display and includes fence completion:
+
+```bash
+bun run build
+bun build bench/parallel.ts --target=node --packages=external --outfile=./node_modules/.cache/parallel-bench.mjs
+node node_modules/.cache/parallel-bench.mjs --reps 1 --steps 3 --out <software.json>
+node node_modules/.cache/parallel-bench.mjs --backend hardware --reps 1 --steps 3 --out <hardware.json>
+```
+
+Defaults are 1,000,000 rows, 10 numeric columns, seed 20261109, eight gesture
+steps and three repetitions. The second variant quantizes the same seeded
+values to eight integers. Payload generation and draw-order shuffling use
+independent seeded generators. The browser receives the column-major payload
+through the public `hiplot.render` API; this is not an HTML download/JSON decode
+benchmark. Only `PARALLEL_PLOT` is enabled, excluding table/scatter work. Dataset
+generation is reported separately from load-to-first-completed-frame, which
+includes inference, geometry, uploads and GPU completion. Node drives Playwright
+because Bun's browser pipe does not work on Windows; Bun bundles the harness's
+local TypeScript imports first. The harness is outside the production bundle.
+
+The software run uses exactly the four SwiftShader flags in
+`playwright.config.ts`; hardware requests the full Chromium build and records
+its actual unmasked GL renderer (never infer hardware from requested flags).
+Both use a 1,000 × 700 viewport and device pixel ratio 1. The scroll phase narrows
+the viewport to 360 × 700 so even short integer tick labels overflow. Forced
+full quality disables row sampling/resolution reduction, but brushing and axis
+dragging retain the existing plain-line draft path above 20,000 rows. Release,
+initial and standalone redraw frames are full-quality anti-aliased frames.
+
+Per-step samples include brush callback CPU time, filtering, object selection
+materialization, cached selection flags, per-column geometry/color lookup,
+selection/geometry upload submission, renderer submission, and fence latency.
+Nested stage times **must not be added** to their parent CPU times. Geometry
+lookup is per column, not per frame. Upload times are CPU submission costs;
+GPU execution is included in the fence. Fence latency is wall time from renderer
+submission to observed completion, not a hardware timer query: it includes
+scheduling and polling error. It is suitable for SwiftShader and consistent
+before/after comparisons, not a claim to isolate GPU execution from the OS.
+Axis drag uses the real d3 mouse handlers and crosses neighboring axes; small
+moves that do not reorder currently move SVG axes without redrawing lines.
+Scroll measurements include the existing 150 ms settle redraw, and all queued
+brush/scroll/deferred draws and fences settle before the next step. Raw JSON
+contains every sample, p50/p95 and counts; single-load runs are exploratory,
+not statistically significant claims. Repeat with defaults before interpreting
+small differences. The instrumentation's pixel-equivalence test requires
+**zero differing 8-bit channels** between instrumented and plain redraws.
+
+### Baseline at `973f570`
+
+Measured 2026-11-09 on the workstation above, one load and three gesture
+steps per variant/backend (exploratory p50s, milliseconds):
+
+| Backend / rows / data | Load → first fence | Full fence | Brush CPU | Filter / materialize | Brush draft fence | Axis redraw fence | Scroll fence |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| RTX 5090 / 1M / continuous | 8919 | 227.3 | 18.5 | 6.7 / 7.9 | 50.1 | 75.8 | 109.5 |
+| RTX 5090 / 1M / integer | 2206 | 241.9 | 16.9 | 6.0 / 6.5 | 63.5 | 97.1 | 108.9 |
+| SwiftShader / 1M / continuous | **Cannot draw** | — | — | — | — | — | — |
+| SwiftShader / 1M / integer | **Cannot draw** | — | — | — | — | — | — |
+| SwiftShader / 100k / continuous | 19171 | 9422.3 | 6.0 | 2.0 / 1.2 | 9399.5 | 9361.4 | 15321.8 |
+| SwiftShader / 100k / integer | 19232 | 9286.3 | 4.8 | 1.6 / 1.0 | 9259.4 | 9339.1 | 16963.1 |
+
+The million-row software baseline fails rather than merely rendering slowly:
+`Too many columns for one WebGL texture (20)`. Ten columns need 10 × 489
+texture rows; the allocator reserves twice that, 9,780, beyond SwiftShader's
+8,192 limit even though the actual columns fit. The benchmark records both
+failures, preserves the errors in JSON and exits nonzero. The initial harness
+waited 240 s for that failed display; it now surfaces the display's error
+boundary immediately. These failures are not timings of a completed picture.
+
+The hardware probe reports NVIDIA RTX 5090 via ANGLE Direct3D11, not software.
+CPU selection upload p50 is 0.5 / 0.8 ms (continuous / integer); renderer
+submission 0.2 / 0.8 ms, much smaller than the fence. Order-crossing axis steps
+recompute all ten pixel columns: per-column p50 26.4 / 26.6 ms, followed by
+25.1 / 30.0 ms of geometry-upload submission. Existing scale objects are
+replaced on order-only reorders, invalidating otherwise reusable columns.
+There is one axis line redraw across the three input steps, not three: the
+current handler only redraws on a neighbor crossing. Scroll has six draws
+across three steps because each step also schedules the settle redraw.
