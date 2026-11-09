@@ -41,6 +41,14 @@ export interface LineFrame {
    * bandwidth (see DensityPrecision).
    */
   draft: boolean;
+  /**
+   * Device resolution the densities are summed at, per axis, from 0 to 1:
+   * below 1 in low-performance mode (see performance.ts), which then
+   * stretches them over the canvas. Lines without float targets ignore it.
+   */
+  resolution: number;
+  /** Rows drawn, from the start of the shuffled draw order: all of them, or a sample. */
+  drawnRows: number;
   /** Selected and deselected line counts, which set the density scale. */
   selectedCount: number;
   contextCount: number;
@@ -523,6 +531,8 @@ uniform float u_selectedReference;
 uniform float u_contextReference;
 uniform vec3 u_contextColor;
 uniform float u_contextAlpha;
+/** Resolution of the density targets relative to the canvas (see LineFrame.resolution). */
+uniform float u_resolution;
 out vec4 color;
 /** A threshold in [0, 1) per pixel, unlike its neighbors'. */
 float gradientNoise(vec2 pixel) {
@@ -564,7 +574,7 @@ vec3 selectedColor(ivec2 pixel, vec4 sums, float selectedCoverage) {
   return mix(mixed, colorMapAt(value), min(coverage / sums.a, 1.0));
 }
 void main() {
-  ivec2 pixel = ivec2(gl_FragCoord.xy);
+  ivec2 pixel = ivec2(gl_FragCoord.xy * u_resolution);
   vec4 sums = texelFetch(u_selectedSums, pixel, 0);
   vec4 coverage = texelFetch(u_coverageSums, pixel, 0);
   float selectedAlpha = toneMapped(coverage.r, sums.a, u_selectedReference);
@@ -712,6 +722,10 @@ export class WebGLLineRenderer {
   private uploadedSelection: Uint8Array | null = null;
   /** Signals when the GPU has finished the last frame drawn. */
   private inFlight: WebGLSync | null = null;
+  /** When the frame in flight was submitted. */
+  private submittedAt = 0;
+  /** How long the last finished frame took, until finishedFrameMs() reads it. */
+  private finishedMs: number | null = null;
 
   /** A renderer on `canvas`, or null when WebGL2 is unavailable. */
   static create(canvas: HTMLCanvasElement): WebGLLineRenderer | null {
@@ -953,7 +967,19 @@ export class WebGLLineRenderer {
     }
     gl.deleteSync(this.inFlight);
     this.inFlight = null;
+    this.finishedMs = performance.now() - this.submittedAt;
     return false;
+  }
+
+  /**
+   * The time from submitting the last frame to the GPU finishing it, read
+   * once; null until `busy` has seen it finish. Accurate to the interval
+   * `busy` is polled at.
+   */
+  finishedFrameMs(): number | null {
+    const milliseconds = this.finishedMs;
+    this.finishedMs = null;
+    return milliseconds;
   }
 
   /** Whether lines are tone-mapped from their density (float render targets available). */
@@ -1029,7 +1055,11 @@ export class WebGLLineRenderer {
   }
 
   /** Binds the line data and uniforms shared by every line pass; returns the points per segment. */
-  private prepareLines(program: Program, frame: LineFrame): number {
+  private prepareLines(
+    program: Program,
+    frame: LineFrame,
+    target: { width: number; height: number },
+  ): number {
     const gl = this.gl;
     // biome-ignore lint/correctness/useHookAtTopLevel: WebGL2RenderingContext.useProgram, not a React hook.
     gl.useProgram(program.program);
@@ -1047,10 +1077,10 @@ export class WebGLLineRenderer {
     gl.uniform1i(program.uniform("u_curved"), frame.curved ? 1 : 0);
     gl.uniform2f(
       program.uniform("u_deviceScale"),
-      gl.drawingBufferWidth / Math.max(1, frame.width),
-      gl.drawingBufferHeight / Math.max(1, frame.height),
+      target.width / Math.max(1, frame.width),
+      target.height / Math.max(1, frame.height),
     );
-    gl.uniform2f(program.uniform("u_viewport"), gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.uniform2f(program.uniform("u_viewport"), target.width, target.height);
     gl.uniform1i(program.uniform("u_antialiased"), frame.draft ? 0 : 1);
     // Plain lines cover their pixels fully: coverage() is 1 at v_across = 0.
     gl.uniform1f(
@@ -1067,7 +1097,7 @@ export class WebGLLineRenderer {
       frame.draft ? gl.LINE_STRIP : gl.TRIANGLE_STRIP,
       0,
       frame.draft ? samples : 2 * samples,
-      this.rowCount * segmentsPerLine(frame.axes.length),
+      Math.min(frame.drawnRows, this.rowCount) * segmentsPerLine(frame.axes.length),
     );
     gl.bindVertexArray(null);
   }
@@ -1075,6 +1105,8 @@ export class WebGLLineRenderer {
   /** Draws a frame and marks it in flight until the GPU has finished it (see `busy`). */
   draw(frame: LineFrame): void {
     const gl = this.gl;
+    this.submittedAt = performance.now();
+    this.finishedMs = null;
     this.drawFrame(frame);
     if (this.inFlight !== null) {
       gl.deleteSync(this.inFlight);
@@ -1122,7 +1154,7 @@ export class WebGLLineRenderer {
     if (this.densityPrograms === null) {
       // Deselected lines first, then the selection over them.
       const program = this.directProgram;
-      const samples = this.prepareLines(program, frame);
+      const samples = this.prepareLines(program, frame, { width, height });
       gl.blendEquation(gl.FUNC_ADD);
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       gl.uniform1f(
@@ -1142,7 +1174,11 @@ export class WebGLLineRenderer {
     }
 
     // One pass accumulates both layers; a second tone-maps them onto the canvas.
-    const targets = this.densityTargets(width, height, this.densityPrecision(frame));
+    const targets = this.densityTargets(
+      Math.max(1, Math.ceil(width * frame.resolution)),
+      Math.max(1, Math.ceil(height * frame.resolution)),
+      this.densityPrecision(frame),
+    );
     const { lines, composite } = this.densityPrograms;
     const onTopLevels =
       ON_TOP_COVERAGE_LEVELS[targets.precision.onTop === gl.RGBA32F ? "single" : "half"];
@@ -1156,7 +1192,7 @@ export class WebGLLineRenderer {
       gl.COLOR_ATTACHMENT1,
       withOnTop ? gl.COLOR_ATTACHMENT2 : gl.NONE,
     ]);
-    gl.viewport(0, 0, width, height);
+    gl.viewport(0, 0, targets.width, targets.height);
     gl.clearBufferfv(gl.COLOR, 0, [0, 0, 0, 0]);
     gl.clearBufferfv(gl.COLOR, 1, [0, 0, 0, 0]);
     if (withOnTop) {
@@ -1165,7 +1201,7 @@ export class WebGLLineRenderer {
     // Colors add up and alphas keep the maximum, in every target.
     gl.blendFunc(gl.ONE, gl.ONE);
     gl.blendEquationSeparate(gl.FUNC_ADD, gl.MAX);
-    const samples = this.prepareLines(lines, frame);
+    const samples = this.prepareLines(lines, frame, targets);
     gl.uniform1i(lines.uniform("u_keep"), DRAW_ALL);
     gl.uniform1i(lines.uniform("u_valueColors"), valueColors ? 1 : 0);
     gl.uniform1i(lines.uniform("u_colorMode"), colorMode);
@@ -1199,6 +1235,7 @@ export class WebGLLineRenderer {
     );
     gl.uniform3f(composite.uniform("u_contextColor"), ...contextColor);
     gl.uniform1f(composite.uniform("u_contextAlpha"), frame.contextAlpha);
+    gl.uniform1f(composite.uniform("u_resolution"), targets.width / width);
     gl.bindVertexArray(this.vertexArray);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindVertexArray(null);

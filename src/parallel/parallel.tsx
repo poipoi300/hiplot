@@ -35,6 +35,7 @@ import controls from "../lib/controls.module.css";
 import { snapTextsToDevicePixels } from "../lib/crisptext";
 import { d3_scale_categorical_ordered } from "../lib/d3_scales";
 import { labelTextFromHtml } from "../lib/escape";
+import { Popover } from "../lib/popover";
 import { mounted } from "../lib/refs";
 import { ResizableH } from "../lib/resizable";
 import { isNumber, isStringArray, readState } from "../lib/savedstate";
@@ -71,6 +72,15 @@ import { LineGeometry } from "./geometry";
 import { defaultHiddenColumns } from "./hidden";
 import { type ColorOrientation, colorOrientation, NO_ORIENTATION } from "./orientation";
 import pstyle from "./parallel.module.css";
+import {
+  FramePerformance,
+  isRenderQuality,
+  LOW_PERFORMANCE_RESOLUTION,
+  LOW_PERFORMANCE_ROWS,
+  lowPerformance,
+  RENDER_QUALITIES,
+  type RenderQuality,
+} from "./performance";
 import { type AxisSelection, BrushMasks } from "./selection";
 import { monotoneSlope, SPLINE_HANDLE, splineParameter, splineY } from "./spline";
 import { type LineColors, WebGLLineRenderer } from "./webgl";
@@ -86,6 +96,10 @@ interface ParallelPlotState {
   upright: Set<string>;
   dimensions: Array<string>;
   lineShape: LineShape;
+  /** How frames during a drag or a scroll are drawn (see performance.ts). */
+  renderQuality: RenderQuality;
+  /** Whether measured frames are slow, which the "auto" quality follows. */
+  slowFrames: boolean;
   /** Whether any axis is brushed, which enables "Reset brushes". */
   brushed: boolean;
   /** The line under the pointer and where its tooltip goes. */
@@ -423,6 +437,22 @@ const CONTEXT_BIN = -1;
 const STRAIGHT_LINES_ABOVE_ROWS = 10_000;
 /** Above this many rows, lines drawn during a drag are not anti-aliased. */
 const LIGHT_DRAG_ROWS = 20_000;
+/** How long after the last scroll event a scroll still counts as a gesture. */
+const SCROLL_SETTLE_MS = 150;
+const RENDER_QUALITY_LABELS: Record<RenderQuality, { label: string; title: string }> = {
+  auto: {
+    label: "Automatic",
+    title: "Low-performance mode while drawing is slow (under 20 frames a second)",
+  },
+  low: {
+    label: "Always low-performance",
+    title: "Drags and scrolls drawn at half resolution over a sample of the rows",
+  },
+  full: {
+    label: "Always full quality",
+    title: "Drags and scrolls drawn at full quality, however slow",
+  },
+};
 /** Peak opacity of the deselected-rows layer per theme. */
 const CONTEXT_ALPHA_LIGHT = 0.28;
 const CONTEXT_ALPHA_DARK = 0.34;
@@ -662,6 +692,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       upright: new Set(readState(props.persistentState, "upright", isStringArray, [])),
       dimensions: [],
       lineShape: readState(props.persistentState, "lineShape", isLineShape, "auto"),
+      renderQuality: readState(props.persistentState, "renderQuality", isRenderQuality, "auto"),
+      slowFrames: false,
       brushed: false,
       hover: null,
       dragging: null,
@@ -685,6 +717,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.fitTickLabelsAfterTransition.cancel();
     if (this.scrollFrame !== null) {
       cancelAnimationFrame(this.scrollFrame);
+    }
+    if (this.scrollSettle !== null) {
+      clearTimeout(this.scrollSettle);
+    }
+    if (this.frameWatch !== null) {
+      cancelAnimationFrame(this.frameWatch);
     }
   }
   componentDidUpdate(prevProps: ParallelPlotData, prevState: ParallelPlotState) {
@@ -820,6 +858,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
     if (prevState.hide !== this.state.hide) {
       this.props.persistentState.set("hide", Array.from(this.state.hide));
+    }
+    if (prevState.renderQuality !== this.state.renderQuality) {
+      this.props.persistentState.set("renderQuality", this.state.renderQuality);
     }
     if (prevState.lineShape !== this.state.lineShape) {
       this.props.persistentState.set("lineShape", this.state.lineShape);
@@ -1143,6 +1184,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             </button>
           ))}
         </fieldset>
+        {this.renderQualityControl()}
         <ColumnPicker
           columns={this.pickableColumns()}
           shown={new Set(this.state.dimensions)}
@@ -1203,6 +1245,51 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
           </div>
         </ResizableH>
       </>
+    );
+  }
+
+  /**
+   * Shown while low-performance mode is on, or a quality is forced: what
+   * frames during a gesture look like, and the choice to force either.
+   */
+  renderQualityControl(): React.ReactElement | null {
+    const { renderQuality, slowFrames } = this.state;
+    const low = lowPerformance(renderQuality, slowFrames);
+    if (renderQuality === "auto" && !low) {
+      return null;
+    }
+    return (
+      <Popover
+        trigger={low ? "Low-performance mode" : "Full quality"}
+        label="Drawing quality"
+        title="During drags and scrolls, lines are drawn at half resolution over a sample of the rows; the picture after them is full quality"
+        align="start"
+        testId="render-quality-button"
+      >
+        {(close) => (
+          <fieldset className={style.colorMapGroup}>
+            <legend className={style.colorMapKind}>While dragging or scrolling</legend>
+            {RENDER_QUALITIES.map((quality) => (
+              <label
+                key={quality}
+                className={style.colorMapOption}
+                title={RENDER_QUALITY_LABELS[quality].title}
+              >
+                <input
+                  type="radio"
+                  name="hiplot-render-quality"
+                  checked={quality === renderQuality}
+                  onChange={() => {
+                    this.setState({ renderQuality: quality });
+                    close();
+                  }}
+                />
+                {RENDER_QUALITY_LABELS[quality].label}
+              </label>
+            ))}
+          </fieldset>
+        )}
+      </Popover>
     );
   }
 
@@ -2266,6 +2353,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     );
   }
   private scrollFrame: number | null = null;
+  /** Scrolling counts as a gesture until this time (see interactiveFrame). */
+  private scrollingUntil = 0;
+  private scrollSettle: ReturnType<typeof setTimeout> | null = null;
   /** Horizontal wheel and trackpad gestures, or shift+wheel, scroll the axes. */
   onWheel = (event: WheelEvent): void => {
     const scroller = mounted(this.scroller_ref);
@@ -2285,6 +2375,15 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.scrollLeft = left;
     this.placeAxes();
     this.clearHover();
+    this.scrollingUntil = performance.now() + SCROLL_SETTLE_MS;
+    if (this.scrollSettle !== null) {
+      clearTimeout(this.scrollSettle);
+    }
+    // Once scrolling stops, the picture is drawn at full quality.
+    this.scrollSettle = setTimeout(() => {
+      this.scrollSettle = null;
+      this.redrawLines();
+    }, SCROLL_SETTLE_MS);
     if (this.scrollFrame === null) {
       this.scrollFrame = requestAnimationFrame(() => {
         this.scrollFrame = null;
@@ -2411,7 +2510,48 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
    * final again as soon as the drag ends.
    */
   draftFrame(): boolean {
-    return this.interacting && this.props.rows_filtered.length > LIGHT_DRAG_ROWS;
+    return (
+      (this.interacting && this.props.rows_filtered.length > LIGHT_DRAG_ROWS) ||
+      this.lowPerformanceFrame()
+    );
+  }
+
+  /** Whether a frame is drawn during a gesture: a brush or axis drag, or a scroll. */
+  interactiveFrame(): boolean {
+    return this.interacting || performance.now() < this.scrollingUntil;
+  }
+
+  /** A frame of a gesture drawn in low-performance mode (see performance.ts). */
+  lowPerformanceFrame(): boolean {
+    return (
+      this.interactiveFrame() && lowPerformance(this.state.renderQuality, this.state.slowFrames)
+    );
+  }
+
+  /** Measures each full-quality frame on the GPU, for the "auto" quality. */
+  private frameWatch: number | null = null;
+  private framePerformance = new FramePerformance();
+
+  private watchFrame(webgl: WebGLLineRenderer, fullQuality: boolean): void {
+    if (this.frameWatch !== null) {
+      cancelAnimationFrame(this.frameWatch);
+    }
+    const check = (): void => {
+      this.frameWatch = null;
+      if (webgl.busy) {
+        this.frameWatch = requestAnimationFrame(check);
+        return;
+      }
+      const milliseconds = webgl.finishedFrameMs();
+      if (
+        fullQuality &&
+        milliseconds !== null &&
+        this.framePerformance.recordFullFrame(milliseconds)
+      ) {
+        this.setState({ slowFrames: this.framePerformance.slow });
+      }
+    };
+    this.frameWatch = requestAnimationFrame(check);
   }
 
   /** Curves between axes unless the user chose straight lines, or "auto" meets many rows. */
@@ -2439,6 +2579,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     );
     webgl.setColors(colors);
     webgl.setSelection(mask);
+    const draft = this.draftFrame();
+    const low = this.lowPerformanceFrame();
+    const drawnRows = low
+      ? Math.min(geometry.rows.length, LOW_PERFORMANCE_ROWS)
+      : geometry.rows.length;
+    // A sample of the rows draws a matching share of the densities.
+    const drawnShare = drawnRows / Math.max(1, geometry.rows.length);
     webgl.draw({
       axes: this.state.dimensions.map((dimension) => ({
         x: this.position(dimension) - this.scrollLeft,
@@ -2453,13 +2600,16 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       lineWidth: LINE_WIDTH,
       pixelRatio: this.pixelRatio,
       curved: this.curvedLines(),
-      draft: this.draftFrame(),
-      selectedCount,
-      contextCount: mask.length - selectedCount,
+      draft,
+      resolution: low ? LOW_PERFORMANCE_RESOLUTION : 1,
+      drawnRows,
+      selectedCount: selectedCount * drawnShare,
+      contextCount: (mask.length - selectedCount) * drawnShare,
       contextColor: this.contextColor(),
       contextAlpha: this.props.dark ? CONTEXT_ALPHA_DARK : CONTEXT_ALPHA_LIGHT,
       colorMode: this.props.color_mode,
     });
+    this.watchFrame(webgl, !draft);
   }
 
   /** Every row's color bin, and how many bins sample a numeric color map (see LineColors). */
@@ -2550,7 +2700,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (this.webgl !== null) {
       // During a drag, a frame waits for the GPU to finish the last one, so a
       // slow GPU drops frames instead of queueing them behind the pointer.
-      if (this.interacting && this.webgl.busy) {
+      if (this.interactiveFrame() && this.webgl.busy) {
         this.redrawWhenGpuIdle();
         return;
       }
