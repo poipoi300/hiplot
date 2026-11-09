@@ -28,6 +28,19 @@ export function textureLayout(rowCount: number, maxTextureSize: number): Texture
   return { width, rowsPerColumn: Math.max(1, Math.ceil(rowCount / width)) };
 }
 
+/** Spare column slots grow within the device limit; actual columns must all fit. */
+export function pixelTextureCapacity(
+  columnCount: number,
+  rowsPerColumn: number,
+  maxTextureSize: number,
+): number {
+  const available = Math.floor(maxTextureSize / rowsPerColumn);
+  if (columnCount > available) {
+    throw new Error(`Too many columns for one WebGL texture (${columnCount})`);
+  }
+  return Math.min(available, Math.max(8, 2 * columnCount));
+}
+
 /** A per-row pixel column padded to the layout, with NaN replaced by MISSING_PIXEL. */
 export function encodePixelColumn(pixels: Float32Array, layout: TextureLayout): Float32Array {
   const encoded = new Float32Array(layout.width * layout.rowsPerColumn);

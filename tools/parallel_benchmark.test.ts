@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { parallelExperiment, quantile } from "../bench/parallel_data";
+import { profileSortedIndex } from "../bench/parallel_index";
 
 const config = { rows: 100, columns: 10, discrete: false, seed: 20261109 };
 
@@ -35,4 +36,15 @@ test("timing quantiles sort without modifying the samples and reject empty serie
   expect(quantile(times, 1)).toBe(8);
   expect(times).toEqual([8, 1, 3, 2]);
   expect(() => quantile([], 0.5)).toThrow("empty timing series");
+});
+
+test("sorted-index profiling verifies each changed mask against a scan", () => {
+  for (const discrete of [false, true]) {
+    const result = profileSortedIndex(500, discrete);
+    expect(result.steps).toBe(120);
+    expect(result.maximumChanged).toBeGreaterThan(0);
+    expect(result.totalChanged).toBeGreaterThanOrEqual(result.maximumChanged);
+    expect(result.scanTotalMs).toBeGreaterThanOrEqual(0);
+    expect(result.indexWithBuildMs).toBeGreaterThanOrEqual(result.buildMs);
+  }
 });

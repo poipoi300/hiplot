@@ -88,6 +88,12 @@ describe("cached colors", () => {
     expect(geometry.colorOrder(bins, 0, "highest")).toBe(geometry.order);
   });
 
+  test("row lookups keep original positions and the last occurrence of duplicate identities", () => {
+    const geometry = new LineGeometry(rows);
+    expect(rows.map((row) => geometry.indexOf(row))).toEqual([0, 1, 2, 3, 4]);
+    expect(new LineGeometry([rows[0], rows[1], rows[0]]).indexOf(rows[0])).toBe(2);
+  });
+
   test("rows of another dataset are rejected", () => {
     expect(() => new LineGeometry(rows).indexOf({ uid: "z", from_uid: null })).toThrow(
       "not part of the plotted rows",

@@ -531,6 +531,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   } | null = null;
   /** The rows whose lines are drawn: the brush selection, or a selection made elsewhere. */
   private drawnSelection: ReadonlyArray<Datapoint> | null = null;
+  /** Live brushes stay columnar until publication; row identity rejects masks from old datasets. */
+  private liveBrushMask: { rows: ReadonlyArray<Datapoint>; mask: Uint8Array } | null = null;
   /** The last selection this plot handed to HiPlot. */
   private publishedSelection: ReadonlyArray<Datapoint> | null = null;
   /** Incremented by every draw, so a progressive draw stops once superseded. */
@@ -726,6 +728,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
   }
   componentDidUpdate(prevProps: ParallelPlotData, prevState: ParallelPlotState) {
+    if (prevProps.rows_filtered !== this.props.rows_filtered) {
+      this.liveBrushMask = null;
+    }
     if (prevState.height !== this.state.height || prevState.width !== this.state.width) {
       this.on_resize?.();
     }
@@ -741,6 +746,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       }
       const drop_scales: string[] = [];
       this.state.dimensions.forEach((d: string) => {
+        if (prevProps.params_def === this.props.params_def && prevState.dimensions.includes(d)) {
+          return;
+        }
         const new_scale = this.createScale(d);
         if (new_scale === null) {
           drop_scales.push(d);
@@ -830,6 +838,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       prevProps.rows_selected !== this.props.rows_selected &&
       this.props.rows_selected !== this.publishedSelection;
     if (selectionChanged) {
+      this.liveBrushMask = null;
+      this.maskMemo = null;
       this.drawnSelection = this.props.rows_selected;
       if (isLassoSelection(this.props.rows_selected_filter) && this.brushes.size > 0) {
         this.dropBrushesReplacedByLasso();
@@ -1787,20 +1797,21 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       const selections = new Map<string, AxisSelection>(
         actives.map((dimension) => [dimension, me.axisRanges(dimension)]),
       );
-      const filters = Array.from(selections.values(), (selection) => anyOfRanges(selection));
       const masks = me.brushMasks();
       const mask = masks.select(selections);
-      const selected = masks.selectedRows(mask);
+      const canvasSelection = me.webgl === null ? masks.selectedRows(mask) : null;
       me.updateFlowBadges(new Set(actives), mask);
-      me.drawnSelection = selected;
-      if (masks.rows === me.geometry().rows) {
-        me.maskMemo = { geometry: me.geometry(), rows: selected, mask };
-      }
+      me.liveBrushMask = { rows: masks.rows, mask };
+      me.maskMemo = null;
+      me.drawnSelection = canvasSelection;
       me.redrawLines();
       if (!publish) {
         return;
       }
 
+      const selected = canvasSelection ?? masks.selectedRows(mask);
+      const filters = Array.from(selections.values(), (selection) => anyOfRanges(selection));
+      me.drawnSelection = selected;
       if (me.props.asserts) {
         me.assertPixelSelectionMatches(actives, filters, selected);
       }
@@ -2475,6 +2486,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   /** Per-row flags (1 = drawn) of the rows whose lines are drawn. */
   selectionMask(geometry: LineGeometry): Uint8Array {
+    if (this.liveBrushMask !== null && this.liveBrushMask.rows === geometry.rows) {
+      return this.liveBrushMask.mask;
+    }
     const selected = this.drawnSelection ?? this.props.rows_selected;
     const memo = this.maskMemo;
     if (memo !== null && memo.geometry === geometry && memo.rows === selected) {

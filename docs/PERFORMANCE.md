@@ -574,3 +574,87 @@ replaced on order-only reorders, invalidating otherwise reusable columns.
 There is one axis line redraw across the three input steps, not three: the
 current handler only redraws on a neighbor crossing. Scroll has six draws
 across three steps because each step also schedules the settle redraw.
+
+### Columnar selection and retained axis columns
+
+The plot already had cached Float32 pixel columns, Uint32 color bins/order and
+numeric/category brush inputs. The remaining object work was reconstructing a
+`Datapoint[]` on **every** brush move. WebGL now consumes the live Uint8 mask
+identified by its source row array. Only gesture publication materializes the
+object selection; Canvas fallback still materializes each live selection.
+External selections and Keep/Restore invalidate the live mask. Other components
+continue to receive the unchanged `Datapoint` API. Row lookup construction also
+avoids allocating a million temporary `[row, index]` arrays.
+
+Order-only axis changes retain existing scale objects and therefore their cached
+pixel columns. Added axes and changed parameter definitions still create scales.
+Spare texture slots are capped at the actual device capacity: ten million-row
+columns reserve sixteen slots on SwiftShader, rather than rejecting the plot
+because twenty spare slots would not fit. Truly oversized data still fails.
+
+Same exploratory protocol as the baseline, after this increment:
+
+| Backend / rows / data | Load → first fence | Full fence | Brush CPU | Filter / live materialize | Brush draft fence | Axis redraw fence | Scroll fence |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| RTX 5090 / 1M / continuous | 8360 | 228.3 | 8.0 | 6.0 / no calls | 54.4 | 47.7 | 109.0 |
+| RTX 5090 / 1M / integer | 2198 | 241.4 | 7.8 | 5.7 / no calls | 73.8 | 55.7 | 108.1 |
+| SwiftShader / 1M / continuous | 208678 | 100798.4 | 8.2 | 5.7 / no calls | 102651.8 | 102766.6 | 170824.6 |
+| SwiftShader / 1M / integer | 203403 | 100618.4 | 8.6 | 6.0 / no calls | 100786.8 | 100172.1 | 176781.4 |
+| SwiftShader / 100k / continuous | 20956 | 10328.4 | 2.0 | 0.6 / no calls | 10464.0 | 10469.7 | 17150.1 |
+| SwiftShader / 100k / integer | 20706 | 10174.3 | 2.0 | 0.7 / no calls | 10331.5 | 10278.2 | 17816.9 |
+
+Live brush CPU falls from 18.5 → 8.0 ms and 16.9 → 7.8 ms. Release still
+materializes once (12.9 / 8.4 ms in this run). Axis per-column geometry lookup
+falls from 26.4 / 26.6 ms to below the 0.1 ms timer resolution; geometry-upload
+submission falls from 25.1 / 30.0 ms to 0.1 / 0.0 ms. The unchanged draw pipeline
+still dominates software rendering; full/scroll hardware fences are essentially
+unchanged, while the integer draft fence is **higher** (63.5 → 73.8 ms), not a
+claimed GPU improvement. These single-load samples do not resolve run-to-run
+GPU variation. At 100k rows on SwiftShader, brush CPU falls from 6.0 / 4.8 ms
+to 2.0 / 2.0 ms, but full fences are **slower**, 9.42 / 9.29 s → 10.33 / 10.17 s,
+and scroll fences 15.32 / 16.96 s → 17.15 / 17.82 s. The renderer submits the
+same work; these runs do not establish a software rasterization speedup. The
+software baseline also overlapped a small browser test, so it is not a clean
+isolation of small GPU differences. The allocation correction removes the known
+million-row capacity error; it does not reduce rasterization work. Both million-row
+SwiftShader variants now finish, but the first picture takes 203–209 seconds,
+a full frame about 101 seconds, and a scrolled frame 171–177 seconds. This is
+**not interactive million-row software rendering**. There is no pre-change
+million-row software fence to compare against because the allocator rejected it.
+
+`tests/columnar-equivalence.spec.ts` requires zero differing 8-bit channels for
+live typed flags versus object-reconstructed flags, retained versus rebuilt
+scales, and capped versus unrestricted texture capacity. It also verifies
+original publication order, external lasso/Keep/Restore, and Canvas fallback.
+No shader, attachment format, blend equation or segment order changes.
+
+### Sorted row-index experiment
+
+`bench/parallel_index.ts` compares the existing tight typed-array numeric scan
+with a sorted row index, binary searches and symmetric-difference mask updates.
+Every resulting mask is checked against the scan. Reproduce independently of
+GPU work with:
+
+```bash
+bun build bench/parallel_index.ts --target=node --packages=external --outfile=./node_modules/.cache/parallel-index.mjs
+node node_modules/.cache/parallel-index.mjs
+```
+
+One million rows, one axis, 120 small moving-range steps, one exploratory run:
+
+| Data | Index construction | Scan/query p50 | Indexed update/query p50 | 120 scans total | Index construction + 120 updates |
+|---|---:|---:|---:|---:|---:|
+| Continuous | 234.94 ms | 2.252 ms | 0.0055 ms | 281.32 ms | 237.10 ms |
+| Eight integers | 156.23 ms | 2.196 ms | 0.0007 ms | 309.46 ms | 157.71 ms |
+
+Sorted updates are excellent **after** construction. Eager construction costs
+156–235 ms **per axis** before the first query, rather than the scan's 2.2 ms;
+its cost amortizes only after roughly 70–105 warm steps in this small-delta
+experiment. Ten eagerly indexed axes add about 1.6–2.4 s even before their first
+brush. A three-step gesture loses badly, and the current GPU targets cannot
+consume reversible selected-row deltas (see below). Consequently the shipped
+columnar increment retains the existing typed numeric/category scans rather
+than claiming an always-on sorted-index win. This is a measured deferral of
+that part of item 1, **not** a completed per-axis sorted index. An asynchronous,
+amortized index remains a possible separate design; none is hidden in the
+production path. Its benchmark prototype is retained for reproducibility.

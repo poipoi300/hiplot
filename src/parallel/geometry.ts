@@ -50,7 +50,10 @@ export class LineGeometry {
   constructor(rows: ReadonlyArray<Datapoint>, random: () => number = Math.random) {
     this.rows = rows;
     this.order = shuffledIndices(rows.length, random);
-    this.indexOfRow = new Map(rows.map((row, index) => [row, index]));
+    this.indexOfRow = new Map();
+    for (let index = 0; index < rows.length; ++index) {
+      this.indexOfRow.set(rows[index], index);
+    }
   }
 
   /** Index of a row in `rows`; throws for rows of another dataset. */

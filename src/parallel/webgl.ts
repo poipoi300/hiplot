@@ -12,6 +12,7 @@ import {
   MISSING_THRESHOLD,
   padUint8,
   padUint32,
+  pixelTextureCapacity,
   segmentsPerLine,
   type TextureLayout,
   textureLayout,
@@ -841,11 +842,12 @@ export class WebGLLineRenderer {
     const missing = columns.filter((column) => !this.slots.has(column));
     if (this.slots.size + missing.length > this.slotCapacity) {
       // Keep only the columns in use and grow the texture; everything is re-uploaded.
-      const capacity = Math.max(8, 2 * columns.length);
+      const capacity = pixelTextureCapacity(
+        columns.length,
+        this.layout.rowsPerColumn,
+        this.maxTextureSize,
+      );
       const height = capacity * this.layout.rowsPerColumn;
-      if (height > this.maxTextureSize) {
-        throw new Error(`Too many columns for one WebGL texture (${capacity})`);
-      }
       this.bind("u_pixels");
       gl.texImage2D(
         gl.TEXTURE_2D,
