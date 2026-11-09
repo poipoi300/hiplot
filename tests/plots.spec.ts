@@ -256,42 +256,58 @@ test("the 3D scatter pans with a right-drag, draws its plane fit and lassos a se
 });
 
 test("the 3D scatter zooms only for wheel gestures that start on it", async ({ page }) => {
-  const { box, label } = await open3D(page);
-  // Room to scroll on past the plot, however tall the page is.
-  await page.evaluate(() => {
-    document.body.style.paddingBottom = "1500px";
-    window.scrollBy(0, -200);
-  });
-  const canvas = await scatterPanels(page)
+  const { label } = await open3D(page);
+  const plot = scatterPanels(page)
     .last()
-    .getByRole("img", { name: /3D scatter plot/ })
-    .boundingBox();
+    .getByRole("img", { name: /3D scatter plot/ });
+  // Room to scroll on past the plot, however tall the page is, and the plot
+  // 200 px down the viewport: the first wheel goes above it, inside the page.
+  await plot.evaluate((element) => {
+    document.body.style.paddingBottom = "1500px";
+    window.scrollBy(0, element.getBoundingClientRect().top - 200);
+  });
+  const canvas = await plot.boundingBox();
   if (canvas === null) {
     throw new Error("No canvas");
   }
+  // Wheel events carry explicit timestamps: whether two of them belong to one
+  // gesture must not depend on how fast the test runs.
+  const cdp = await page.context().newCDPSession(page);
+  const start = Date.now() / 1000;
+  const wheel = (x: number, y: number, deltaY: number, seconds: number) =>
+    cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x,
+      y,
+      deltaX: 0,
+      deltaY,
+      timestamp: start + seconds,
+    });
   const before = await label.getAttribute("style");
-  // A page scroll that starts above the plot and carries on over it.
-  await page.mouse.move(canvas.x + canvas.width / 2, canvas.y - 30);
+  // A page scroll that starts above the plot and carries on over it, 50 ms later.
+  const centerX = canvas.x + canvas.width / 2;
   const scrolled = await page.evaluate(() => window.scrollY);
-  await page.mouse.wheel(0, 40);
-  await page.mouse.move(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2);
-  await page.mouse.wheel(0, 40);
+  const above = canvas.y - 100;
+  // The gesture must start off the plot for this to test anything.
+  expect(
+    await plot.evaluate(
+      (element, [x, y]) => element.contains(document.elementFromPoint(x, y)),
+      [centerX, above],
+    ),
+  ).toBe(false);
+  await wheel(centerX, above, 40, 0);
+  await wheel(centerX, canvas.y + canvas.height / 2, 40, 0.05);
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(scrolled + 40);
   expect(await label.getAttribute("style")).toBe(before);
 
-  // After a pause, a gesture that starts on the plot zooms it, not the page.
-  await page.waitForTimeout(400);
+  // A second later, a gesture that starts on the plot zooms it, not the page.
   const settled = await page.evaluate(() => window.scrollY);
-  const box2 = await scatterPanels(page)
-    .last()
-    .getByRole("img", { name: /3D scatter plot/ })
-    .boundingBox();
-  await page.mouse.move(
-    (box2?.x ?? box.x) + (box2?.width ?? box.width) / 2,
-    (box2?.y ?? box.y) + (box2?.height ?? box.height) / 2,
-  );
+  const moved = await plot.boundingBox();
+  if (moved === null) {
+    throw new Error("No canvas");
+  }
   const unzoomed = await label.getAttribute("style");
-  await page.mouse.wheel(0, -120);
+  await wheel(moved.x + moved.width / 2, moved.y + moved.height / 2, -120, 1);
   await expect.poll(() => label.getAttribute("style")).not.toBe(unzoomed);
   expect(await page.evaluate(() => window.scrollY)).toBe(settled);
 });
