@@ -71,7 +71,7 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
       - name: Install dependencies
-        # The bundle comes first: the Python package force-includes it.
+        # The bundle comes first: the Python package carries it.
         run: |
           bun install --frozen-lockfile
           bun run build
@@ -197,6 +197,11 @@ jobs:
           path: hiplot/static/built/
       - name: Build package
         run: uv build
+      - name: Check the wheel carries the bundles
+        # Hatch skips missing artifacts silently.
+        run: |
+          unzip -l dist/*.whl | grep -q "hiplot/static/built/hiplot.bundle.js"
+          unzip -l dist/*.whl | grep -q "hiplot/static/built/streamlit_component/hiplot_streamlit.bundle.js"
       - name: Verify wheel install
         run: |
           uv venv test-wheel

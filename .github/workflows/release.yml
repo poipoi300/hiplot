@@ -39,5 +39,10 @@ jobs:
           python-version: "3.12"
       - name: Build package
         run: uv build
+      - name: Check the wheel carries the bundles
+        # Hatch skips missing artifacts silently.
+        run: |
+          unzip -l dist/*.whl | grep -q "hiplot/static/built/hiplot.bundle.js"
+          unzip -l dist/*.whl | grep -q "hiplot/static/built/streamlit_component/hiplot_streamlit.bundle.js"
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3

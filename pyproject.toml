@@ -88,9 +88,12 @@ Documentation = "https://poipoi300.github.io/hiplot/"
 Repository = "https://github.com/poipoi300/hiplot"
 
 [tool.hatch.build]
-# Force-include the built JS bundles (gitignored but needed at runtime)
-[tool.hatch.build.force-include]
-"hiplot/static/built" = "hiplot/static/built"
+# The built JS bundles are gitignored but needed at runtime. Artifacts, not
+# force-include: a wheel built from the sdist would otherwise add them twice.
+artifacts = [
+    "hiplot/static/built/**/*.js",
+    "hiplot/static/built/**/*.html",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["hiplot"]
