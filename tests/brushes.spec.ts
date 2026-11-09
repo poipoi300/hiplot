@@ -84,9 +84,6 @@ async function countOfLoneBrush(
 const overlaps = (a: Box, b: Box): boolean => a.y < b.y + b.height && b.y < a.y + a.height;
 
 test("brushes on one axis select the rows in any of them", async ({ page }) => {
-  // Many drags in a row: without a GPU (CI runners), Chromium reads every
-  // WebGL frame back for its software compositor, and each drag step waits.
-  test.slow();
   await loadDemo(page);
   const ranges: [number, number][] = [
     [0.05, 0.2],

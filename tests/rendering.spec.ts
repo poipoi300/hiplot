@@ -246,8 +246,8 @@ for (const deviceScaleFactor of [0.5, 1, 2]) {
       await page.getByRole("button", { name: "Straight", exact: true }).click();
 
       // Per pixel row, the bundle's opacity summed in a window around where it
-      // crosses the row, next to the same sum for Canvas 2D's anti-aliased
-      // stroke of one opaque line along the same segment.
+      // crosses the row, next to the exact coverage of one opaque line along
+      // the same segment.
       const rowSums = await page.evaluate(() => {
         const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
           | (ParallelPlotHandle & CoverageProbe & BundleProbe)
@@ -281,14 +281,10 @@ for (const deviceScaleFactor of [0.5, 1, 2]) {
         ];
         // Same task as the draw, so a WebGL buffer has not been presented and cleared yet.
         const drawn = opacities((context) => context.drawImage(canvas, 0, 0));
-        const reference = opacities((context) => {
-          context.lineWidth = ratio;
-          context.strokeStyle = "#fff";
-          context.beginPath();
-          context.moveTo(start[0], start[1]);
-          context.lineTo(end[0], end[1]);
-          context.stroke();
-        });
+        // One opaque line of one CSS pixel covers, in each pixel row it
+        // crosses, its width over the sine of its angle to the horizontal.
+        const rowCoverage =
+          (ratio * Math.hypot(end[0] - start[0], end[1] - start[1])) / Math.abs(end[1] - start[1]);
         // From 10% to 40% of the way along the segment, clear of the axes and
         // of the mirrored line, which crosses the bundle halfway.
         const sums: { drawn: number; reference: number }[] = [];
@@ -296,11 +292,9 @@ for (const deviceScaleFactor of [0.5, 1, 2]) {
         for (let y = Math.ceil(Math.min(from, to)); y < Math.max(from, to); ++y) {
           const t = (y + 0.5 - start[1]) / (end[1] - start[1]);
           const crossing = Math.round(start[0] + t * (end[0] - start[0]));
-          const sum = { drawn: 0, reference: 0 };
+          const sum = { drawn: 0, reference: rowCoverage };
           for (let x = crossing - 4; x <= crossing + 4; ++x) {
-            const alpha = (y * canvas.width + x) * 4 + 3;
-            sum.drawn += drawn[alpha] / 255;
-            sum.reference += reference[alpha] / 255;
+            sum.drawn += drawn[(y * canvas.width + x) * 4 + 3] / 255;
           }
           sums.push(sum);
         }
@@ -308,7 +302,7 @@ for (const deviceScaleFactor of [0.5, 1, 2]) {
       });
       expect(rowSums.length).toBeGreaterThan(40 * deviceScaleFactor);
       // A saturated bundle drawn without anti-aliasing covers two full pixels
-      // per row where the stroke covers one in total, spread over its edge.
+      // per row where one line covers about one, spread over its edge.
       for (const { drawn, reference } of rowSums) {
         expect(drawn / reference).toBeGreaterThan(0.85);
         expect(drawn / reference).toBeLessThan(1.15);
