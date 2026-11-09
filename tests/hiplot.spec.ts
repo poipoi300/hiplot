@@ -179,6 +179,9 @@ test("dragging an axis changes its position", async ({ page }) => {
 });
 
 test("rapidly dragging axes back and forth does not crash", async ({ page }) => {
+  // Many drags in a row: without a GPU (CI runners), Chromium reads every
+  // WebGL frame back for its software compositor, and each drag step waits.
+  test.slow();
   const errors: Error[] = [];
   page.on("pageerror", (err) => errors.push(err));
 
