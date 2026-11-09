@@ -2532,23 +2532,27 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   private frameWatch: number | null = null;
   private framePerformance = new FramePerformance();
 
-  private watchFrame(webgl: WebGLLineRenderer, fullQuality: boolean): void {
+  /**
+   * Polls the renderer while a frame is in flight; one loop serves every frame
+   * drawn meanwhile, so frames drawn faster than they finish are still timed.
+   */
+  private watchFrames(webgl: WebGLLineRenderer): void {
     if (this.frameWatch !== null) {
-      cancelAnimationFrame(this.frameWatch);
+      return;
     }
     const check = (): void => {
       this.frameWatch = null;
-      if (webgl.busy) {
-        this.frameWatch = requestAnimationFrame(check);
-        return;
-      }
-      const milliseconds = webgl.finishedFrameMs();
+      // Reading `busy` records the frame in flight once it has finished.
+      const busy = webgl.busy;
+      const finished = webgl.finishedFrame();
       if (
-        fullQuality &&
-        milliseconds !== null &&
-        this.framePerformance.recordFullFrame(milliseconds)
+        finished?.fullQuality === true &&
+        this.framePerformance.recordFullFrame(finished.milliseconds)
       ) {
         this.setState({ slowFrames: this.framePerformance.slow });
+      }
+      if (busy) {
+        this.frameWatch = requestAnimationFrame(check);
       }
     };
     this.frameWatch = requestAnimationFrame(check);
@@ -2609,7 +2613,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       contextAlpha: this.props.dark ? CONTEXT_ALPHA_DARK : CONTEXT_ALPHA_LIGHT,
       colorMode: this.props.color_mode,
     });
-    this.watchFrame(webgl, !draft);
+    this.watchFrames(webgl);
   }
 
   /** Every row's color bin, and how many bins sample a numeric color map (see LineColors). */

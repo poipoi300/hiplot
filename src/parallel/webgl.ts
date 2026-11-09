@@ -64,6 +64,13 @@ export interface LineFrame {
   colorMode: ColorMode;
 }
 
+/** A frame the GPU finished drawing. */
+export interface FinishedFrame {
+  milliseconds: number;
+  /** Neither a draft nor reduced in resolution: what slow frames are judged on. */
+  fullQuality: boolean;
+}
+
 /** How rows are colored: a palette color per row, by bin. */
 export interface LineColors {
   bins: Uint32Array;
@@ -722,10 +729,11 @@ export class WebGLLineRenderer {
   private uploadedSelection: Uint8Array | null = null;
   /** Signals when the GPU has finished the last frame drawn. */
   private inFlight: WebGLSync | null = null;
-  /** When the frame in flight was submitted. */
+  /** When the frame in flight was submitted, and whether it was drawn at full quality. */
   private submittedAt = 0;
-  /** How long the last finished frame took, until finishedFrameMs() reads it. */
-  private finishedMs: number | null = null;
+  private inFlightFullQuality = false;
+  /** The last frame seen finished, until finishedFrame() reads it. */
+  private finished: FinishedFrame | null = null;
 
   /** A renderer on `canvas`, or null when WebGL2 is unavailable. */
   static create(canvas: HTMLCanvasElement): WebGLLineRenderer | null {
@@ -967,19 +975,21 @@ export class WebGLLineRenderer {
     }
     gl.deleteSync(this.inFlight);
     this.inFlight = null;
-    this.finishedMs = performance.now() - this.submittedAt;
+    this.finished = {
+      milliseconds: performance.now() - this.submittedAt,
+      fullQuality: this.inFlightFullQuality,
+    };
     return false;
   }
 
   /**
-   * The time from submitting the last frame to the GPU finishing it, read
-   * once; null until `busy` has seen it finish. Accurate to the interval
-   * `busy` is polled at.
+   * The last frame `busy` saw finish, read once: the time from submitting it
+   * to the GPU finishing it, accurate to the interval `busy` is polled at.
    */
-  finishedFrameMs(): number | null {
-    const milliseconds = this.finishedMs;
-    this.finishedMs = null;
-    return milliseconds;
+  finishedFrame(): FinishedFrame | null {
+    const finished = this.finished;
+    this.finished = null;
+    return finished;
   }
 
   /** Whether lines are tone-mapped from their density (float render targets available). */
@@ -1106,7 +1116,7 @@ export class WebGLLineRenderer {
   draw(frame: LineFrame): void {
     const gl = this.gl;
     this.submittedAt = performance.now();
-    this.finishedMs = null;
+    this.inFlightFullQuality = !frame.draft && frame.resolution === 1;
     this.drawFrame(frame);
     if (this.inFlight !== null) {
       gl.deleteSync(this.inFlight);

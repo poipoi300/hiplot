@@ -7,7 +7,10 @@ interface DrawnFrame {
   drawnRows: number;
 }
 interface QualityProbe {
-  webgl: { draw: (frame: DrawnFrame) => void; finishedFrameMs: () => number | null };
+  webgl: {
+    draw: (frame: DrawnFrame) => void;
+    finishedFrame: () => { milliseconds: number; fullQuality: boolean } | null;
+  };
   interacting: boolean;
   redrawLines: () => void;
   state: { slowFrames: boolean };
@@ -96,7 +99,7 @@ test("slow frames switch low-performance mode on, and the menu can force full qu
     if (!pp) {
       throw new Error("No parallel plot");
     }
-    pp.webgl.finishedFrameMs = () => 200;
+    pp.webgl.finishedFrame = () => ({ milliseconds: 200, fullQuality: true });
     for (let i = 0; i < 5; ++i) {
       pp.redrawLines();
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
