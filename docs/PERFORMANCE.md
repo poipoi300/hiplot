@@ -1753,3 +1753,405 @@ four normal web, self-test, Streamlit and library outputs. Generated bundles,
 raw benchmark/screenshots, the untracked million-row HTML and local design-hook
 files are not part of the source commits. No push, remote, packaging or release
 configuration changes were made.
+
+## Reduced-column reconstruction and aliasing
+
+This follow-up was measured on 2026-11-10 against the retained continuous
+renderer, not the historical sampled/binned preview above. Evidence lives in
+[the smoothing artifact directory](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/>).
+`before-*` is the unchanged starting bundle; `final-*` is the measured follow-up.
+The intermediate `after-*` / `rejected-combined-*` captures are **not final**:
+independent review found correctness defects in that prototype.
+
+### Chosen reconstruction
+
+The old pair compositor already performed centered, premultiplied **linear**
+interpolation. Its staircase was not nearest-neighbour horizontal scaling.
+A boundary moves vertically between the six evaluated columns; blending two
+untransported columns fades two displaced boundaries instead of following one.
+
+Reduced dense software pairs now retain selected and context RGBA8 layers in
+one multiple-render-target density pass. Each layer gets its own support guides
+from its positive-count histogram cells. Per-left-bin right-endpoint extrema
+preserve actual endpoint correlations; combining independent marginal extrema
+would invent nonexistent lines. Guides include missing-endpoint stubs only
+inside their physical 15px spans. Source/destination columns use the same
+pair-local straight or smoothstep coordinates.
+
+A piecewise inverse vertical map follows the lower/upper support and the frame
+edges, then blends neighbouring transported columns. A source envelope no wider
+than one CSS pixel is unresolved: it translates rigidly rather than expanding
+its one texel across a destination band. Outside the vertical image is
+transparent, not a replicated partially covered border texel. Bounded
+Catmull–Rom interpolation improves **opacity**; color remains convex
+premultiplied linear interpolation, normalized by its own linear alpha. This
+cannot create a straight-color extremum by independently dividing clamped cubic
+RGB and alpha. Reconstructed selected is composited over independently
+reconstructed context, so selected motion cannot erase a stationary context
+strand. In the worker GL backend this runs as one full-width reconstruction
+pass sampling the retained MRT textures, followed by one final RGBA8 readback;
+there is no source-layer readback or JavaScript per-pixel reconstruction. The
+CPU implementation remains the mathematical reference/fallback. Each layer is
+byte-quantized before composition in both implementations.
+
+Only reduced dense pairs with more than one CSS pixel of selected/context
+envelope motion take this path. Stationary or subpixel support keeps the
+existing inexpensive combined-image linear interpolation: an envelope warp
+cannot resolve internal ridges it does not describe. Positive opposite diagonal
+corner cells analytically fix support to the frame edges, without scanning the
+occupied grid. On a cache miss, one computed guide plan is shared with the CPU
+or GL reconstruction rather than reducing the histogram twice. No source rows,
+endpoint bins or histogram counts are dropped, and no additional density
+columns are evaluated.
+Hardware and sparse pairs retain full columns. Cache identity/revision,
+geometry/style/palette and global density references still invalidate the
+complete pair image; scroll only composites retained images. No temporal state
+or stale-image exception was added.
+
+Numeric-mean rendering also omits unused auxiliary color metadata. Counts,
+rank sums and missing-color counts remain in the full-size counts texture;
+color2/minimum/maximum are neither packed, uploaded nor fetched in this mode.
+A complete 1×1 zero auxiliary texture remains bound. Categorical RGB (including
+blue) and numeric extrema still use the full auxiliary grid, and each render
+refreshes dimensions and mode uniforms. This avoids paying for data the shader
+does not consume, without dropping rows or changing the color contract. All
+24 final actual-app RGBA captures are byte-identical to the corresponding
+adaptive-unpruned captures: zero changed bytes, not merely a tolerance pass.
+`check-metadata-pixels.mjs` and `metadata-pixel-equivalence.json` retain that check.
+
+The visible difference is clearest beside the brushed second axis:
+[before curved mid-drag](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/before-1m-continuous-curved-software-mid-drag.png>) /
+[final curved mid-drag](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/final-1m-continuous-curved-software-mid-drag.png>) /
+[same-mask full-width idle](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/final-1m-continuous-curved-software-idle.png>).
+Straight, integer and hardware variants have the same filename pattern.
+These are real app screenshots, not redrawn explanatory boundaries.
+
+### Idle aliasing: two distinct fixes
+
+Dense integration interprets endpoint bins as a continuous reconstructed field,
+but its peak coverage previously treated each contribution as a coincident
+bin-centre line. A filled field near a curved axis had a phase-dependent peak
+of **0.75077 instead of 1**, producing dim/aliased axis-adjacent pixels. CPU and
+GLSL now include the half-bin endpoint interval in peak coverage. Direct sparse
+strips and missing stubs keep their original analytic coverage. In the actual
+1M curved idle capture, raw relative error within one CSS pixel of any axis
+falls from **16.04% to 4.09%** versus exact; unbrushed falls **19.42% to 4.75%**. This corrects
+coverage, not the pair-local curve model. See
+[before idle](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/before-1m-continuous-curved-software-idle.png>) /
+[corrected idle](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/peak-1m-continuous-curved-software-idle.png>).
+
+At DPR 2 the CSS-resolution worker image was enlarged with NEAREST, creating
+actual 2×2 device-pixel blocks on steep idle lines. Presentation now manually
+bilinearly interpolates **premultiplied** texels in its existing GL pass;
+hidden RGB in transparent pixels cannot create halos. The 1:1 path is
+unchanged, with no CPU premultiplication/copy and no new density evaluations.
+The real-GL red/transparent edge changes from 255/255/0/0 to
+255/191/64/0 red-and-alpha bytes. Compare
+[before DPR 2](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/diagnostic-06-dpr2-resolution.png>) /
+[after DPR 2](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/diagnostic-after-06-dpr2-resolution.png>).
+It removes blocks, not the fundamental CSS-versus-device-resolution difference.
+
+### Alternatives measured and rejected
+
+- **Untransported linear blending:** the actual incumbent, not a new fix.
+  Offline selected-envelope shear reduced dense straight/curved interior error
+  from about 1.49%/1.80% to 1.12%/1.36% in sampled-reference experiments.
+  Endpoint anchoring and Chebyshev placement traded lower axis error for worse
+  interior/full-curve error. Image-gradient quantile transport reached about
+  0.985%/1.35% but flattened/misaligned axis tips; it was not selected.
+- **Combined-image shear / independent cubic channel clamps:** rejected after
+  review. Reproduced counterexamples painted alpha154 where full evaluation
+  had zero, erased stationary green context, and invented red182 from adjacent
+  red128 samples with different alpha. Those failures motivated the independent
+  layers, nonexpanding transport and convex color representation above. The
+  defective combined-image prototype also cost 370.4ms software brush latency
+  and 240.5ms raster time; its `after-*` measurements are preserved, not shipped.
+- **JavaScript per-pixel reconstruction:** correct but too expensive. Its
+  three-load SwiftShader continuous input-to-fence median rose318.0→392.6ms
+  (+23.5%), with worker raster200.8→263.3ms. It is preserved as `rejected-cpu-*`,
+  not accepted as a negligible-cost improvement. The worker GL post-pass
+  replaces that work; its final latency is reported separately below.
+- **Unconditional GL reconstruction on every dense pair:** still too expensive:
+  software input latency379.9ms and raster247.2ms versus318.0/200.8ms before.
+  A completion-separated synthetic profile attributed roughly4.9–7.2ms per
+  pair to actual post work (including1.6–3.9ms guide/prep), not merely queued
+  density completion. Applying transport only where its support moves, and
+  sharing the guide plan, avoids paying this across aligned fields. These
+  rejected results are `rejected-gl-allpairs-*`; the
+  [profile report](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/profile-report.md>)
+  distinguishes measured one-pair costs from nine-pair arithmetic estimates.
+- **Adaptive GL before metadata pruning:** sharing plans and skipping aligned
+  fields reduced the software continuous brush median to 349.8ms, but that was
+  still **10.0% above** the 318.0ms baseline (raster 227.1 versus 200.8ms).
+  Those complete runs/captures are `rejected-adaptive-unpruned-*`, not evidence
+  of a negligible cost. The final table includes the metadata optimization.
+- **Progressive interleaving:** six new samples per frame can fill an unchanged
+  field to 18 columns after three phases. In the 1,048,576-row synthetic dense
+  experiment, six-current error was 6.37–10.90%, versus 1.78–2.76% for 18-current
+  static samples. But after a disjoint brush change, keeping one/two-old phases
+  gave **30.24–44.32%** first-frame error and **15.88–23.85%** next-frame error;
+  six fresh columns gave 5.53–12.34%. Even 0.78–3.13% changed rows per move
+  produced motion/color-dependent error. On existing actual 1M reference images,
+  stale unbrushed phases gave 5.07–5.50% interior error versus 1.46–1.78% for
+  six current columns. A two-frame age limit or changed-row fraction does not
+  establish safety. Strict invalidation leaves nothing to accumulate across
+  changed grids; stable frames already reuse the complete cached pair. No stale
+  reuse is shipped. This is an offline reconstruction/error experiment, **not**
+  a new hardware latency benchmark; see its
+  [method and results](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/progressive-interleaving-report.md>).
+- **Blanket FXAA-like edge pass:** dense straight idle raw exact-reference error
+  stayed effectively unchanged (0.9403%, versus 0.9400–0.9405%), while sparse
+  integer straight idle worsened from **11.37% to 34.58–43.03%**. Prototype CPU
+  costs were approximately 16–39ms per image, not production GPU timings.
+  Thin real bundles must not be mistaken for aliasing and blurred away. A local
+  axis blur also failed to address the mathematical peak defect. No blanket
+  final AA/blur pass is shipped; enlargement filtering is targeted to the
+  demonstrated high-DPI presentation problem.
+
+Raw alternatives are `reconstruction-experiments.json`,
+`transport-experiments.json`, `fxaa-experiments.json`, `axis-aa-experiments.json`
+and the progressive JSONs in the artifact directory. Their synthetic/offline
+errors must not be substituted for the actual final-worker measurements below.
+
+### Why continuous and exact shapes can still differ
+
+These are separate mechanisms, not all aliases for reduced columns. The
+[source-backed diagnostic index](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/diagnostic-index.md>)
+records concrete inputs, actual renderer calls, source hashes and limitations.
+
+1. **Endpoint quantization:** rounding to 256–1024 endpoint bins loses sub-bin
+   position. At height256, two lines 0.30px apart can merge, while two only
+   0.04px apart across a rounding boundary snap about1.004px apart. This changes
+   footprints, color-cell membership and extrema support; the exact row path
+   retains the original Float32 coordinates.
+   [Example](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/diagnostic-01-endpoint-quantization.png>).
+2. **Different curve parameterization even at zero slope:** continuous uses
+   smoothstep(x/gap). Exact half-gap Bezier handles give nonlinear Bezier x(t),
+   which must be inverted before evaluating y(t). At quarter-gap, smoothstep
+   has moved0.15625 of the height; the zero-slope exact helper gives0.105892532.
+   Exact also rasterizes sampled chords rather than an analytic curve.
+   [Example](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/diagnostic-02-zero-slope-curve.png>).
+3. **Lost outside-neighbour associations:** the same central pair histogram
+   can represent rows requiring different exact spline tangents. No pair-local
+   post-process can recover which preceding/following value belonged to each
+   row. The diagnostic changes outside neighbours, verifies byte-identical
+   continuous central images, and shows different exact central curves.
+   [Example](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/diagnostic-03-neighbour-information.png>).
+4. **Dense integration is not direct binned-line rendering:** above512 occupied
+   cells, opposite-endpoint interpolation and a strip/Jacobian correction
+   integrate a reconstructed field. The <=512 branch instead sums actual
+   intersecting bin-centre strips. Even with identical bins, counts and tone
+   mapping, their fine texture and coverage can differ. The diagnostic compares
+   both mathematical branches on the same529-cell histogram; its direct panel
+   is explicitly not original-row exact geometry or the automatic dense branch.
+   [Example](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/diagnostic-04-histogram-integration.png>).
+5. **Reduced horizontal samples:** six samples cannot recover arbitrary ridges,
+   interior color boundaries, crossings or narrow features. Envelope transport
+   follows dominant support, not every line or internal mode. First/last samples
+   are half a reduced interval from the axes; near-axis extrapolation remains
+   approximate. The before/final/idle app images above isolate the practical
+   gesture change; no universal exact-equivalence claim is made.
+6. **Exact draft changes its raster contract:** large-row exact gestures use
+   un-antialiased LINE_STRIP and one-device-pixel minimum widths, unlike the
+   continuous analytic configured strip. Thus mid-drag exact-reference error
+   includes a difference absent from exact idle, even for straight sparse data.
+   [Example](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/diagnostic-05-draft-raster.png>).
+7. **CSS image versus device pixels:** bilinear presentation removes blocky
+   enlargement but does not restore the device-resolution coverage, peak
+   normalization or original geometry of exact rendering. High-DPI thin lines
+   can remain softer. The DPR2 before/after figures above show this remaining
+   difference without confusing it with smoothstep or endpoint rounding.
+8. **Missing stubs and fractional pair placement:** both paths specify15 CSS px,
+   but continuous snaps y, gates the pair-local footprint at15px and resamples
+   a pair image at a fractional screen origin. Exact rasterizes its original
+   finite endpoint and geometric stub end. The example is not evidence of an
+   incorrectly specified nominal length.
+   [Example](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-smooth/diagnostic-07-missing-stub.png>).
+9. **Coverage, color and precision affect apparent boundaries:** exact accumulates
+   float densities and dithers final quantization; continuous uploads rounded
+   Float32 views of exact retained counts/sums and stores RGBA8 pair images
+   (two separately quantized layers for reduced reconstruction). Numeric extrema
+   are per cell, not original sub-bin fragments, so quantization/integration can
+   move their visible color support. Both tone maps are analogous peak-aware
+   logarithmic maps: different coverage/peak inputs, rather than a wholly
+   different opacity formula, change apparent width. Figures1/4/5/6 show
+   combined visible footprint/opacity effects; they do **not** independently
+   isolate precision or prove an unrelated extrema defect. No such independent
+   defect is claimed. The highlighted-row overlay still uses original geometry.
+
+### Final measurement and validation
+
+Actual 1M×10 app pages, seed 20261109, viewport 1000×700, foreground 944×465,
+465 endpoint bins, default numeric-mean coloring by `numeric_column_00`.
+Numeric extrema and categorical RGB have correctness coverage, but no equivalent
+1M latency claim: they cannot use the numeric-mean metadata pruning.
+RTX5090/ANGLE D3D11 and SwiftShader/Vulkan identities were checked in every run. Three fresh loads×three settled steps per combination;
+latencies are medians of per-load p50s, not pooled percentiles. The displayed
+p95 is the median of three per-load maxima, not a stable tail estimate. No
+other benchmark or browser suite ran concurrently. Filtering, changed-grid
+reduction, worker raster/readback and final GPU completion are included in
+input→fence; source-data generation is outside load→image. Recompute exercises
+both full-width shape choices, then restores the original Auto choice before
+gestures, as in the original harness.
+
+| Backend / data | Brush input → fence, before → final ms | Change | Brush raster ms | Brush CPU ms | Input p95 ms |
+|---|---:|---:|---:|---:|---:|
+| hardware / continuous | 179.3 → 163.4 | -8.9% | 47.6 → 32.3 | 11.0 → 9.7 | 573.3 → 564.8 |
+| hardware / integer | 70.6 → 56.3 | -20.3% | 36.1 → 22.1 | 3.3 → 3.4 | 264.0 → 244.0 |
+| software / continuous | 318.0 → 323.5 | +1.7% | 200.8 → 206.2 | 10.0 → 10.0 | 717.9 → 867.5 |
+| software / integer | 85.0 → 75.7 | -10.9% | 52.3 → 41.8 | 3.8 → 3.3 | 281.1 → 262.6 |
+
+The software continuous brush median adds **5.5ms (+1.7%)**, not zero cost.
+Per-load p50s were 305.1–335.9ms before and 318.4–325.6ms after: overlapping
+ranges are descriptive, not a confidence interval. Its three-sample maxima
+also worsen 717.9→867.5ms (+20.8%); these limited samples do not establish a
+stable tail distribution. Every maximum is the first brush step of a fresh
+load: its worker raster grows from 220.9–228.9ms to 346.6–374.7ms, while later
+steps are much closer. `software-brush-stage-samples.json` retains the ordered
+histogram/raster/input samples. This localizes the extra cold cost to raster,
+not merely histogram rebuilding; shader compilation versus other first-use GL
+work was not independently isolated. Software axis completion and full-width
+recomputation also worsen below. Thus the measurements support smoother steady brush frames
+at approximately the previous median cost, **not a universal no-regression or
+zero-extra-cost guarantee**. Tail/axis cost remains a limitation; the rejected
+10–24% median overhead is not hidden by the new median result.
+
+| Backend / data | Load → image ms | Full-width recompute ms | Release ms | Axis completed ms | Scroll completed ms |
+|---|---:|---:|---:|---:|---:|
+| hardware / continuous | 8676.4 → 8899.8 | 82.2 → 64.1 | 24.5 → 24.0 | 100.4 → 108.8 | 11.7 → 11.6 |
+| hardware / integer | 1892.4 → 1844.2 | 50.4 → 41.7 | 16.7 → 17.0 | 67.5 → 57.8 | 11.9 → 11.8 |
+| software / continuous | 11091.9 → 10906.7 | 2194.8 → 2324.7 | 2131.3 → 2051.2 | 243.0 → 292.9 | 8.1 → 8.0 |
+| software / integer | 1955.7 → 1898.1 | 59.9 → 52.6 | 13.9 → 18.5 | 74.3 → 68.9 | 8.1 → 7.7 |
+
+| Data / backend / shape | Gesture vs idle, before → final | Idle vs exact | Mid-drag vs exact |
+|---|---:|---:|---:|
+| continuous / hardware / straight | 0.000 → 0.000% | 0.939 → 0.930% | 2.255 → 2.258% |
+| continuous / hardware / curved | 0.000 → 0.000% | 4.742 → 4.724% | 5.009 → 4.992% |
+| continuous / software / straight | 1.486 → 1.152% | 0.940 → 0.931% | 2.801 → 2.601% |
+| continuous / software / curved | 1.804 → 1.383% | 4.741 → 4.723% | 4.691 → 4.729% |
+| integer / hardware / straight | 0.000 → 0.000% | 11.369 → 11.369% | 48.255 → 48.255% |
+| integer / hardware / curved | 0.000 → 0.000% | 68.061 → 68.061% | 73.897 → 73.897% |
+| integer / software / straight | 0.000 → 0.000% | 11.368 → 11.368% | 48.257 → 48.257% |
+| integer / software / curved | 0.000 → 0.000% | 68.057 → 68.057% | 73.893 → 73.893% |
+
+Errors above are **unblurred**, premultiplied RGBA relative L1, excluding ±10px
+around axes. Each backend uses the same hardware exact reference for its
+corresponding idle/gesture state; exact million-row gestures disable AA. The
+raw JSON also retains the fixed two-pixel vertical-blur comparisons; those are
+not substituted for the unblurred figures. Curved exact fidelity is not
+monotonic with gesture/idle agreement: the two renderers still use different
+curve models. Large integer curved differences are unchanged and remain a
+reason to choose Exact lines when neighbour-conditioned structure matters.
+
+Capture metadata confirms all1,000,000 rows remain represented and the live
+mask is identical before/after release:450,190 selected continuous rows,
+374,956 integer rows. The screenshot toolbar intentionally retains the previous
+published count until release; `liveSelected` records the actual mask instead.
+Software dense gestures still evaluate84 columns across the full plot,
+including30 outer-stub columns; full cold images evaluate799. A release can
+reevaluate769 interior columns while retaining cached outer stubs. Hardware
+and sparse gesture/idle equality is actual cache reuse, not omitted rows.
+Final before/after mid-drag images, raw buffers and metadata exist for both
+backends, both shapes and both data distributions.
+
+Reproduce after a plain build:
+
+```bash
+bun build bench/parallel.ts --target=node --packages=external --outfile=./node_modules/.cache/parallel-bench.mjs
+node node_modules/.cache/parallel-bench.mjs --quality low --backend hardware --rows 1000000 --reps 3 --steps 3 --label smoothing-final --out <final-hardware.json>
+node node_modules/.cache/parallel-bench.mjs --quality low --backend swiftshader --rows 1000000 --reps 3 --steps 3 --label smoothing-final --out <final-software.json>
+```
+
+The artifact directory contains `capture.mjs`, `compare.mjs`,
+`summarize-results.mjs`, `summary-results.json` and `summary-tables.md` for the
+actual screenshot/error/aggregation method. Each capture rejects blank buffers;
+exact readback redraws synchronously, continuous reads the retained worker image.
+The seven cause figures and the post-fix DPR2 figure were opened and visually
+checked, together with actual before/final million-row gesture images.
+
+Regression evidence:
+
+- 58 focused Bun tests and 32 real-browser tests pass, with strict TypeScript,
+  formatting and a plain web build. The 65,536-row Cartesian worker fixture uses
+  six interior columns, requires **raw relative error <1.2%** and selected-boundary
+  displacement **≤2 CSS pixels**, straight and eased. This is a fixture-specific
+  bound, not a universal 1M threshold. The original 300-row 6.5%/MAE/alpha bounds
+  remain unchanged.
+- 12 actual GPU/CPU cases retain maximum premultiplied error ≤2/255 and mean
+  error ≤0.25/255, including numeric mean/extrema, categorical RGB, missing data,
+  and two-/six-column transported layers. Actual worker regressions cover the
+  crossing-band and independent stationary-context counterexamples.
+- Unit regressions pin coupled alpha/color, transparent padding, fractional
+  heights, local stubs, support correlations, source ownership, adaptive policy
+  and reused guide plans. Changed grids with unchanged global counts must
+  discard old pixels/guides and equal a fresh evaluator. Existing cache-only
+  scrolling and all-row worker/invalidation/coalescing cases remain green.
+- GL lifecycle mocks validate binding, resource ownership/cleanup and errors,
+  **not shader execution**. A capacity regression was reproduced RED in the
+  actual GL-pass class using a small mocked device limit, then corrected by
+  separating source/destination guide rows. The permanent real-browser test
+  renders a nonblank dense draft at the actual device's MAX_TEXTURE_SIZE.
+  The intended old-bundle browser RED was blocked by server startup, so it is
+  not counted as a successful renderer reproduction.
+- Four real presentation cases pin1×/2× premultiplied enlargement, hidden-color
+  rejection, two-dimensional edge clamping and top-down orientation. Independent
+  static reviews found the four reproduced structural/capacity defects, then
+  no actionable findings in the corrected scope; their reports distinguish
+  static inspection from the main session's executed tests.
+
+The first full pre-push attempt passed all 118 Python, 519 Bun and 203
+instrumented Playwright tests (normal 16 workers), with merged diff-cover
+**92%**: 6,441 of 6,943 mapped branch-changed lines covered. Both reconstruction
+modules report 100% mapped changed-line coverage. The evaluator reports 64.4%:
+inline-worker GL execution is tested numerically, but the existing document
+coverage collector does not collect worker-side binding counters. This is a
+merged branch gate, not a claim of universal per-file coverage.
+
+That attempt still returned nonzero: documentation was edited concurrently
+while the long hook ran, so pre-commit correctly detected changed working-tree
+content. No suite or coverage assertion failed. The exact full command is
+rerun with tracked files held unchanged; no gate, timeout, worker count,
+exclusion, threshold or hook was weakened.
+
+The unchanged rerun then exposed a pre-existing deadline-test flake:
+`parallel-deadline.spec.ts` took 6,162.8ms against its existing <5,000ms
+bound; 118 Python, 519 Bun and the other 202 browser tests passed. The test
+unconditionally forced `server.kill()`: on Windows, this synchronously invokes
+`taskkill /T /F`, then waits for process close and temporary-profile cleanup.
+Static inspection proves that blocking path, not which subphase consumed the
+particular 6,162.8ms. A 16-repeat isolated run of the old test passed, so the
+full-suite failure is not claimed as deterministically reproduced in isolation.
+
+The benchmark abort callbacks and regression now use owned `server.close()`:
+it sends browser-level CDP `Browser.close`, not a context close that needs the
+busy renderer's JavaScript. `withDeadline` still awaits complete owned shutdown
+before returning control. The 100ms deadline, CPU-bound renderer and <5,000ms
+assertion remain unchanged. This avoids forced Windows process-tree termination
+as the normal responsive-browser path; it does not prove a hard wall-time bound
+for a hung browser process or Playwright's eventual force-kill fallback. Only
+failed/expired attempts change, so the successful stored benchmark samples are
+unaffected.
+
+The corrected deadline regression passed all 32 repetitions at the normal
+16-worker setting, with the original bounds; all four deadline unit contracts
+also passed. Independent static review found no actionable defect in the three
+callback replacements, with the hard-hung-browser and runtime-verification
+limits above.
+
+The final exact command
+`uv run pre-commit run --hook-stage pre-push --all-files` **passed** before the
+last commit, including all Python, Bun and instrumented Playwright suites.
+The unchanged merged diff-cover gate remains **92%**, 6,441/6,943 mapped branch
+lines. The gate restored the plain web bundle, then `bun run build` **passed**
+for web, self-test, Streamlit and library outputs. Logs are retained as
+`initial-gate.log`, `deadline-failure-gate.log` and `final-validation.log` in the
+artifact directory; the failed attempts are not presented as passing commands.
+
+A final documentation reviewer found no verified code-claim defect, but could
+not access the external evidence files: this was not an independent clearance
+of the measurements. The main session executed the 24-image byte-equivalence
+check and eight-variant all-row/same-mask capture validation, cross-checked the
+actual measurement and gate reports, and verified all 17 local evidence links.
+No push, remote, packaging/release configuration or gate changes were made.
+The existing untracked `million.html` and `.impeccable/` remain outside the
+commits and were left alone.
