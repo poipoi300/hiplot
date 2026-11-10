@@ -226,20 +226,22 @@ export function evaluateContinuousPixel(
   const weight = reverse ? 1 - w : w;
   for (let a = 0; a < bins; ++a) {
     const b = (y / spacing - (1 - weight) * a) / weight;
-    const below = Math.floor(b);
-    const fraction = b - below;
-    const slope = (derivative * (b - a) * spacing) / gap;
-    // Integral of the normalized strip over endpoint space, including its Jacobian.
-    const centerCoverage = stripCenterCoverage(slope, style.lineWidth);
-    const factor = (style.lineWidth * Math.hypot(1, slope)) / (weight * spacing * centerCoverage);
-    for (let neighbor = 0; neighbor < 2; ++neighbor) {
-      const endpoint = below + neighbor;
-      if (endpoint < 0 || endpoint >= bins) continue;
-      const interpolation = neighbor === 0 ? 1 - fraction : fraction;
+    const radius = 0.5 / (weight * spacing);
+    // Integrate the reconstructed field over the vertical pixel footprint before tone mapping.
+    const first = Math.max(0, Math.ceil(b - radius - 1));
+    const last = Math.min(bins - 1, Math.floor(b + radius + 1));
+    for (let endpoint = first; endpoint <= last; ++endpoint) {
+      const interpolation =
+        (endpointTentIntegral(b + radius - endpoint) -
+          endpointTentIntegral(b - radius - endpoint)) /
+        (2 * radius);
       const left = reverse ? endpoint : a;
       const right = reverse ? a : endpoint;
       const center = ((1 - w) * left + w * right) * spacing;
       const localSlope = (derivative * (right - left) * spacing) / gap;
+      const factor =
+        (style.lineWidth * Math.hypot(1, localSlope)) /
+        (weight * spacing * stripCenterCoverage(localSlope, style.lineWidth));
       // Dense bins reconstruct a continuous endpoint interval, not coincident bin-center lines.
       const distance = Math.max(0, Math.abs(y - center) - spacing / 2);
       const coverage = continuousStripCoverage(distance, localSlope, style.lineWidth);
@@ -256,6 +258,13 @@ export function evaluateContinuousPixel(
     exact(bins, a, bins * stride + a);
   }
   return output;
+}
+
+/** Integral of the endpoint's linear tent basis from minus infinity to position. */
+function endpointTentIntegral(position: number): number {
+  if (position <= -1) return 0;
+  if (position >= 1) return 1;
+  return position < 0 ? (position + 1) ** 2 / 2 : 1 - (1 - position) ** 2 / 2;
 }
 
 function stripCenterCoverage(slope: number, lineWidth: number): number {
@@ -466,6 +475,12 @@ float stripCoverage(float distanceY, float slope) {
   return max(0.0, (squareBelow(across + halfWidth, narrow, wide) -
     squareBelow(across - halfWidth, narrow, wide)) / centerCoverage(slope) * min(u_lineWidth, 1.0));
 }
+float endpointTentIntegral(float position) {
+  if (position <= -1.0) return 0.0;
+  if (position >= 1.0) return 1.0;
+  return position < 0.0 ? 0.5 * (position + 1.0) * (position + 1.0) :
+    1.0 - 0.5 * (1.0 - position) * (1.0 - position);
+}
 void addCell(ivec2 endpoint, float weight, float covered) {
   if (weight <= 0.0) return;
   vec4 counts = texelFetch(u_counts, endpoint.yx, 0);
@@ -524,18 +539,19 @@ void main() {
     float weight = reverse ? 1.0 - w : w;
     for (int a = 0; a < u_bins; ++a) {
       float b = (y / spacing - (1.0 - weight) * float(a)) / weight;
-      int below = int(floor(b));
-      float fraction = fract(b);
-      float slope = derivative * (b - float(a)) * spacing / u_gap;
-      float factor = u_lineWidth * sqrt(1.0 + slope * slope) / (weight * spacing * centerCoverage(slope));
-      for (int neighbor = 0; neighbor < 2; ++neighbor) {
-        int endpoint = below + neighbor;
-        if (endpoint < 0 || endpoint >= u_bins) continue;
+      float radius = 0.5 / (weight * spacing);
+      int first = max(0, int(ceil(b - radius - 1.0)));
+      int last = min(u_bins - 1, int(floor(b + radius + 1.0)));
+      for (int endpoint = first; endpoint <= last; ++endpoint) {
+        float interpolation = (endpointTentIntegral(b + radius - float(endpoint)) -
+          endpointTentIntegral(b - radius - float(endpoint))) / (2.0 * radius);
         ivec2 endpoints = reverse ? ivec2(endpoint, a) : ivec2(a, endpoint);
         float center = mix(float(endpoints.x), float(endpoints.y), w) * spacing;
         float localSlope = derivative * float(endpoints.y - endpoints.x) * spacing / u_gap;
+        float factor = u_lineWidth * sqrt(1.0 + localSlope * localSlope) /
+          (weight * spacing * centerCoverage(localSlope));
         float covered = stripCoverage(max(0.0, abs(y - center) - 0.5 * spacing), localSlope);
-        addCell(endpoints, (neighbor == 0 ? 1.0 - fraction : fraction) * factor, covered);
+        addCell(endpoints, interpolation * factor, covered);
       }
     }
     // Horizontal missing-value stubs intersect only the bins inside this pixel's footprint.

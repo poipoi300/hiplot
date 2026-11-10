@@ -124,6 +124,23 @@ const at = (pixels: Uint8ClampedArray, width: number, x: number, y: number): num
   Array.from(pixels.slice((y * width + x) * 4, (y * width + x + 1) * 4));
 
 describe("continuous pixel evaluation", () => {
+  test("dense endpoint integration retains isolated strands at pixel-height spacing", () => {
+    const hist = denseContextHistogram();
+    populate(hist, 64, 64, 1);
+    const style = frame({ height: 255, contextAlpha: 0 });
+    const reference = evaluateContinuousPixel(hist, style, 85, 42.5, 64.5, true);
+    const dense = evaluateContinuousPixel(hist, style, 85, 42.5, 64.5, false);
+    expect(reference.selected).toBe(0.5);
+    expect(dense.selected).toBeCloseTo(reference.selected, 8);
+    const image = evaluateContinuousPairCPU(
+      pair(hist, "1:2", 0, 85),
+      style,
+      update([], { selectedCount: 1 }),
+    );
+    for (let x = 0; x < image.width; ++x) {
+      expect(image.pixels[(64 * image.width + x) * 4 + 3]).toBeGreaterThan(0);
+    }
+  });
   test("pixel-tile indices retain every intersecting sparse strip, including tile edges and stubs", () => {
     const hist = histogram(33);
     for (const [left, right] of [
