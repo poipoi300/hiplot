@@ -30,12 +30,10 @@ for (const { dense, curved, mode, numeric, paletteSize = 3 } of [
     const right = Float32Array.from({ length: rows }, (_, row) =>
       dense ? (row % 25) * 0.94 : ((row * 11) % 24) + 0.25,
     );
-    if (!dense) {
-      left[2] = Number.NaN;
-      right[3] = Number.NaN;
-      left[4] = Number.NaN;
-      right[4] = Number.NaN;
-    }
+    left[2] = Number.NaN;
+    right[3] = Number.NaN;
+    left[4] = Number.NaN;
+    right[4] = Number.NaN;
     const selection = Uint8Array.from({ length: rows }, (_, row) => Number(row % 4 !== 0));
     const basePalette = [
       { r: 34, g: 100, b: 220 },
