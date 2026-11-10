@@ -685,3 +685,74 @@ pictures. Recomputing peaks/winning keys and replaying original rounded sums
 would require different retained state and invalidate the claimed cheap delta
 operation. The unchanged-picture fallback remains a full redraw on every
 selection change. No subtractive path or drift/threshold tuning is shipped.
+
+## Dense accumulation precision
+
+`tests/density-saturation.spec.ts` exercises the actual renderer with 8,192
+coincident lines and reads its framebuffer and final RGBA pixels. Before the
+fix, numeric final and categorical draft coverage both read **2,048** rather
+than 8,192. A draft categorical pixel intended as RGB (51,153,204) became
+(64,255,255): saturation visibly changed the picture, not just internal counts.
+The regression also checks tone-mapped opacity below saturation, so numeric
+coverage cannot silently stall behind otherwise-correct color sums.
+
+All additive targets now use RGBA32F, in draft frames as well as final frames.
+The density renderer already requires `EXT_float_blend`; unsupported devices
+retain direct alpha blending rather than an incorrect half-float density path.
+Normalizing all contributions does **not** fix half-float summation: the spacing
+relative to each contribution still overtakes small increments after about
+2,048 additions. Single floats avoid that failure for the intended million-row
+range (unit counts remain exact through 2^24); arbitrary unbounded densities
+would also exceed single-float precision and need the binned Float64 reduction.
+Keeping one ADD/MAX equation across targets avoids per-target blending state;
+mean mode still disables writes to the unused on-top attachment.
+
+## Bounded binned renderer: design before implementation
+
+The accepted goal here is density fidelity and interaction rather than identical
+per-row pixels. A worker will count **every row**, then rasterize weighted
+straight segments from adjacent-axis histograms. The foreground receives one
+RGBA8 image, avoiding SwiftShader's per-row fragments. Exact highlighted rows
+remain on the independent overlay. Curves in the exact renderer become straight
+segments in binned mode; missing-value stubs remain.
+
+A 2026-11-10 Node CPU prototype on this workstation measured 1M continuous rows,
+ten columns, nine histograms and a 1000 × 500 nearest-pixel raster:
+
+| Axis bins | Quantize ms | Count ms | Raster ms | Occupied cells |
+|---|---:|---:|---:|---:|
+| 64 | 12.4 | 24.6 | 23.6 | 36,864 |
+| 128 | 11.9 | 34.0 | 70.9 | 147,456 |
+| 256 | 10.4 | 45.4 | 273.9 | 589,804 |
+| 512 | 21.4 | 84.8 | 1014.0 | 2,173,633 |
+
+These are prototype costs, not completed browser-frame measurements. They reject
+pixel-height histograms as the default: continuous data fills their quadratic
+cell space. Start at 64 bins (maximum endpoint displacement about four CSS pixels
+at 500px height), retain counts and color statistics instead of sampling rows,
+and measure the actual worker and image composite before claiming interaction.
+Use Float64 CPU sums, selected/context counts, numeric mean/missing share or
+categorical RGB sums and numeric extrema. Recompute selected histograms for a
+new mask, including extrema, rather than attempting unsafe MAX subtraction.
+
+Cache pairs by column identities and selection/color revisions, not axis order
+or screen position: reordering builds new pairs only; scrolling rasterizes the
+cached counts. Copy/transfer worker-owned columns once per geometry change;
+never detach the live geometry used by exact highlights. Coalesce work to one
+in-flight job and one latest pending frame, reject stale results and terminate
+on unmount. An inline worker must keep standalone HTML offline and self-contained.
+
+Automatic mode must engage above a row threshold **before the first draw** so
+software machines do not wait 100 seconds for performance detection. The existing
+persisted `low` quality becomes the binned override and `full` remains exact;
+auto also uses the existing slow-frame verdict. This supersedes gesture-only
+sampling/half-resolution, rather than layering a second approximation over it.
+The benchmark must explicitly choose mode and await worker completion as well
+as the GPU fence, since its current forced-full path cannot measure this work.
+
+Validation will include count conservation, brushed-vs-fresh histograms,
+missing colors/values and extrema; browser tests for mode switching, exact
+highlight geometry and moderate straight-picture agreement with a stated
+spatial tolerance. Hardware 1M and software 100k/1M runs will compare completed
+frames to the recorded baseline. A hardware 10M attempt will identify whether
+the existing object-model memory, rather than the raster, becomes the limit.

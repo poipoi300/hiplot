@@ -38,8 +38,7 @@ export interface LineFrame {
   /**
    * A frame of a brush or axis drag over many rows (see ParallelPlot), drawn
    * to fit the frame budget: one-pixel lines instead of anti-aliased strips,
-   * half the fragments, with their densities summed in half floats, half the
-   * bandwidth (see DensityPrecision).
+   * with half the fragments. Density sums retain single-float precision.
    */
   draft: boolean;
   /**
@@ -623,11 +622,10 @@ const DENSITY_UNITS = { selectedSums: 6, coverageSums: 7, onTop: 8 } as const;
  * segments between two discrete axes does, its sum stops growing once its
  * spacing exceeds twice the added coverage, at a point that depends on that
  * coverage, so a sum of colors over a sum of coverages drifts from pixel to
- * pixel. Single floats sum them exactly, at twice the bandwidth: the line
- * pass is bound by blending into these targets, and single floats take
- * three times as long at 100,000 rows. So only the sums that a color is
- * divided by take single floats, and draft frames sum everything in half
- * floats, which may bead dense bundles until the drag ends.
+ * pixel. Scaling contributions cannot repair this relative-precision limit.
+ * All additive targets therefore use single floats, including draft frames.
+ * The density path requires EXT_float_blend; without it the existing direct
+ * alpha-blended path does not accumulate half-float densities.
  */
 interface DensityPrecision {
   selectedSums: number;
@@ -1004,16 +1002,9 @@ export class WebGLLineRenderer {
    * numeric color is divided by a coverage summed next to it in target 0, a
    * categorical one by the coverage sum in target 1.
    */
-  private densityPrecision(frame: LineFrame): DensityPrecision {
+  private densityPrecision(): DensityPrecision {
     const gl = this.gl;
-    if (frame.draft) {
-      return { selectedSums: gl.RGBA16F, coverageSums: gl.RGBA16F, onTop: gl.RGBA16F };
-    }
-    return {
-      selectedSums: gl.RGBA32F,
-      coverageSums: this.colorMapBins > 0 ? gl.RGBA16F : gl.RGBA32F,
-      onTop: gl.RGBA32F,
-    };
+    return { selectedSums: gl.RGBA32F, coverageSums: gl.RGBA32F, onTop: gl.RGBA32F };
   }
 
   private densityTargets(
@@ -1189,7 +1180,7 @@ export class WebGLLineRenderer {
     const targets = this.densityTargets(
       Math.max(1, Math.ceil(width * frame.resolution)),
       Math.max(1, Math.ceil(height * frame.resolution)),
-      this.densityPrecision(frame),
+      this.densityPrecision(),
     );
     const { lines, composite } = this.densityPrograms;
     const onTopLevels =
