@@ -23,6 +23,8 @@ test("the whole-attempt deadline interrupts a CPU-bound initial browser evaluati
         () => server.kill(),
       ),
     ).rejects.toThrow("last stage: initial evaluation exceeded 100 ms");
+    // Callers may clean up or start another attempt immediately after rejection.
+    expect(page.isClosed()).toBe(true);
     await expect.poll(() => page.isClosed()).toBe(true);
     expect(performance.now() - started).toBeLessThan(5000);
   } finally {

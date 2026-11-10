@@ -37,6 +37,22 @@ test("a stalled evaluation reports the last stage and closes its owned context",
   expect(abort).toHaveBeenCalledTimes(1);
 });
 
+test("a deadline waits for owned shutdown before returning control to cleanup", async () => {
+  let closed = false;
+  await expect(
+    withDeadline(
+      () => new Promise<never>(() => {}),
+      5,
+      () => "load",
+      async () => {
+        await Bun.sleep(5);
+        closed = true;
+      },
+    ),
+  ).rejects.toThrow("load exceeded 5 ms");
+  expect(closed).toBe(true);
+});
+
 test("a cleanup failure remains visible rather than replacing the deadline", async () => {
   const stderr = spyOn(process.stderr, "write").mockImplementation(() => true);
   try {

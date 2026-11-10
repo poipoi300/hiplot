@@ -582,13 +582,13 @@ async function main(): Promise<void> {
           console.log(JSON.stringify(result));
           process.exitCode = 1;
         } finally {
-          await context.close();
           if (values.out !== undefined) {
             writeFileSync(
               values.out,
               JSON.stringify({ label: values.label, rows, columns, steps, quality, runs }, null, 2),
             );
           }
+          if (browser.isConnected()) await context.close();
         }
         if (!browser.isConnected()) break attempts;
       }
