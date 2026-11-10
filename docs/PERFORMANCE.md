@@ -1352,3 +1352,93 @@ and at most one differing RGBA8 level after row permutations. The unchanged
 sparse-picture fidelity and exact-highlight tests still pass. The brief related
 binned-path audit found no additional concrete order-dependent/data-loss defect;
 that audit is source inspection, not a claim that previews are permutation invariant.
+
+## Continuous histogram-space density: feasibility first
+
+The maintainer rejected the bounded segment picture and the visibly sparse
+128-row gesture preview. The approved replacement inverts rasterization: a
+fragment queries the adjacent-axis count grid rather than drawing representative
+segments. This section records the prototype **before production integration**;
+the historical binned measurements above do not measure this design.
+
+`bench/continuous.ts` uses the actual million-row benchmark page to obtain its
+geometry: 944 × 465 CSS pixels, ten axes and nine 85–86px gaps at a 1000 × 700
+viewport. It then evaluates a dense RGBA32F histogram (selected count, context
+count, numeric color-key sum, missing-color count) in a separate WebGL2 context.
+For each pixel it loops over one endpoint, solves the other endpoint, and uses
+linear filtering along that coordinate. It switches loop direction at the pair
+midpoint so the divisor is always at least 0.5. Straight interpolation uses
+`w=t`; the pair-local eased curve uses `w=t*t*(3-2*t)`. The local slope supplies
+the line-width/Jacobian correction. The production curve is necessarily an
+approximation to neighbor-dependent monotone splines: a two-axis histogram
+cannot recover the neighboring endpoints those splines require.
+
+Measured 2026-11-10, one isolated browser per backend, two warm-ups followed by
+five samples. Actual GL diagnostics identified RTX 5090 / ANGLE D3D11 and
+SwiftShader / Vulkan. Completion uses a one-pixel **readback from the destination
+framebuffer**, including the final linear upscale, not CPU draw submission.
+Each pair has its own tightly sized framebuffer and is upscaled separately;
+interpolation never reads the neighboring pair. Full plot means all nine pairs
+(769 evaluated columns); one pair is 85 columns.
+The probe histogram is synthetic and dense, not a timed million-row recount.
+It exercises mean numeric color and density evaluation, not extrema, peak-AA,
+missing stubs, worker transport or brush filtering. Those costs remain to be
+measured in the complete implementation. Hardware sub-millisecond results are
+near the browser timer's 0.1ms granularity and are not precise GPU timer queries.
+
+| Backend / bins | One pair straight / eased ms | Nine pairs straight / eased ms | Quarter columns straight / eased ms | 1/16 columns straight / eased ms |
+|---|---:|---:|---:|---:|
+| RTX 5090 / 256 | 0.2 / 0.2 | 0.8 / 0.8 | 0.7 / 0.7 | 0.7 / 0.7 |
+| RTX 5090 / 465 | 0.2 / 0.3 | 1.2 / 1.2 | 1.2 / 1.2 | 1.2 / 1.2 |
+| RTX 5090 / 512 | 0.3 / 0.2 | 1.3 / 1.3 | 1.2 / 1.3 | 1.3 / 1.2 |
+| SwiftShader / 256 | 8.7 / 12.3 | 104.0 / 112.0 | 20.4 / 21.1 | 6.6 / 6.9 |
+| SwiftShader / 465 | 22.4 / 21.8 | 178.9 / 185.4 | 38.2 / 42.0 | 11.1 / 11.6 |
+| SwiftShader / 512 | 17.2 / 22.5 | 195.4 / 200.2 | 39.6 / 41.1 | 12.1 / 12.5 |
+
+The column fallback is justified on software: quarter-width evaluation can
+approach interactive updates without dropping rows; 1/16-width provides further
+headroom, but only six columns per pair and therefore a fidelity cost. Full-width
+pixel-height bins are suitable for idle refinement, not a 60Hz software gesture.
+These numbers pass the brief's feasibility checkpoint; they are **not** complete
+input-latency or picture-equivalence results.
+
+### Retained-state design
+
+- Replace the old cell-budget raster and sampled preview, rather than layering
+  another approximation over them. Keep the persisted `auto | low | full`
+  contract and automatic hardware/software thresholds; name `low` continuous
+  density in the quality menu.
+- Count every row in separate selected/context integer grids with at least 256
+  endpoint bins. Evaluate pixel-height bins against 256 in the complete picture
+  and benchmark, including their quadratic storage cost. Missing coordinates
+  have a separate bin and render the existing finite-endpoint stubs. Categorical
+  and inverted axes are counted from their actual rendered pixel coordinates.
+- Keep color-bin ranks and palette-channel sums as exact integers, with explicit
+  bounds; subtraction must equal a fresh reduction, not merely look similar.
+  Numeric lowest/highest require retained per-cell color membership or rescanning
+  affected cell members when an extremum leaves. A minimum or maximum alone has
+  no subtractive inverse. Missing colors do not win numeric extrema.
+- Build per-axis sorted row indices in a worker from brush source values, not
+  Float32 render coordinates: only source values reproduce inclusive brush and
+  special-value semantics. Update the grid only for actual selection changes.
+- Cache each pair image by grid revision and local geometry/style. Horizontal
+  scrolling composites the cached images and must not re-evaluate pixels.
+  Geometry changes, resize and changed grids invalidate the relevant pairs.
+- Keep the independent highlighted-row overlay on original row geometry. No
+  histogram bin or reduced-column image is an acceptable hover approximation.
+- Preserve the existing logarithmic density reference and selected-over-context
+  tone map. Endpoint reconstruction, pair-local curves and column interpolation
+  are approximations and need measured, stated picture tolerances.
+
+Reproduce after a plain build (Node drives Playwright on Windows):
+
+```bash
+bun build bench/parallel.ts --target=node --packages=external --outfile=./node_modules/.cache/parallel-bench.mjs
+bun build bench/continuous.ts --target=node --packages=external --outfile=./node_modules/.cache/continuous-probe.mjs
+node node_modules/.cache/continuous-probe.mjs --backend software --reps 5 --out <software.json>
+node node_modules/.cache/continuous-probe.mjs --backend hardware --reps 5 --out <hardware.json>
+```
+
+Raw prototype samples are `prototype-software.json` and
+`prototype-hardware.json` in
+`C:/Users/Administrator/AppData/Local/Temp/hb/gpt-continuous/`.
