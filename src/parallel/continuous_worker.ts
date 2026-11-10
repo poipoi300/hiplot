@@ -10,7 +10,7 @@ interface PendingFrame {
 
 export type ContinuousWorkerFactory = () => Promise<Worker>;
 
-/** Single all-row worker, one active job and one latest pending frame. */
+/** Single all-row worker; drafts preempt refinement but pace behind other drafts. */
 export class ContinuousRenderer {
   private worker: Worker | null = null;
   private readonly columnIds = new WeakMap<Float32Array, number>();
@@ -19,6 +19,7 @@ export class ContinuousRenderer {
   private nextFrameId = 0;
   private activeId = 0;
   private running = false;
+  private activeDraft = true;
   private pending: PendingFrame | null = null;
   private disposed = false;
   private failure: Error | null = null;
@@ -35,6 +36,10 @@ export class ContinuousRenderer {
 
   get busy(): boolean {
     return this.running || this.pending !== null;
+  }
+
+  get refining(): boolean {
+    return this.running && !this.activeDraft;
   }
 
   draw(frame: LineFrame, colors: LineColors, selection: Uint8Array): void {
@@ -76,10 +81,11 @@ export class ContinuousRenderer {
       }
       return;
     }
-    if (this.running) {
+    if (this.running && !(frame.draft && this.refining)) {
       this.pending = pending;
       return;
     }
+    this.pending = null;
     this.dispatch(pending);
   }
 
@@ -88,12 +94,16 @@ export class ContinuousRenderer {
     worker.onmessage = ({
       data,
     }: MessageEvent<{ id: number; image?: ContinuousImage; error?: string }>) => {
-      if (this.disposed) return;
+      if (this.disposed || data.id < this.activeId) return;
+      if (data.id !== this.activeId) {
+        this.fail(new Error("Continuous worker returned an unexpected frame"));
+        return;
+      }
       if (data.error !== undefined) {
         this.fail(new Error(`Continuous renderer: ${data.error}`));
         return;
       }
-      if (data.id !== this.activeId || data.image === undefined) {
+      if (data.image === undefined) {
         this.fail(new Error("Continuous worker returned an unexpected frame"));
         return;
       }
@@ -102,6 +112,8 @@ export class ContinuousRenderer {
         this.dispatchPending();
         return;
       }
+      // Publication still counts as busy, but completed refinement can no longer be preempted.
+      this.activeDraft = true;
       try {
         this.onImage(data.image);
       } finally {
@@ -168,6 +180,7 @@ export class ContinuousRenderer {
       transfer.push(selection.buffer);
     }
     this.activeId = id;
+    this.activeDraft = frame.draft;
     this.running = true;
     this.worker.postMessage(request, transfer);
   }

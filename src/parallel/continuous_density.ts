@@ -891,15 +891,52 @@ export class ContinuousDensityEvaluator {
   render(frame: ContinuousRequest, update: ContinuousUpdate): ContinuousImage {
     if (this.gpu?.contextLost) this.switchToCPU();
     try {
-      return this.renderFrame(frame, update);
+      const job = this.renderFrame(frame, update);
+      for (;;) {
+        const next = job.next();
+        if (next.done) return next.value;
+      }
     } catch (error) {
       if (!this.gpu?.contextLost) throw error;
       this.switchToCPU();
-      return this.renderFrame(frame, update);
+      return this.render(frame, update);
     }
   }
 
-  private renderFrame(frame: ContinuousRequest, update: ContinuousUpdate): ContinuousImage {
+  async renderCooperative(
+    frame: ContinuousRequest,
+    update: ContinuousUpdate,
+    isCurrent: () => boolean,
+  ): Promise<ContinuousImage | null> {
+    if (this.gpu?.contextLost) this.switchToCPU();
+    try {
+      const job = this.renderFrame(frame, update);
+      while (isCurrent()) {
+        const next = job.next();
+        if (next.done) return next.value;
+        // A task boundary admits worker messages; microtasks cannot deliver a new gesture.
+        await new Promise<void>((resolve) => {
+          const channel = new MessageChannel();
+          channel.port1.onmessage = () => {
+            channel.port1.close();
+            channel.port2.close();
+            resolve();
+          };
+          channel.port2.postMessage(null);
+        });
+      }
+      return null;
+    } catch (error) {
+      if (!this.gpu?.contextLost) throw error;
+      this.switchToCPU();
+      return this.renderCooperative(frame, update, isCurrent);
+    }
+  }
+
+  private *renderFrame(
+    frame: ContinuousRequest,
+    update: ContinuousUpdate,
+  ): Generator<void, ContinuousImage> {
     const started = performance.now();
     const width = Math.max(1, Math.ceil(frame.width));
     const height = Math.max(1, Math.ceil(frame.height));
@@ -957,6 +994,7 @@ export class ContinuousDensityEvaluator {
         evaluatedColumns += columns;
       }
       compositePairImage(pixels, width, height, cached.image, pair.left.x, gap);
+      yield;
     }
     for (const key of this.cache.keys()) if (!active.has(key)) this.cache.delete(key);
     const rasterMs = performance.now() - started;

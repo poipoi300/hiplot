@@ -1135,10 +1135,15 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
   }
 
-  /** Busy moves coalesce; an idle all-row density update starts without another vsync. */
+  /** Busy drafts coalesce; a new gesture can interrupt refinement without another vsync. */
   private brushMoveFrame: number | null = null;
   private scheduleBrushFrame(): void {
-    if (this.continuousMode() && this.draftFrame() && !this.continuous?.busy && !this.webgl?.busy) {
+    if (
+      this.continuousMode() &&
+      this.draftFrame() &&
+      (!this.continuous?.busy || this.continuous.refining) &&
+      !this.webgl?.busy
+    ) {
       this.cancelBrushMove();
       this.pplot?.brush(false);
       return;
@@ -2737,14 +2742,17 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** The animation frame that checks whether rendering is idle for a deferred redraw. */
   private idleRedraw: number | null = null;
 
-  /** Redraws when the GPU and worker are idle; later requests join this one. */
+  /** Waits for presentation and active drafts, not refinement during a new gesture. */
   private redrawWhenGpuIdle(): void {
     if (this.idleRedraw !== null) {
       return;
     }
     const check = (): void => {
       this.idleRedraw = null;
-      if (this.webgl?.busy || this.continuous?.busy) {
+      if (
+        this.webgl?.busy ||
+        (this.continuous?.busy && !(this.interacting && this.continuous.refining))
+      ) {
         this.idleRedraw = requestAnimationFrame(check);
         return;
       }
@@ -2779,8 +2787,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       return;
     }
     if (this.continuousMode()) {
-      // Present each issued all-row frame before requesting the newest gesture state.
-      if (this.interactiveFrame() && (this.continuous?.busy || this.webgl?.busy)) {
+      // Pace active drafts, but let a new gesture interrupt full-width refinement.
+      if (
+        this.interactiveFrame() &&
+        ((this.continuous?.busy && !(this.interacting && this.continuous.refining)) ||
+          this.webgl?.busy)
+      ) {
         this.redrawWhenGpuIdle();
         return;
       }
