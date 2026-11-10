@@ -343,6 +343,8 @@ export interface ContinuousPairImage {
   pixels: Uint8ClampedArray;
   width: number;
   height: number;
+  /** When present, pixels is selected-only; reconstruct both layers before compositing. */
+  contextPixels?: Uint8ClampedArray;
 }
 
 // Fixed subpixel geometry prevents translation cancellation from invalidating pair-local caches.
