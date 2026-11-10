@@ -52,7 +52,6 @@ import {
   tickCountFor,
   valueFormatter,
 } from "./axisformat";
-import { BinnedRenderer } from "./binned_worker";
 import {
   type AxisBrush,
   brushesAfterClick,
@@ -68,13 +67,15 @@ import {
   savedBrushIntervals,
 } from "./brushes";
 import { categoryTagTexts, placeBrushTags, type TagTexts } from "./brushtags";
+import type { ContinuousImage } from "./continuous_types";
+import { ContinuousRenderer } from "./continuous_worker";
 import { categoryIndices, countByCategory, type FlowAxis, flowAxes } from "./flow";
 import { LineGeometry } from "./geometry";
 import { defaultHiddenColumns } from "./hidden";
 import { type ColorOrientation, colorOrientation, NO_ORIENTATION } from "./orientation";
 import pstyle from "./parallel.module.css";
 import {
-  binnedRendering,
+  continuousRendering,
   FramePerformance,
   isRenderQuality,
   RENDER_QUALITIES,
@@ -441,12 +442,12 @@ const SCROLL_SETTLE_MS = 150;
 const RENDER_QUALITY_LABELS: Record<RenderQuality, { label: string; title: string }> = {
   auto: {
     label: "Automatic",
-    title: "Binned density for large datasets or when exact frames are slow",
+    title: "Continuous density for large datasets or when exact frames are slow",
   },
   low: {
-    label: "Binned density",
+    label: "Continuous density",
     title:
-      "Pixel-scale density with sampled brush previews and all-row refinement; highlights stay exact",
+      "Continuous all-row density with straight or eased curves; exact row highlights remain available",
   },
   full: {
     label: "Exact lines",
@@ -523,9 +524,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   private masks: BrushMasks | null = null;
   /** Line renderer on the GPU; null when WebGL2 is unavailable and Canvas 2D draws. */
   webgl: WebGLLineRenderer | null = null;
-  binned: BinnedRenderer | null = null;
-  binnedFrame = 0;
-  binnedMetrics: { milliseconds: number; countMs: number; rasterMs: number } | null = null;
+  continuous: ContinuousRenderer | null = null;
+  continuousFrame = 0;
+  continuousMetrics: ContinuousImage | null = null;
   /** The selection flags last computed, reused while the selection is unchanged. */
   private maskMemo: {
     geometry: LineGeometry;
@@ -714,8 +715,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.autoscroll = null;
     d3.select(this.svgg_ref.current).selectAll("*").remove();
     this.cancelDrawing();
-    this.binned?.dispose();
-    this.binned = null;
+    this.continuous?.dispose();
+    this.continuous = null;
+    this.masks?.dispose();
+    this.masks = null;
     this.webgl?.dispose();
     this.webgl = null;
     this.props.context_menu_ref?.current?.removeCallbacks(this);
@@ -1132,15 +1135,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
   }
 
-  /** Busy moves share a frame; an idle preview starts without waiting for display vsync. */
+  /** Busy moves coalesce; an idle all-row density update starts without another vsync. */
   private brushMoveFrame: number | null = null;
   private scheduleBrushFrame(): void {
-    if (
-      this.binnedMode() &&
-      this.draftFrame() &&
-      (!this.binned?.busy || !this.binned.previewing) &&
-      !this.webgl?.busy
-    ) {
+    if (this.continuousMode() && this.draftFrame() && !this.continuous?.busy && !this.webgl?.busy) {
       this.cancelBrushMove();
       this.pplot?.brush(false);
       return;
@@ -1211,13 +1209,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
               key={shape}
               type="button"
               title={
-                this.binnedMode()
-                  ? "Binned density uses straight segments; choose Exact lines to change shape"
+                this.continuousMode() && shape === "curved"
+                  ? "Curved: pair-local eased density; exact highlights retain the original spline"
                   : title
               }
-              disabled={this.binnedMode()}
               aria-label={label}
-              aria-pressed={(this.binnedMode() ? "straight" : this.state.lineShape) === shape}
+              aria-pressed={this.state.lineShape === shape}
               className={icon === undefined ? undefined : controls.iconSegment}
               onClick={() => this.setState({ lineShape: shape })}
             >
@@ -1292,12 +1289,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** Always available: an exact picture and a bounded density are explicit choices. */
   renderQualityControl(): React.ReactElement | null {
     const { renderQuality } = this.state;
-    const binned = this.binnedMode();
+    const continuous = this.continuousMode();
     return (
       <Popover
-        trigger={binned ? "Binned density" : "Exact lines"}
+        trigger={continuous ? "Continuous density" : "Exact lines"}
         label="Drawing quality"
-        title="Pixel-scale density uses sampled previews while brushing, then refines all-row counts with a bounded segment budget; highlights stay exact"
+        title="Continuous density counts every row, including while brushing; slow devices interpolate fewer image columns during gestures. Highlights stay exact."
         align="start"
         testId="render-quality-button"
       >
@@ -1825,7 +1822,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       const masks = me.brushMasks();
       const mask = masks.select(selections);
       const canvasSelection =
-        me.webgl === null && !me.binnedMode() ? masks.selectedRows(mask) : null;
+        me.webgl === null && !me.continuousMode() ? masks.selectedRows(mask) : null;
       me.updateFlowBadges(new Set(actives), mask);
       me.liveBrushMask = { rows: masks.rows, mask };
       me.maskMemo = null;
@@ -2505,6 +2502,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   brushMasks(): BrushMasks {
     if (this.masks === null || this.masks.rows !== this.props.rows_filtered) {
+      this.masks?.dispose();
       this.masks = new BrushMasks(this.props.rows_filtered);
     }
     return this.masks;
@@ -2553,8 +2551,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   /** Decided before the first frame, including machines without usable WebGL. */
-  binnedMode(): boolean {
-    return binnedRendering(
+  continuousMode(): boolean {
+    return continuousRendering(
       this.state.renderQuality,
       this.state.slowFrames,
       this.props.rows_filtered.length,
@@ -2594,9 +2592,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   /** Curves between axes unless the user chose straight lines, or "auto" meets many rows. */
   curvedLines(): boolean {
-    if (this.binnedMode()) {
-      return false;
-    }
     if (this.state.lineShape === "auto") {
       return this.props.rows_filtered.length <= STRAIGHT_LINES_ABOVE_ROWS;
     }
@@ -2650,14 +2645,14 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.watchFrames(webgl);
   }
 
-  private drawBinned(): void {
-    if (this.binned === null) {
-      this.binned = new BinnedRenderer((image) => {
-        if (!this.binnedMode()) {
+  private drawContinuous(): void {
+    if (this.continuous === null) {
+      this.continuous = new ContinuousRenderer((image) => {
+        if (!this.continuousMode()) {
           return;
         }
-        this.binnedFrame += 1;
-        this.binnedMetrics = image;
+        this.continuousFrame += 1;
+        this.continuousMetrics = image;
         if (this.webgl !== null) {
           this.webgl.present(image.pixels, image.width, image.height);
           this.watchFrames(this.webgl);
@@ -2681,7 +2676,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
     const geometry = this.geometry();
     const mask = this.selectionMask(geometry);
-    this.binned.draw(this.lineFrame(geometry, mask), this.lineColors(geometry), mask);
+    // Pixel integration cost follows occupied bins, not the exact renderer's row threshold.
+    this.continuous.draw(
+      { ...this.lineFrame(geometry, mask), draft: this.interacting },
+      this.lineColors(geometry),
+      mask,
+    );
   }
 
   /** Every row's color bin, and how many bins sample a numeric color map (see LineColors). */
@@ -2740,7 +2740,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
     const check = (): void => {
       this.idleRedraw = null;
-      if (this.webgl?.busy || this.binned?.busy) {
+      if (this.webgl?.busy || this.continuous?.busy) {
         this.idleRedraw = requestAnimationFrame(check);
         return;
       }
@@ -2772,22 +2772,19 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (this.webgl === null && this.foreground === null) {
       return;
     }
-    if (this.binnedMode()) {
-      // Preview jobs may finish during input, but never wait behind an all-row refinement.
-      if (
-        this.interactiveFrame() &&
-        ((this.binned?.busy && (!this.draftFrame() || this.binned.previewing)) || this.webgl?.busy)
-      ) {
+    if (this.continuousMode()) {
+      // Present each issued all-row frame before requesting the newest gesture state.
+      if (this.interactiveFrame() && (this.continuous?.busy || this.webgl?.busy)) {
         this.redrawWhenGpuIdle();
         return;
       }
       this.drawGeneration += 1;
       this.cancelDrawing();
-      this.drawBinned();
+      this.drawContinuous();
       return;
     }
-    this.binned?.dispose();
-    this.binned = null;
+    this.continuous?.dispose();
+    this.continuous = null;
     if (this.webgl !== null) {
       // During a drag, a frame waits for the GPU to finish the last one, so a
       // slow GPU drops frames instead of queueing them behind the pointer.

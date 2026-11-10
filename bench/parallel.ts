@@ -20,14 +20,14 @@ interface ProbeRenderer extends Pick<WebGLLineRenderer, "draw" | "setSelection" 
   slotsFor: (columns: readonly Float32Array[]) => number[];
   present: (pixels: Uint8ClampedArray, width: number, height: number) => void;
 }
-interface BinnedProbe {
-  binned: {
+interface ContinuousProbe {
+  continuous: {
     busy: boolean;
     draw: (...args: unknown[]) => void;
   } | null;
-  binnedFrame: number;
-  binnedMetrics: { milliseconds: number; countMs: number; rasterMs: number } | null;
-  binnedMode: () => boolean;
+  continuousFrame: number;
+  continuousMetrics: { milliseconds: number; countMs: number; rasterMs: number } | null;
+  continuousMode: () => boolean;
 }
 type ProbePlot = Pick<NonNullable<ReturnType<HiPlot["parallelPlot"]>>, "state" | "h"> & {
   startBrushGesture: (event: { sourceEvent: { target: Element }; y: number }, axis: string) => void;
@@ -67,7 +67,7 @@ export async function loadParallelBenchmark(
   generateMs: number;
   firstFrameMs: number;
   renderer: string;
-  renderMode: "binned" | "exact";
+  renderMode: "continuous" | "exact";
 }> {
   onStage("navigation and bundle setup");
   await page.route("http://hiplot.benchmark/**", (route) =>
@@ -121,9 +121,11 @@ export async function loadParallelBenchmark(
       if (pp?.webgl === null || pp?.webgl === undefined) {
         return false;
       }
-      const binned = pp as unknown as BinnedProbe;
+      const continuous = pp as unknown as ContinuousProbe;
       return (
-        !pp.webgl.busy && (!binned.binnedMode() || (binned.binnedFrame > 0 && !binned.binned?.busy))
+        !pp.webgl.busy &&
+        (!continuous.continuousMode() ||
+          (continuous.continuousFrame > 0 && !continuous.continuous?.busy))
       );
     },
     undefined,
@@ -133,12 +135,12 @@ export async function loadParallelBenchmark(
     const probe = (window as unknown as ProbeWindow).__parallelProbe;
     const gl = document.createElement("canvas").getContext("webgl2");
     const info = gl?.getExtension("WEBGL_debug_renderer_info");
-    const pp = probe.instance.parallelPlot() as unknown as BinnedProbe;
+    const pp = probe.instance.parallelPlot() as unknown as ContinuousProbe;
     return {
       generateMs: probe.generateMs,
       firstFrameMs: performance.now() - probe.loadStart,
       renderer: gl && info ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) : "unavailable",
-      renderMode: pp.binnedMode() ? ("binned" as const) : ("exact" as const),
+      renderMode: pp.continuousMode() ? ("continuous" as const) : ("exact" as const),
     };
   });
 }
@@ -238,12 +240,12 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
       probe.samples.push({ stage: "submit", milliseconds: performance.now() - start });
       fenceFrame(start);
     };
-    const binned = pp as unknown as BinnedProbe;
-    if (binned.binned !== null) {
+    const continuous = pp as unknown as ContinuousProbe;
+    if (continuous.continuous !== null) {
       let requestedAt = performance.now();
       let requestedInputAt: number | null = null;
-      const request = binned.binned.draw.bind(binned.binned);
-      binned.binned.draw = (...args) => {
+      const request = continuous.continuous.draw.bind(continuous.continuous);
+      continuous.continuous.draw = (...args) => {
         requestedAt = performance.now();
         requestedInputAt = probe.brushInputAt;
         if (requestedInputAt !== null)
@@ -253,16 +255,16 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
           });
         request(...args);
         probe.samples.push({
-          stage: "binnedSubmit",
+          stage: "continuousSubmit",
           milliseconds: performance.now() - requestedAt,
         });
       };
       const present = renderer.present.bind(renderer);
       renderer.present = (pixels, width, height) => {
         const start = performance.now();
-        const metrics = binned.binnedMetrics;
+        const metrics = continuous.continuousMetrics;
         if (metrics === null) {
-          throw new Error("Binned presentation has no worker metrics");
+          throw new Error("Continuous presentation has no worker metrics");
         }
         probe.samples.push(
           { stage: "worker", milliseconds: metrics.milliseconds },
@@ -286,7 +288,7 @@ async function settle(page: Page): Promise<void> {
     if (pp?.webgl === null || pp?.webgl === undefined) {
       return false;
     }
-    const binned = pp as unknown as BinnedProbe;
+    const continuous = pp as unknown as ContinuousProbe;
     const callbacks = pp as unknown as {
       scrollSettle: unknown;
       scrollFrame: number | null;
@@ -296,8 +298,8 @@ async function settle(page: Page): Promise<void> {
     return (
       probe.pending === 0 &&
       !pp.webgl.busy &&
-      !binned.binned?.busy &&
-      (!binned.binnedMode() || binned.binnedFrame > 0) &&
+      !continuous.continuous?.busy &&
+      (!continuous.continuousMode() || continuous.continuousFrame > 0) &&
       callbacks.scrollSettle === null &&
       callbacks.scrollFrame === null &&
       callbacks.brushMoveFrame === null &&
@@ -327,6 +329,23 @@ export async function measureParallelBenchmark(page: Page, steps: number) {
   });
   await settle(page);
   const full = await takeSamples(page);
+  // Style changes force real full-width evaluation; an unchanged redraw can be cache-only.
+  const shape = await page.evaluate(() => {
+    const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
+    if (pp === null) throw new Error("No benchmark plot");
+    return { selected: pp.state.lineShape, curved: pp.curvedLines() };
+  });
+  for (const name of [
+    shape.curved ? "Straight" : "Curved",
+    { auto: "Auto", straight: "Straight", curved: "Curved" }[shape.selected],
+  ]) {
+    await page
+      .getByRole("group", { name: "Line shape" })
+      .getByRole("button", { name, exact: true })
+      .click();
+    await settle(page);
+  }
+  const recompute = await takeSamples(page);
   await page.evaluate(() => {
     const pp = (
       window as unknown as ProbeWindow
@@ -462,7 +481,7 @@ export async function measureParallelBenchmark(page: Page, steps: number) {
     await settle(page);
   }
   const scroll = await takeSamples(page);
-  return { full, brush, release, axis, scroll };
+  return { full, recompute, brush, release, axis, scroll };
 }
 
 function summarize(samples: Sample[]) {

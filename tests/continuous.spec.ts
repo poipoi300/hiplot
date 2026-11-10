@@ -1,8 +1,8 @@
 import type { Page } from "@playwright/test";
 import { loadParallelBenchmark } from "../bench/parallel";
 import type { ParamScale } from "../src/infertypes";
-import type { BinnedImage } from "../src/parallel/binned";
-import type { BinnedRenderer } from "../src/parallel/binned_worker";
+import type { ContinuousImage } from "../src/parallel/continuous_types";
+import type { ContinuousRenderer } from "../src/parallel/continuous_worker";
 import type { LineGeometry } from "../src/parallel/geometry";
 import type { BrushMasks } from "../src/parallel/selection";
 import type { LineColors, LineFrame, WebGLLineRenderer } from "../src/parallel/webgl";
@@ -11,9 +11,9 @@ import { expect, test } from "./fixtures";
 
 interface PlotProbe {
   webgl: WebGLLineRenderer;
-  binned: Pick<BinnedRenderer, "draw" | "busy"> | null;
-  binnedFrame: number;
-  binnedMetrics: BinnedImage | null;
+  continuous: Pick<ContinuousRenderer, "draw" | "busy"> | null;
+  continuousFrame: number;
+  continuousMetrics: ContinuousImage | null;
   state: { dimensions: string[]; lineShape: string };
   props: {
     rows_filtered: Datapoint[];
@@ -64,17 +64,19 @@ interface ProbeWindow {
       state: { rows_highlighted: Datapoint[] };
     };
   };
-  __binnedImages?: Record<string, Image>;
+  __continuousImages?: Record<string, Image>;
   __sourceColumns?: { column: Float32Array; length: number; samples: number[] }[];
   __sourceBins?: { bins: Uint32Array; length: number; samples: number[] };
   __latestRequest?: { frame: LineFrame; colors: LineColors; mask: Uint8Array };
   __highlightCommands?: [string, ...number[]][];
 }
 
-async function waitForBinned(page: Page, after = 0): Promise<void> {
+async function waitForContinuous(page: Page, after = 0): Promise<void> {
   await page.waitForFunction((after) => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
-    return pp.binnedFrame > after && pp.binned !== null && !pp.binned.busy && !pp.webgl.busy;
+    return (
+      pp.continuousFrame > after && pp.continuous !== null && !pp.continuous.busy && !pp.webgl.busy
+    );
   }, after);
 }
 
@@ -86,7 +88,7 @@ async function saveImage(page: Page, name: string, exact: boolean): Promise<void
       if (exact) {
         pp.drawWithWebGL(pp.webgl);
       } else {
-        const image = pp.binnedMetrics;
+        const image = pp.continuousMetrics;
         if (image === null) throw new Error("No accepted density image");
         pp.webgl.present(image.pixels, image.width, image.height);
       }
@@ -97,8 +99,8 @@ async function saveImage(page: Page, name: string, exact: boolean): Promise<void
       const context = copy.getContext("2d");
       if (context === null) throw new Error("No readback context");
       context.drawImage(canvas, 0, 0);
-      win.__binnedImages ??= {};
-      win.__binnedImages[name] = {
+      win.__continuousImages ??= {};
+      win.__continuousImages[name] = {
         pixels: context.getImageData(0, 0, copy.width, copy.height).data,
         width: copy.width,
         height: copy.height,
@@ -143,7 +145,7 @@ test("the all-row worker preserves dense populations across row-order permutatio
       }
       const geometry = pp.geometry();
       const mask = new Uint8Array(rows).fill(1);
-      pp.binned?.draw(
+      pp.continuous?.draw(
         {
           ...pp.lineFrame(geometry, mask),
           axes: [
@@ -165,17 +167,17 @@ test("the all-row worker preserves dense populations across row-order permutatio
         },
         mask,
       );
-      return pp.binnedFrame;
+      return pp.continuousFrame;
     }, order);
-    await waitForBinned(page, before);
+    await waitForContinuous(page, before);
     const result = await page.evaluate((order) => {
       const win = window as unknown as ProbeWindow;
       const pp = win.__parallelProbe.instance.parallelPlot();
-      const image = pp.binnedMetrics;
+      const image = pp.continuousMetrics;
       if (image === null) throw new Error("Missing population image");
-      win.__binnedImages ??= {};
-      win.__binnedImages[order] = { ...image, pixels: image.pixels.slice() };
-      const reference = win.__binnedImages.alternating;
+      win.__continuousImages ??= {};
+      win.__continuousImages[order] = { ...image, pixels: image.pixels.slice() };
+      const reference = win.__continuousImages.alternating;
       let maximumDifference = 0;
       for (let channel = 0; channel < image.pixels.length; ++channel) {
         maximumDifference = Math.max(
@@ -195,9 +197,9 @@ test("the all-row worker preserves dense populations across row-order permutatio
           }
         }
       }
-      return { maximumDifference, alpha, wrongColor, sampledRows: image.sampledRows };
+      return { maximumDifference, alpha, wrongColor, rows: image.rows };
     }, order);
-    expect(result.sampledRows).toBe(8192);
+    expect(result.rows).toBe(8192);
     expect(result.alpha[0]).toBeGreaterThan(100_000);
     expect(result.alpha[1]).toBeGreaterThan(100_000);
     expect(result.wrongColor).toEqual([0, 0]);
@@ -205,7 +207,7 @@ test("the all-row worker preserves dense populations across row-order permutatio
   }
   const image = await page.evaluate(() => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
-    const image = pp.binnedMetrics;
+    const image = pp.continuousMetrics;
     if (image === null) throw new Error("Missing population image");
     pp.webgl.present(image.pixels, image.width, image.height);
     return pp.foreground_ref.current.toDataURL("image/png");
@@ -216,7 +218,7 @@ test("the all-row worker preserves dense populations across row-order permutatio
   });
 });
 
-test("an idle large-brush preview starts before RAF and busy moves remain coalesced", async ({
+test("an idle all-row brush starts before RAF and busy moves remain coalesced", async ({
   page,
 }) => {
   await loadParallelBenchmark(
@@ -231,15 +233,15 @@ test("an idle large-brush preview starts before RAF and busy moves remain coales
       Pick<CanvasPlotProbe, "startBrushGesture" | "continueBrushGesture" | "endBrushGesture"> & {
         brushMoveFrame: number | null;
       };
-    if (pp.binned === null) throw new Error("No binned renderer");
+    if (pp.continuous === null) throw new Error("No continuous renderer");
     const dimension = pp.state.dimensions[1];
     const target = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
       .find((node) => (node as SVGGElement & { __data__: string }).__data__ === dimension)
       ?.querySelector(".overlay");
     if (!target) throw new Error("No brush overlay");
-    const draw = pp.binned.draw.bind(pp.binned);
+    const draw = pp.continuous.draw.bind(pp.continuous);
     let requests = 0;
-    pp.binned.draw = (...args) => {
+    pp.continuous.draw = (...args) => {
       requests += 1;
       draw(...args);
     };
@@ -268,15 +270,20 @@ test("pixel-scale density agrees within two pixels and 6.5% relative tolerance",
     .click();
   await saveImage(page, "exact", true);
   await page.getByTestId("render-quality-button").click();
-  await page.getByRole("radio", { name: "Binned density", exact: true }).click();
-  await waitForBinned(page);
-  await saveImage(page, "binned", false);
+  await page.getByRole("radio", { name: "Continuous density", exact: true }).click();
+  await waitForContinuous(page);
+  await saveImage(page, "continuous", false);
   const result = await page.evaluate(() => {
     const win = window as unknown as ProbeWindow;
     const pp = win.__parallelProbe.instance.parallelPlot();
-    const exact = win.__binnedImages?.exact;
-    const binned = win.__binnedImages?.binned;
-    if (!exact || !binned || exact.width !== binned.width || exact.height !== binned.height) {
+    const exact = win.__continuousImages?.exact;
+    const continuous = win.__continuousImages?.continuous;
+    if (
+      !exact ||
+      !continuous ||
+      exact.width !== continuous.width ||
+      exact.height !== continuous.height
+    ) {
       throw new Error("Comparable renderer images are missing");
     }
     const { width, height } = exact;
@@ -305,7 +312,7 @@ test("pixel-scale density agrees within two pixels and 6.5% relative tolerance",
       return result;
     };
     const reference = blur(exact);
-    const candidate = blur(binned);
+    const candidate = blur(continuous);
     const axes = pp.state.dimensions.map((dimension) => pp.position(dimension) - pp.scrollLeft);
     let error = 0;
     let energy = 0;
@@ -343,13 +350,10 @@ test("pixel-scale density agrees within two pixels and 6.5% relative tolerance",
   });
   expect(result.relativeError).toBeLessThanOrEqual(0.065);
   expect(result.absoluteError).toBeLessThanOrEqual(2.2 / 255);
-  expect(result.alphaRatio).toBeGreaterThan(0.93);
-  expect(result.alphaRatio).toBeLessThan(0.97);
+  expect(Math.abs(result.alphaRatio - 1)).toBeLessThanOrEqual(0.04);
 });
 
-test("a brush preview presents while a delayed all-row refinement is still busy", async ({
-  page,
-}) => {
+test("gesture images retain every source row and refine only image columns", async ({ page }) => {
   await loadParallelBenchmark(
     page,
     { rows: 50_000, columns: 4, discrete: false, seed: 20261109 },
@@ -357,77 +361,60 @@ test("a brush preview presents while a delayed all-row refinement is still busy"
   );
   const before = await page.evaluate(() => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
-    const renderer = pp.binned as unknown as Pick<BinnedRenderer, "draw"> & {
-      full: { busy: boolean };
-    };
-    if (renderer === null) throw new Error("Missing density renderer");
-    const post = Worker.prototype.postMessage;
-    Worker.prototype.postMessage = function (
-      this: Worker,
-      ...args: Parameters<Worker["postMessage"]>
-    ) {
-      const request = args[0] as { selection?: Uint8Array };
-      if (request.selection !== undefined && request.selection.length > 1024) {
-        setTimeout(() => post.apply(this, args), 1000);
-      } else {
-        post.apply(this, args);
-      }
-    } as Worker["postMessage"];
     const geometry = pp.geometry();
-    const mask = new Uint8Array(geometry.rows.length).fill(1);
-    const frame = pp.lineFrame(geometry, mask);
-    // Change the mask so the full channel really submits another job.
-    mask[0] = 0;
-    renderer.draw({ ...frame, draft: false }, pp.lineColors(geometry), mask);
-    renderer.draw({ ...frame, draft: true }, pp.lineColors(geometry), mask);
-    Worker.prototype.postMessage = post;
-    return pp.binnedFrame;
+    const mask = new Uint8Array(geometry.rows.length);
+    mask[mask.length - 1] = 1;
+    pp.continuous?.draw(
+      { ...pp.lineFrame(geometry, mask), draft: true },
+      pp.lineColors(geometry),
+      mask,
+    );
+    return pp.continuousFrame;
   });
-  await waitForBinned(page, before);
-  const result = await page.evaluate(() => {
+  await waitForContinuous(page, before);
+  const gesture = await page.evaluate(() => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
-    const renderer = pp.binned as unknown as Pick<BinnedRenderer, "draw"> & {
-      full: { busy: boolean };
-    };
-    return { image: pp.binnedMetrics, fullBusy: renderer.full.busy };
-  });
-  expect(result.fullBusy).toBe(true);
-  expect(result.image?.sampledRows).toBe(128);
-  expect(result.image?.sourceRows).toBe(50_000);
-  expect(result.image?.axisBins).toBeGreaterThan(200);
-  // Finish through the full channel; an obsolete preview cannot overwrite its image.
-  const preview = await page.evaluate(() => {
-    const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
+    const image = pp.continuousMetrics;
+    if (image === null) throw new Error("No gesture image");
     const geometry = pp.geometry();
-    const mask = pp.selectionMask(geometry);
-    pp.binned?.draw(
+    const mask = new Uint8Array(geometry.rows.length);
+    mask[mask.length - 1] = 1;
+    pp.continuous?.draw(
       { ...pp.lineFrame(geometry, mask), draft: false },
       pp.lineColors(geometry),
       mask,
     );
-    return pp.binnedFrame;
+    return {
+      rows: image.rows,
+      bins: image.axisBins,
+      columns: image.evaluatedColumns,
+      frame: pp.continuousFrame,
+    };
   });
-  await waitForBinned(page, preview);
-  expect(
-    await page.evaluate(
-      () =>
-        (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot().binnedMetrics
-          ?.sampledRows,
-    ),
-  ).toBe(50_000);
+  await waitForContinuous(page, gesture.frame);
+  const refined = await page.evaluate(() => {
+    const image = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot()
+      .continuousMetrics;
+    return { rows: image?.rows, bins: image?.axisBins, columns: image?.evaluatedColumns };
+  });
+  expect(gesture.rows).toBe(50_000);
+  expect(refined.rows).toBe(50_000);
+  expect(gesture.bins).toBeGreaterThanOrEqual(256);
+  expect(refined.bins).toBe(gesture.bins);
+  expect(refined.columns).toBeGreaterThan(gesture.columns);
 });
 
-test("hover draws the original unquantized row exactly above the binned picture", async ({
+test("hover draws the original unquantized row exactly above the continuous picture", async ({
   page,
 }) => {
   await loadParallelBenchmark(page, { rows: 24, columns: 4, discrete: false, seed: 20261109 });
   await page
     .getByRole("group", { name: "Line shape" })
-    .getByRole("button", { name: "Curved", exact: true })
+    .getByRole("button", { name: "Straight", exact: true })
     .click();
   await page.getByTestId("render-quality-button").click();
-  await page.getByRole("radio", { name: "Binned density", exact: true }).click();
-  await waitForBinned(page);
+  await page.getByRole("radio", { name: "Continuous density", exact: true }).click();
+  await waitForContinuous(page);
   const uid = await page.evaluate(() => {
     const win = window as unknown as ProbeWindow;
     const pp = win.__parallelProbe.instance.parallelPlot();
@@ -540,10 +527,159 @@ test("hover draws the original unquantized row exactly above the binned picture"
   });
   expect(result.painted).toBeGreaterThan(1000);
   expect(result.offBinCenter).toBe(true);
-  expect(result.savedShape).toBe("curved");
+  expect(result.savedShape).toBe("straight");
   expect(result.curved).toBe(false);
   expect(result.commandsMatch, JSON.stringify(result)).toBe(true);
   expect(result.differing, JSON.stringify(result)).toBe(0);
+});
+
+test("numeric extrema and missing-color means survive incremental removal in the worker", async ({
+  page,
+}) => {
+  await loadParallelBenchmark(page, { rows: 3, columns: 2, discrete: true, seed: 20261109 }, "low");
+  const colors: number[][] = [];
+  for (const mode of ["mean", "highest", "lowest", "remaining"] as const) {
+    const before = await page.evaluate((mode) => {
+      const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
+      const geometry = pp.geometry();
+      const mask = new Uint8Array(mode === "remaining" ? [0, 1, 0] : [1, 1, 1]);
+      const selectedCount = mask.reduce((sum, selected) => sum + selected, 0);
+      const win = window as unknown as ProbeWindow & {
+        __numericFixture?: { pixels: Float32Array; colors: LineColors };
+      };
+      win.__numericFixture ??= {
+        pixels: new Float32Array([32, 32, 32]),
+        colors: {
+          bins: new Uint32Array([0, 1, 2]),
+          palette: [
+            { r: 255, g: 0, b: 0 },
+            { r: 0, g: 0, b: 255 },
+            { r: 0, g: 255, b: 0 },
+          ],
+          colorMapBins: 2,
+        },
+      };
+      const { pixels } = win.__numericFixture;
+      pp.continuous?.draw(
+        {
+          ...pp.lineFrame(geometry, mask),
+          axes: [
+            { x: 16, pixels },
+            { x: 80, pixels },
+          ],
+          width: 96,
+          height: 64,
+          lineWidth: 1,
+          curved: false,
+          draft: false,
+          drawnRows: 3,
+          selectedCount,
+          contextCount: 3 - selectedCount,
+          colorMode: mode === "remaining" ? "lowest" : mode,
+          contextAlpha: 0,
+        },
+        win.__numericFixture.colors,
+        mask,
+      );
+      return pp.continuousFrame;
+    }, mode);
+    await waitForContinuous(page, before);
+    colors.push(
+      await page.evaluate(() => {
+        const image = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot()
+          .continuousMetrics;
+        if (!image) throw new Error("No numeric worker image");
+        const pixel = (32 * image.width + 48) * 4;
+        return Array.from(image.pixels.slice(pixel, pixel + 4));
+      }),
+    );
+  }
+  const [mean, highest, lowest, remaining] = colors;
+  expect(mean[3]).toBeGreaterThan(50);
+  expect(Math.max(...mean.slice(0, 3)) - Math.min(...mean.slice(0, 3))).toBeLessThanOrEqual(4);
+  expect(highest[2]).toBeGreaterThan(highest[0] + 100);
+  expect(lowest[0]).toBeGreaterThan(lowest[2] + 100);
+  expect(remaining[2]).toBeGreaterThan(remaining[0] + 100);
+});
+
+test("horizontal translation composites cached pair images without pixel evaluation", async ({
+  page,
+}) => {
+  await loadParallelBenchmark(
+    page,
+    { rows: 400, columns: 4, discrete: false, seed: 20261109 },
+    "low",
+  );
+  const before = await page.evaluate(() => {
+    const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
+    const geometry = pp.geometry();
+    const mask = pp.selectionMask(geometry);
+    const frame = pp.lineFrame(geometry, mask);
+    pp.continuous?.draw(
+      { ...frame, axes: frame.axes.map((axis) => ({ ...axis, x: axis.x - 20 })) },
+      pp.lineColors(geometry),
+      mask,
+    );
+    return pp.continuousFrame;
+  });
+  await waitForContinuous(page, before);
+  const image = await page.evaluate(() => {
+    const image = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot()
+      .continuousMetrics;
+    return {
+      evaluated: image?.evaluatedPairs,
+      rows: image?.rows,
+      painted: image?.pixels.some((value, channel) => channel % 4 === 3 && value > 0),
+    };
+  });
+  expect(image.evaluated).toBe(0);
+  expect(image.rows).toBe(400);
+  expect(image.painted).toBe(true);
+});
+
+test("curved highlights retain identical original spline commands in both modes", async ({
+  page,
+}) => {
+  await loadParallelBenchmark(page, { rows: 24, columns: 4, discrete: false, seed: 20261109 });
+  await page
+    .getByRole("group", { name: "Line shape" })
+    .getByRole("button", { name: "Curved", exact: true })
+    .click();
+  const trace = () =>
+    page.evaluate(() => {
+      const pp = (
+        window as unknown as ProbeWindow
+      ).__parallelProbe.instance.parallelPlot() as PlotProbe & {
+        tracePath: (row: Datapoint, context: CanvasRenderingContext2D) => void;
+      };
+      const commands: [string, ...number[]][] = [];
+      const context = pp.highlighted;
+      const methods = {
+        moveTo: context.moveTo,
+        lineTo: context.lineTo,
+        bezierCurveTo: context.bezierCurveTo,
+      };
+      context.moveTo = (x, y) => commands.push(["M", x, y]);
+      context.lineTo = (x, y) => commands.push(["L", x, y]);
+      context.bezierCurveTo = (...values) => commands.push(["C", ...values]);
+      try {
+        pp.tracePath(pp.props.rows_filtered[0], context);
+      } finally {
+        Object.assign(context, methods);
+      }
+      return commands;
+    });
+  const exact = await trace();
+  expect(exact.some((command) => command[0] === "C")).toBe(true);
+  await page.getByTestId("render-quality-button").click();
+  await page.getByRole("radio", { name: "Continuous density", exact: true }).click();
+  await waitForContinuous(page);
+  expect(await trace()).toEqual(exact);
+  await expect(
+    page
+      .getByRole("group", { name: "Line shape" })
+      .getByRole("button", { name: "Curved", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
 });
 
 test("worker coalescing presents only the latest selection without detaching source columns", async ({
@@ -557,9 +693,9 @@ test("worker coalescing presents only the latest selection without detaching sou
   const initial = await page.evaluate(() => {
     const win = window as unknown as ProbeWindow;
     const pp = win.__parallelProbe.instance.parallelPlot();
-    const renderer = pp.binned;
-    const image = pp.binnedMetrics;
-    if (renderer === null || image === null) throw new Error("No binned renderer");
+    const renderer = pp.continuous;
+    const image = pp.continuousMetrics;
+    if (renderer === null || image === null) throw new Error("No continuous renderer");
     const geometry = pp.geometry();
     win.__sourceColumns = pp.state.dimensions.map((dimension) => {
       const column = geometry.pixels(
@@ -575,8 +711,8 @@ test("worker coalescing presents only the latest selection without detaching sou
       length: colors.bins.byteLength,
       samples: [colors.bins[0], colors.bins[499], colors.bins[999]],
     };
-    win.__binnedImages = { initial: { ...image, pixels: image.pixels.slice() } };
-    const initial = pp.binnedFrame;
+    win.__continuousImages = { initial: { ...image, pixels: image.pixels.slice() } };
+    const initial = pp.continuousFrame;
     for (let step = 0; step < 20; ++step) {
       const mask = Uint8Array.from({ length: geometry.rows.length }, (_, row) =>
         Number(step === 19 ? row % 3 === 0 : row % 7 <= step % 7),
@@ -587,26 +723,29 @@ test("worker coalescing presents only the latest selection without detaching sou
     }
     return initial;
   });
-  await waitForBinned(page, initial);
+  await waitForContinuous(page, initial);
   const accepted = await page.evaluate(() => {
     const win = window as unknown as ProbeWindow;
     const pp = win.__parallelProbe.instance.parallelPlot();
-    if (!win.__binnedImages || !pp.binnedMetrics || !pp.binned || !win.__latestRequest)
+    if (!win.__continuousImages || !pp.continuousMetrics || !pp.continuous || !win.__latestRequest)
       throw new Error("Missing queued frame");
-    win.__binnedImages.queued = { ...pp.binnedMetrics, pixels: pp.binnedMetrics.pixels.slice() };
-    const accepted = pp.binnedFrame;
+    win.__continuousImages.queued = {
+      ...pp.continuousMetrics,
+      pixels: pp.continuousMetrics.pixels.slice(),
+    };
+    const accepted = pp.continuousFrame;
     const { frame, colors, mask } = win.__latestRequest;
-    pp.binned.draw(frame, colors, mask);
+    pp.continuous.draw(frame, colors, mask);
     return accepted;
   });
   expect(accepted - initial).toBe(1);
-  await waitForBinned(page, accepted);
+  await waitForContinuous(page, accepted);
   const result = await page.evaluate(() => {
     const win = window as unknown as ProbeWindow;
     const pp = win.__parallelProbe.instance.parallelPlot();
-    const queued = win.__binnedImages?.queued;
-    const initial = win.__binnedImages?.initial;
-    const fresh = pp.binnedMetrics;
+    const queued = win.__continuousImages?.queued;
+    const initial = win.__continuousImages?.initial;
+    const fresh = pp.continuousMetrics;
     const bins = win.__sourceBins;
     if (!queued || !initial || !fresh || !bins || !win.__sourceColumns)
       throw new Error("Missing comparison state");
@@ -646,29 +785,29 @@ test("the inline density worker starts and redraws without any network access", 
   context.on("request", (request) => requests.push(request.url()));
   await context.setOffline(true);
   await page.getByTestId("render-quality-button").click();
-  await page.getByRole("radio", { name: "Binned density", exact: true }).click();
-  await waitForBinned(page);
+  await page.getByRole("radio", { name: "Continuous density", exact: true }).click();
+  await waitForContinuous(page);
   const frame = await page.evaluate(() => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
-    const image = pp.binnedMetrics;
-    if (image === null || pp.binned === null)
+    const image = pp.continuousMetrics;
+    if (image === null || pp.continuous === null)
       throw new Error("Offline worker did not produce an image");
     const geometry = pp.geometry();
     const mask = Uint8Array.from({ length: geometry.rows.length }, (_, row) => row % 2);
-    pp.binned.draw(pp.lineFrame(geometry, mask), pp.lineColors(geometry), mask);
-    return pp.binnedFrame;
+    pp.continuous.draw(pp.lineFrame(geometry, mask), pp.lineColors(geometry), mask);
+    return pp.continuousFrame;
   });
-  await waitForBinned(page, frame);
+  await waitForContinuous(page, frame);
   const painted = await page.evaluate(() =>
     (window as unknown as ProbeWindow).__parallelProbe.instance
       .parallelPlot()
-      .binnedMetrics?.pixels.some((value, channel) => channel % 4 === 3 && value > 0),
+      .continuousMetrics?.pixels.some((value, channel) => channel % 4 === 3 && value > 0),
   );
   expect(painted).toBe(true);
   expect(requests.filter((url) => /^https?:/.test(url))).toEqual([]);
 });
 
-test("Canvas-only binned images draw and brushes stay columnar until publication", async ({
+test("Canvas-only continuous images draw and brushes stay columnar until publication", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -693,7 +832,7 @@ test("Canvas-only binned images draw and brushes stay columnar until publication
   await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
   await page.waitForFunction(() => {
     const pp = (window as unknown as CanvasWindow).hiplot_last_instance.parallelPlot();
-    return pp.binnedFrame > 0 && pp.binned !== null && !pp.binned.busy;
+    return pp.continuousFrame > 0 && pp.continuous !== null && !pp.continuous.busy;
   });
   const result = await page.evaluate(() => {
     const pp = (window as unknown as CanvasWindow).hiplot_last_instance.parallelPlot();
@@ -716,7 +855,7 @@ test("Canvas-only binned images draw and brushes stay columnar until publication
       .find((node) => (node as SVGGElement & { __data__: string }).__data__ === dimension)
       ?.querySelector(".overlay");
     if (!target) throw new Error("No Canvas brush overlay");
-    const frame = pp.binnedFrame;
+    const frame = pp.continuousFrame;
     pp.startBrushGesture({ sourceEvent: { target }, y: 0.2 * pp.h }, dimension);
     pp.continueBrushGesture(0.65 * pp.h);
     pp.cancelBrushMove();
@@ -734,7 +873,7 @@ test("Canvas-only binned images draw and brushes stay columnar until publication
   expect(result.selected).toBeLessThan(200);
   await page.waitForFunction((frame) => {
     const pp = (window as unknown as CanvasWindow).hiplot_last_instance.parallelPlot();
-    return pp.binnedFrame > frame && pp.binned !== null && !pp.binned.busy;
+    return pp.continuousFrame > frame && pp.continuous !== null && !pp.continuous.busy;
   }, result.frame);
   await expect
     .poll(() =>

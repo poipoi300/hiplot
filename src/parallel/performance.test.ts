@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
-  BINNED_ABOVE_ROWS,
-  binnedRendering,
+  CONTINUOUS_ABOVE_ROWS,
+  continuousRendering,
   FAST_FRAME_MS,
   FramePerformance,
-  HARDWARE_BINNED_ABOVE_ROWS,
+  HARDWARE_CONTINUOUS_ABOVE_ROWS,
   isRenderQuality,
   MEASURED_FRAMES,
   SLOW_FRAME_MS,
@@ -52,20 +52,22 @@ describe("detecting slow frames", () => {
 
 describe("render quality settings", () => {
   test("auto follows the measurement; low and full force it", () => {
-    expect(binnedRendering("auto", true, 100)).toBe(true);
-    expect(binnedRendering("auto", false, BINNED_ABOVE_ROWS)).toBe(false);
-    expect(binnedRendering("auto", false, BINNED_ABOVE_ROWS + 1)).toBe(true);
-    expect(binnedRendering("low", false, 100)).toBe(true);
-    expect(binnedRendering("full", true, 1_000_000)).toBe(false);
+    expect(continuousRendering("auto", true, 100)).toBe(true);
+    expect(continuousRendering("auto", false, CONTINUOUS_ABOVE_ROWS)).toBe(false);
+    expect(continuousRendering("auto", false, CONTINUOUS_ABOVE_ROWS + 1)).toBe(true);
+    expect(continuousRendering("low", false, 100)).toBe(true);
+    expect(continuousRendering("full", true, 1_000_000)).toBe(false);
   });
 
   test("fast hardware keeps moderate datasets exact without delaying software startup", () => {
-    expect(binnedRendering("auto", false, 50_000, false)).toBe(false);
-    expect(binnedRendering("auto", false, 50_000, true)).toBe(true);
-    expect(binnedRendering("auto", false, HARDWARE_BINNED_ABOVE_ROWS, false)).toBe(false);
-    expect(binnedRendering("auto", false, HARDWARE_BINNED_ABOVE_ROWS + 1, false)).toBe(true);
-    expect(binnedRendering("auto", true, 100, false)).toBe(true);
-    expect(binnedRendering("full", true, 1_000_000, true)).toBe(false);
+    expect(continuousRendering("auto", false, 50_000, false)).toBe(false);
+    expect(continuousRendering("auto", false, 50_000, true)).toBe(true);
+    expect(continuousRendering("auto", false, HARDWARE_CONTINUOUS_ABOVE_ROWS, false)).toBe(false);
+    expect(continuousRendering("auto", false, HARDWARE_CONTINUOUS_ABOVE_ROWS + 1, false)).toBe(
+      true,
+    );
+    expect(continuousRendering("auto", true, 100, false)).toBe(true);
+    expect(continuousRendering("full", true, 1_000_000, true)).toBe(false);
   });
 
   test("only the three settings are accepted from saved state", () => {

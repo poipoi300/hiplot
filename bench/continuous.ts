@@ -160,31 +160,9 @@ export async function main(): Promise<void> {
                 gl.getUniformLocation(program, `u_${name}`),
               ]),
             );
-            const framebuffer = gl.createFramebuffer();
-            const image = gl.createTexture();
-            gl.bindTexture(gl.TEXTURE_2D, image);
-            gl.texImage2D(
-              gl.TEXTURE_2D,
-              0,
-              gl.RGBA8,
-              canvas.width,
-              canvas.height,
-              0,
-              gl.RGBA,
-              gl.UNSIGNED_BYTE,
-              null,
-            );
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-            gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, image, 0);
-            if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE)
-              throw new Error("Incomplete probe framebuffer");
-            gl.bindTexture(gl.TEXTURE_2D, texture);
             (window as unknown as { __continuous: unknown }).__continuous = {
               gl,
               canvas,
-              framebuffer,
               uniforms,
               texture,
             };
@@ -205,7 +183,6 @@ export async function main(): Promise<void> {
                         __continuous: {
                           gl: WebGL2RenderingContext;
                           canvas: HTMLCanvasElement;
-                          framebuffer: WebGLFramebuffer;
                           texture: WebGLTexture;
                           uniforms: Record<string, WebGLUniformLocation | null>;
                         };

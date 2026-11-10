@@ -14,7 +14,7 @@ interface QualityProbe {
     busy: boolean;
     rowCount: number;
   };
-  binned: {
+  continuous: {
     busy: boolean;
     draw: (
       frame: DrawnFrame & { selectedCount: number; contextCount: number },
@@ -22,8 +22,8 @@ interface QualityProbe {
       mask: Uint8Array,
     ) => void;
   } | null;
-  binnedFrame: number;
-  binnedMode: () => boolean;
+  continuousFrame: number;
+  continuousMode: () => boolean;
   interacting: boolean;
   scrollLeft: number;
   redrawLines: () => void;
@@ -33,7 +33,7 @@ interface HiPlotWindow {
   hiplot_last_instance?: { parallelPlot: () => QualityProbe | null };
   __frames?: DrawnFrame[];
   __presentations?: number;
-  __binnedRows?: number[];
+  __continuousRows?: number[];
 }
 
 /** Uploads `count` rows of three numeric columns, with the given URL state. */
@@ -55,16 +55,16 @@ async function recordFrames(page: Page): Promise<void> {
     if (!pp) throw new Error("No parallel plot");
     win.__frames = [];
     win.__presentations = 0;
-    win.__binnedRows = [];
-    if (pp.binned !== null) {
-      const binnedDraw = pp.binned.draw.bind(pp.binned);
-      pp.binned.draw = (frame, colors, mask) => {
-        win.__binnedRows?.push(
+    win.__continuousRows = [];
+    if (pp.continuous !== null) {
+      const continuousDraw = pp.continuous.draw.bind(pp.continuous);
+      pp.continuous.draw = (frame, colors, mask) => {
+        win.__continuousRows?.push(
           frame.drawnRows,
           mask.length,
           frame.selectedCount + frame.contextCount,
         );
-        binnedDraw(frame, colors, mask);
+        continuousDraw(frame, colors, mask);
       };
     }
     const draw = pp.webgl.draw.bind(pp.webgl);
@@ -84,10 +84,12 @@ async function recordFrames(page: Page): Promise<void> {
   });
 }
 
-async function waitForBinned(page: Page, after = 0): Promise<void> {
+async function waitForContinuous(page: Page, after = 0): Promise<void> {
   await page.waitForFunction((after) => {
     const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot();
-    return pp?.binnedMode() && pp.binnedFrame > after && !pp.binned?.busy && !pp.webgl.busy;
+    return (
+      pp?.continuousMode() && pp.continuousFrame > after && !pp.continuous?.busy && !pp.webgl.busy
+    );
   }, after);
 }
 
@@ -105,25 +107,25 @@ test("the quality control is available even when exact drawing is fast", async (
   await expect(qualityButton(page)).toHaveText("Exact lines");
   await qualityButton(page).click();
   await expect(page.getByRole("radio", { name: "Automatic", exact: true })).toBeChecked();
-  await expect(page.getByRole("radio", { name: "Binned density", exact: true })).toBeVisible();
+  await expect(page.getByRole("radio", { name: "Continuous density", exact: true })).toBeVisible();
   await expect(page.getByRole("radio", { name: "Exact lines", exact: true })).toBeVisible();
 });
 
-test("forced binned density counts every row at rest, while brushing and after release", async ({
+test("forced continuous density counts every row at rest, while brushing and after release", async ({
   page,
 }) => {
   await upload(page, 12_000, `&hip.PARALLEL_PLOT.renderQuality=${encodeURIComponent('"low"')}`);
-  await waitForBinned(page);
-  await expect(qualityButton(page)).toHaveText("Binned density");
+  await waitForContinuous(page);
+  await expect(qualityButton(page)).toHaveText("Continuous density");
   await recordFrames(page);
   const initial = await page.evaluate(() => {
     const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot();
     if (!pp) throw new Error("No parallel plot");
-    const initial = pp.binnedFrame;
+    const initial = pp.continuousFrame;
     pp.redrawLines();
     return initial;
   });
-  await waitForBinned(page, initial);
+  await waitForContinuous(page, initial);
   const overlay = page.locator("svg g.dimension .pplot-brush rect.overlay").first();
   const box = await overlay.boundingBox();
   if (box === null) throw new Error("No brush overlay");
@@ -136,15 +138,21 @@ test("forced binned density counts every row at rest, while brushing and after r
   const during = await page.evaluate(() => {
     const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot();
     if (!pp) throw new Error("No parallel plot");
-    return { frame: pp.binnedFrame, binned: pp.binnedMode(), interacting: pp.interacting };
+    return {
+      frame: pp.continuousFrame,
+      continuous: pp.continuousMode(),
+      interacting: pp.interacting,
+    };
   });
-  expect(during.binned).toBe(true);
+  expect(during.continuous).toBe(true);
   expect(during.interacting).toBe(true);
   await page.mouse.up();
-  await waitForBinned(page, during.frame);
-  await expect(qualityButton(page)).toHaveText("Binned density");
+  await waitForContinuous(page, during.frame);
+  await expect(qualityButton(page)).toHaveText("Continuous density");
   expect(await frames(page)).toEqual([]);
-  const counts = await page.evaluate(() => (window as unknown as HiPlotWindow).__binnedRows ?? []);
+  const counts = await page.evaluate(
+    () => (window as unknown as HiPlotWindow).__continuousRows ?? [],
+  );
   expect(counts.length).toBeGreaterThan(6);
   expect(counts.every((count) => count === 12_000)).toBe(true);
 });
@@ -153,8 +161,8 @@ test("automatic software mode bins before drawing more than 6000 original rows",
   page,
 }) => {
   await upload(page, 6001);
-  await waitForBinned(page);
-  await expect(qualityButton(page)).toHaveText("Binned density");
+  await waitForContinuous(page);
+  await expect(qualityButton(page)).toHaveText("Continuous density");
   const state = await page.evaluate(() => {
     const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot();
     if (!pp) throw new Error("No parallel plot");
@@ -177,8 +185,8 @@ test("slow exact frames engage automatic binning and the menu can force exact li
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     }
   });
-  await waitForBinned(page);
-  await expect(qualityButton(page)).toHaveText("Binned density");
+  await waitForContinuous(page);
+  await expect(qualityButton(page)).toHaveText("Continuous density");
   await chooseQuality(page, "Exact lines");
   await expect(qualityButton(page)).toHaveText("Exact lines");
   await expect.poll(() => decodeURIComponent(page.url())).toContain('renderQuality="full"');
@@ -190,12 +198,12 @@ test("slow exact frames engage automatic binning and the menu can force exact li
   expect(
     await page.evaluate(() => {
       const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot();
-      return pp?.binned === null && pp.state.slowFrames;
+      return pp?.continuous === null && pp.state.slowFrames;
     }),
   ).toBe(true);
 });
 
-test("scrolling and its settle redraw remain binned without sampling or exact-row draws", async ({
+test("scrolling and its settle redraw remain continuous without sampling or exact-row draws", async ({
   page,
 }) => {
   await page.clock.install({ time: new Date("2026-01-01T00:00:00Z") });
@@ -210,13 +218,14 @@ test("scrolling and its settle redraw remain binned without sampling or exact-ro
     buffer: Buffer.from([columns, ...rows].map((row) => row.join(",")).join("\n")),
   });
   await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
-  await waitForBinned(page);
+  await waitForContinuous(page);
   await page.clock.pauseAt(new Date("2026-01-01T01:00:00Z"));
-  await waitForBinned(page);
+  await waitForContinuous(page);
   await recordFrames(page);
   const initial = await page.evaluate(
     () =>
-      (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot()?.binnedFrame ?? 0,
+      (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot()?.continuousFrame ??
+      0,
   );
   await page.getByTestId("pplot-scroller").evaluate((scroller) => {
     scroller.scrollLeft = 300;
@@ -231,19 +240,22 @@ test("scrolling and its settle redraw remain binned without sampling or exact-ro
   // A slow worker may coalesce scroll and settle jobs. Finish the scroll image
   // before advancing the settle timer so both rendering paths are exercised.
   await page.clock.runFor(16);
-  await waitForBinned(page, initial);
+  await waitForContinuous(page, initial);
   const scrolling = await page.evaluate(
     () =>
-      (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot()?.binnedFrame ?? 0,
+      (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot()?.continuousFrame ??
+      0,
   );
   await page.clock.runFor(150);
-  await waitForBinned(page, scrolling);
+  await waitForContinuous(page, scrolling);
   await expect
     .poll(() => page.evaluate(() => (window as unknown as HiPlotWindow).__presentations ?? 0))
     .toBeGreaterThanOrEqual(2);
-  await expect(qualityButton(page)).toHaveText("Binned density");
+  await expect(qualityButton(page)).toHaveText("Continuous density");
   expect(await frames(page)).toEqual([]);
-  const counts = await page.evaluate(() => (window as unknown as HiPlotWindow).__binnedRows ?? []);
+  const counts = await page.evaluate(
+    () => (window as unknown as HiPlotWindow).__continuousRows ?? [],
+  );
   expect(counts.length).toBeGreaterThanOrEqual(6);
   expect(counts.every((count) => count === 50)).toBe(true);
 });
@@ -252,7 +264,7 @@ test("continuous brushing presents density while worker jobs are slower than inp
   page,
 }) => {
   await upload(page, 12_000, `&hip.PARALLEL_PLOT.renderQuality=${encodeURIComponent('"low"')}`);
-  await waitForBinned(page);
+  await waitForContinuous(page);
   const result = await page.evaluate(async () => {
     const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
       | (QualityProbe & {
@@ -266,7 +278,7 @@ test("continuous brushing presents density while worker jobs are slower than inp
           endBrushGesture: () => void;
         })
       | null;
-    if (!pp || pp.binned === null) throw new Error("No binned parallel plot");
+    if (!pp || pp.continuous === null) throw new Error("No continuous parallel plot");
     const dimension = pp.state.dimensions[1];
     const target = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
       .find((node) => (node as SVGGElement & { __data__: string }).__data__ === dimension)
@@ -286,7 +298,13 @@ test("continuous brushing presents density while worker jobs are slower than inp
         else send(message, options);
       }, 80);
     };
-    const initialFrame = pp.binnedFrame;
+    const initialFrame = pp.continuousFrame;
+    const drafts: boolean[] = [];
+    const draw = pp.continuous.draw.bind(pp.continuous);
+    pp.continuous.draw = (frame, colors, mask) => {
+      drafts.push(frame.draft);
+      draw(frame, colors, mask);
+    };
     const started = performance.now();
     let movements = 0;
     pp.startBrushGesture({ sourceEvent: { target }, y: 0.2 * pp.h }, dimension);
@@ -305,19 +323,23 @@ test("continuous brushing presents density while worker jobs are slower than inp
       requestAnimationFrame(move);
     });
     const during = {
-      acceptedFrames: pp.binnedFrame - initialFrame,
+      acceptedFrames: pp.continuousFrame - initialFrame,
       movements,
       workerJobs,
+      drafts,
       elapsed: performance.now() - started,
       interacting: pp.interacting,
     };
     Worker.prototype.postMessage = postMessage;
+    pp.continuous.draw = draw;
     pp.endBrushGesture();
     return during;
   });
-  expect(result.movements).toBeGreaterThanOrEqual(30);
-  expect(result.workerJobs).toBeGreaterThanOrEqual(5);
+  expect(result.movements, JSON.stringify(result)).toBeGreaterThanOrEqual(30);
+  expect(result.workerJobs, JSON.stringify(result)).toBeGreaterThanOrEqual(5);
   expect(result.elapsed).toBeGreaterThanOrEqual(1500);
   expect(result.interacting).toBe(true);
+  expect(result.drafts.length).toBeGreaterThanOrEqual(2);
+  expect(result.drafts.every(Boolean), JSON.stringify(result)).toBe(true);
   expect(result.acceptedFrames, JSON.stringify(result)).toBeGreaterThanOrEqual(2);
 });

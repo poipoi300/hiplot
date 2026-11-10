@@ -19,9 +19,9 @@ export const FAST_FRAME_MS = 25;
 /** Full-quality frames a verdict is based on; odd, so they have a middle one. */
 export const MEASURED_FRAMES = 5;
 /** Engage before the first software frame can stall the page. */
-export const BINNED_ABOVE_ROWS = 6_000;
+export const CONTINUOUS_ABOVE_ROWS = 6_000;
 /** Keep already-fast hardware plots on their original GPU path. */
-export const HARDWARE_BINNED_ABOVE_ROWS = 250_000;
+export const HARDWARE_CONTINUOUS_ABOVE_ROWS = 250_000;
 
 /** The middle value of an odd number of values. */
 function median(values: ReadonlyArray<number>): number {
@@ -59,12 +59,12 @@ export class FramePerformance {
 }
 
 /** Exact rendering remains an explicit override, regardless of size or timing. */
-export function binnedRendering(
+export function continuousRendering(
   quality: RenderQuality,
   slow: boolean,
   rows: number,
   software = true,
 ): boolean {
-  const threshold = software ? BINNED_ABOVE_ROWS : HARDWARE_BINNED_ABOVE_ROWS;
+  const threshold = software ? CONTINUOUS_ABOVE_ROWS : HARDWARE_CONTINUOUS_ABOVE_ROWS;
   return quality === "low" || (quality === "auto" && (slow || rows > threshold));
 }
