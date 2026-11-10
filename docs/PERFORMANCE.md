@@ -1096,8 +1096,10 @@ with less than 0.1ms brush queue wait. Nested medians must not be added.
 | SwiftShader / continuous | 26.5 | 648.6 | 280.8 |
 | SwiftShader / integer | 14.4 | 145.3 | 17.5 |
 
-Fine continuous full/scroll frames are **slower** than the historical 32-bin
-94.5 / 86.7ms full frames; release refinement takes about 0.65s. This is the
+Axis, release and scroll entries retain the renderer-request → fence origin,
+not an input-event origin. Fine continuous full/scroll frames are **slower** than
+the historical 32-bin 94.5 / 86.7ms full frames; release refinement takes about
+0.65s. This is the
 explicit fidelity cost, not an across-the-board speedup. Exact mode is unchanged.
 Raw final data are `preview128-hardware-1m.json` and
 `preview128-software-1m.json`; intermediate `input-*`, `queue-*`, `idle-*` and
@@ -1117,10 +1119,11 @@ been reached. The process tree was gone and the blocked evaluation rejected
 by 150.36s. Raw stage evidence is `capacity-diagnostic.json` in the local
 artifact directory.
 
-This localizes the hang to loading/inference and severe allocation pressure,
-not worker counting or a WebGL texture-size failure. It does **not** establish
-an OOM exception or a universal browser capacity limit. Continuous column
-expansion stores 100M non-integer row properties; inference additionally retains
+This localizes the hang to loading/inference after multi-gigabyte allocations,
+not worker counting or a WebGL texture-size failure. Allocation/GC pressure is
+consistent with the observations, but there is **no captured OOM exception or
+proven universal browser capacity limit**. Continuous column expansion stores
+100M non-integer row properties; inference additionally retains
 all distinct values and creates mapped/filtered/deduplicated numeric copies.
 Eight-integer data has the same row/property count but only eight distinct
 numeric values per column and different VM number storage costs. Reworking the
@@ -1131,9 +1134,16 @@ The benchmark now has a default **180s whole-attempt deadline**, configurable
 with `--timeout-ms`, covering the initial evaluation as well as all frame and
 gesture waits. On expiry it kills its own Playwright `BrowserServer` process,
 reports dataset/row count and last stage, flushes structured JSON, exits nonzero
-and stops remaining attempts. Merely racing a promise leaves the renderer
-running; graceful context closure was also measured taking about six seconds
-on a deliberately CPU-bound evaluation. The regression retains its <5s cleanup
+and stops remaining attempts. It awaits owned-process shutdown before returning
+control to the caller, writes results before context cleanup and does not try
+to close a disconnected context. A forced 1ms CLI smoke caught the earlier race:
+context cleanup threw while the browser was still being killed, skipping the
+JSON file. The stricter regression first failed with the page still open at
+helper return; it now requires the page already closed, retaining the unchanged
+<5s cleanup limit. The CLI smoke now records its stage/deadline error, exits 1,
+and stops the remaining attempts in about 258ms. Merely racing a promise leaves
+the renderer running; graceful context closure was also measured taking about
+six seconds on a deliberately CPU-bound evaluation. The regression retains its <5s cleanup
 limit and uses the owned server's force-kill instead. This is an explicit,
 bounded unsupported-capacity result, **not a claim that 10M continuous data now
 loads in the application**. The prior successful 10M integer result remains
@@ -1185,3 +1195,75 @@ already count coincident contributions through the binned renderer. No grouping,
 weighted-instance shader or experimental texture code is committed. Reproduction
 and raw distributions remain local in `merge-compare.mjs` and
 `merge-comparison.json` in the run3 artifact directory.
+
+## Design notes: WebGPU is an optional counting backend
+
+The maintainer's decision is to consider WebGPU **later, as an addition, not a
+replacement for WebGL2**. It is usable from the existing TypeScript; adopting it
+does not require rewriting the UI or the experiment API.
+
+The platform planning baseline is shipped WebGPU in Chrome/Edge on Windows,
+macOS, ChromeOS and Android, Firefox on Windows, and Safari 26. Chrome on Linux
+has lagged behind those platforms. Browser support alone is not an available
+adapter: with no usable GPU, Chrome normally exposes **no WebGPU adapter**;
+software fallback requires flags. Headless CI also needs explicit flags and
+adapter checks. Do not assume that enabling the API supplies usable hardware,
+or that a software WebGPU backend will beat the existing CPU histogram worker.
+WebGL2 remains the baseline rendering path, with the current CPU worker and
+Canvas fallback retained. A missing/failed WebGPU adapter must not make an
+otherwise usable plot fail.
+
+The interesting capabilities are compute shaders and atomic integer counts:
+counting is exact within the chosen integer range, without the additive-float
+saturation that motivated the precision fix. A compute backend could build
+adjacent-axis selected/context histograms on the GPU instead of scanning every
+row on the CPU. Integer counts alone do **not** make floating color sums,
+coverage, tone mapping or final pixels exact; those contracts still require
+independent equivalence/fidelity tests and overflow bounds.
+
+Keep counting separated from rasterization and presentation. The existing
+counting interface is `buildPairHistogram(...) -> BinnedHistogram`, with typed
+selected/context counts, endpoint sums, color statistics and extrema.
+`BinnedKernel` owns column/revision and adjacent-pair caching;
+`rasterizeHistograms` consumes `BinnedPair` histograms independently of their
+counting implementation. Preserve that typed boundary rather than coupling
+counting to the WebGL compositor or embedding backend-specific state in the
+rasterizer. The current implementation is a CPU function/worker, **not an
+already-implemented pluggable WebGPU backend**.
+
+If profiling shows counting limits GPU-equipped machines, add a compute counter
+behind that boundary, with explicit source-column, selection and color revisions
+and asynchronous request identities. Stale results must not combine old counts
+with new axes or selections. Compare completed interaction/refinement latency,
+including dispatch, uploads/readback and cache invalidation, not just compute
+kernel duration. Keep the CPU implementation as both fallback and reference;
+require the same row conservation, missing-value/color/extrema semantics and
+visual gates. No WebGPU dependency, adapter requirement or implementation is
+introduced by this decision.
+
+## Verification of the pixel-scale follow-up
+
+The final local-main stack gate passed after the deadline ownership fix:
+
+```bash
+DIFF_COVER_COMPARE_BRANCH=main bash tools/stack_coverage_gate.sh
+```
+
+Results: **118 Python tests, 424 Bun tests, 176 Playwright tests, and 93%
+changed-line coverage** (6,119 changed executable lines, 380 missing). The
+existing ≥90% gate and all visual, continuous-input and cleanup limits remain
+in force. Normal commit-stage hygiene, Ruff, mypy, Biome with
+`--error-on-warnings`, and strict TypeScript checks passed.
+
+After coverage, all four plain bundle variants were rebuilt with `bun run
+build`; 14 focused browser tests then passed against the restored plain bundle.
+Correctness reviews were source-only, not a full-branch diff sign-off. The
+scaled-stub finding was fixed with a RED/GREEN regression; follow-up reviews
+found no additional concrete defects. The focused security review found no
+high-confidence HIGH/MEDIUM vulnerabilities. A real CLI deadline smoke also
+verified structured failure output and stopped attempts after owned shutdown.
+
+No experimental merging or WebGPU code is shipped. The 10M continuous
+application-loading limitation, first-preview hardware tail, visibly sampled
+preview and slower fine-resolution refinement remain explicit above; test
+success does not remove those measured limitations.
