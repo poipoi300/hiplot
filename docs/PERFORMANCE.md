@@ -1138,3 +1138,50 @@ limit and uses the owned server's force-kill instead. This is an explicit,
 bounded unsupported-capacity result, **not a claim that 10M continuous data now
 loads in the application**. The prior successful 10M integer result remains
 valid, and neither result generalizes to every dataset.
+
+## Weighted segment merging after the float correction
+
+Re-tested the rejected idea against the corrected RGBA32F exact renderer on
+2026-11-10. Automatic million-row pictures are already binned; this probe uses
+**100k rows × ten axes on the RTX 5090**, within the hardware exact-mode size
+range, rather than claiming a benefit for a path auto mode no longer uses.
+It is one exploratory comparison per dataset, not a cross-device guarantee.
+
+The scratch prototype groups segments with the same pair, color bin and
+selection, quantizing coordinates to 1/8px. Its key also includes the four
+neighboring endpoint coordinates needed to preserve straight-line AA joins;
+merging only a segment's two endpoints does not preserve those joins. A weighted
+representative retains the first member's actual coordinates. Weights multiply
+only additive color/count components, not MAX coverage or the winning key.
+The original 1.1M segments include the leading/trailing missing-value stubs.
+
+The stated visual acceptance criterion is **maximum final premultiplied RGBA8
+channel difference ≤1/255** against the original exact picture. Both images
+are checked nonblank and free of GL errors. Frame completion uses a one-pixel
+readback barrier; an earlier `gl.finish()` probe returned zero timings and is
+not used as timing evidence.
+
+| Data | Merged groups | Segment reduction | CPU grouping ms | Upload submission ms | Exact completed ms | Merged completed ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Continuous | 1,099,634 | 0.0333% | 814.0 | 2.3 | 36.4 | 36.4 |
+| Eight integers | 196,487 | 82.1375% | 458.9 | 0.1 | 38.6 | 8.9 |
+
+| Data | Differing channels / 1,755,840 | Maximum difference | Mean absolute difference, 8-bit levels | All-channel p50 / p95 / p99 |
+|---|---:|---:|---:|---:|
+| Continuous | 122 | 1 | 0.00006948 | 0 / 0 / 0 |
+| Eight integers | 69 | 1 | 0.00003930 | 0 / 0 / 0 |
+
+Every nonzero channel difference is exactly one level; there are no differences
+of two or more. Thus these pictures pass the stated visual criterion after the
+float correction, unlike the prior saturated half-float experiment. That does
+**not** establish universal pixel equivalence.
+
+**Do not ship merging.** It fails the net-cost criterion: the integer case
+spends about 459ms regrouping to save 29.7ms drawing, and continuous data spends
+814ms without a frame-time win. Selection is part of the grouping key, so this
+cost matters on brush changes. Many unchanged redraws could amortize a retained
+index, but that is not a measured interactive win here. Large automatic plots
+already count coincident contributions through the binned renderer. No grouping,
+weighted-instance shader or experimental texture code is committed. Reproduction
+and raw distributions remain local in `merge-compare.mjs` and
+`merge-comparison.json` in the run3 artifact directory.
