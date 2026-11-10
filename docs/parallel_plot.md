@@ -45,11 +45,26 @@ highlighted rows. The **Exact lines / Binned density** control selects:
   a large dataset's first draw, while retaining fast hardware's exact path on
   moderate datasets.
 - **Binned density**: a dedicated worker counts every row into adjacent-axis
-  histograms, with 32 bins per axis, then draws weighted straight segments.
-  Selected and context counts and color statistics are retained without row
-  sampling. Individual geometry is approximate: endpoints in a cell are replaced
-  by their mean, curves become straight segments and antialiasing differs.
+  histograms. Endpoint resolution defaults to `min(256, ceil(axis height))` bins
+  per axis, measured in CSS pixels, with a separate bin for missing endpoints.
+  Raster work has a separate budget: sparse pairs draw every occupied cell;
+  above 4,096 drawable cells per pair, neighboring endpoint-space tiles are
+  combined until at most 4,096 remain across selected and context layers.
+  Every cell contributes its counts, endpoint sums, color statistics and numeric
+  extrema; cells are aggregated, not periodically sampled or discarded.
+  Each layer draws weighted straight segments through its tile's mean endpoints.
+  Individual geometry is approximate: dense tiles can combine several fine
+  endpoint bins, curves become straight segments and antialiasing differs.
   Hover and highlights still use the original, unquantized row coordinates.
+
+  During brush or axis gestures over more than 20,000 rows, a separate worker
+  draws a deterministic **128-row sampled preview at half CSS resolution**.
+  Its geometry, colors and selection use the same sampled row identities.
+  This temporary picture can miss rare selected features and is not
+  density-equivalent to the all-row refinement. On release, the full worker
+  counts every row and refines the binned picture; an obsolete preview cannot
+  replace that refinement. Row-order invariance applies to the all-row raster,
+  not to the source-row-stratified preview sample.
 - **Exact lines**: render every original row with WebGL density accumulation,
   or Canvas 2D where WebGL2 is unavailable. This can be very slow on large data.
 
