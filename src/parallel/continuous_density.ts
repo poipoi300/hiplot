@@ -648,6 +648,10 @@ export class ContinuousWebGLEvaluator {
     return location;
   }
 
+  get contextLost(): boolean {
+    return this.gl.isContextLost();
+  }
+
   evaluate(
     pair: ContinuousPair,
     frame: ContinuousRequest,
@@ -849,8 +853,8 @@ export interface ContinuousDensityOptions {
 
 /** Pair-local cache keys exclude screen position: a scroll only composites retained images. */
 export class ContinuousDensityEvaluator {
-  private readonly gpu: ContinuousWebGLEvaluator | null;
-  private readonly software: boolean;
+  private gpu: ContinuousWebGLEvaluator | null;
+  private software: boolean;
   private readonly cache = new Map<string, CachedPairImage>();
 
   constructor(options: ContinuousDensityOptions = {}) {
@@ -864,7 +868,37 @@ export class ContinuousDensityEvaluator {
     this.software = options.software ?? this.gpu?.software ?? true;
   }
 
+  private switchToCPU(): void {
+    this.gpu?.dispose();
+    this.gpu = null;
+    this.software = true;
+    this.cache.clear();
+  }
+
+  private evaluatePair(
+    pair: ContinuousPair,
+    frame: ContinuousRequest,
+    update: ContinuousUpdate,
+    columns: number,
+    plan: ContinuousReconstructionPlan | null,
+  ): ContinuousPairImage {
+    return this.gpu === null
+      ? evaluateContinuousPairCPU(pair, frame, update, columns, plan !== null)
+      : this.gpu.evaluate(pair, frame, update, columns, plan !== null, plan ?? undefined);
+  }
+
   render(frame: ContinuousRequest, update: ContinuousUpdate): ContinuousImage {
+    if (this.gpu?.contextLost) this.switchToCPU();
+    try {
+      return this.renderFrame(frame, update);
+    } catch (error) {
+      if (!this.gpu?.contextLost) throw error;
+      this.switchToCPU();
+      return this.renderFrame(frame, update);
+    }
+  }
+
+  private renderFrame(frame: ContinuousRequest, update: ContinuousUpdate): ContinuousImage {
     const started = performance.now();
     const width = Math.max(1, Math.ceil(frame.width));
     const height = Math.max(1, Math.ceil(frame.height));
@@ -904,10 +938,7 @@ export class ContinuousDensityEvaluator {
       ) {
         const plan =
           fraction < 1 ? continuousReconstructionPlan(pair.histogram, frame, gap, columns) : null;
-        const evaluated =
-          this.gpu === null
-            ? evaluateContinuousPairCPU(pair, frame, update, columns, plan !== null)
-            : this.gpu.evaluate(pair, frame, update, columns, plan !== null, plan ?? undefined);
+        const evaluated = this.evaluatePair(pair, frame, update, columns, plan);
         const image =
           plan !== null
             ? reconstructContinuousPair(evaluated, pair.histogram, frame, gap, plan)

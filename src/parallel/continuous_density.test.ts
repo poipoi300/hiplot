@@ -404,6 +404,26 @@ describe("continuous pair image cache", () => {
     evaluator.dispose();
   });
 
+  test("hardware context loss switches dense drafts to the CPU column budget", () => {
+    const hist = histogram(25);
+    for (let left = 0; left < 25; ++left) {
+      for (let right = 0; right < 25; ++right) populate(hist, left, right, 1);
+    }
+    const evaluator = new ContinuousDensityEvaluator({ gl: null, software: false });
+    let disposed = false;
+    (evaluator as unknown as { gpu: { contextLost: boolean; dispose: () => void } }).gpu = {
+      contextLost: true,
+      dispose: () => {
+        disposed = true;
+      },
+    };
+    const image = evaluator.render(frame({ draft: true }), update([pair(hist)]));
+    expect(disposed).toBe(true);
+    expect(image.evaluatedColumns).toBe(1);
+    expect(image.pixels.some((value, index) => index % 4 === 3 && value > 0)).toBe(true);
+    evaluator.dispose();
+  });
+
   test("dense software gestures reduce columns, never rows, then refine full width on release", () => {
     const hist = histogram(25);
     for (let left = 0; left < 25; ++left) {
