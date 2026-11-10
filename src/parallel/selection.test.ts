@@ -1,7 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { anyOfRanges, apply_filters, type FilterRange } from "../filters";
 import { type Datapoint, ParamType } from "../types";
 import { type AxisSelection, BrushMasks } from "./selection";
+import {
+  buildSelectionIndex,
+  type SelectionIndexRequest,
+  type SelectionIndexResponse,
+} from "./selection_index";
 
 const rows: Datapoint[] = [
   { uid: "0", from_uid: null, x: 1, c: "a" },
@@ -116,5 +121,261 @@ describe("brush masks", () => {
     expect(select(new BrushMasks(rows), [["c", []]])).toEqual(
       uids(apply_filters(rows, [anyOfRanges([])])),
     );
+  });
+});
+
+class TestWorker {
+  onmessage: ((event: MessageEvent<SelectionIndexResponse>) => void) | null = null;
+  onerror: ((event: ErrorEvent) => void) | null = null;
+  onmessageerror: (() => void) | null = null;
+  requests: SelectionIndexRequest[] = [];
+  terminated = false;
+  autoReply = false;
+  private requestPosted: (() => void) | null = null;
+  readonly requested = new Promise<void>((resolve) => {
+    this.requestPosted = resolve;
+  });
+
+  postMessage(request: SelectionIndexRequest): void {
+    this.requests.push(request);
+    this.requestPosted?.();
+    if (this.autoReply) {
+      queueMicrotask(() =>
+        this.onmessage?.({
+          data: { id: request.id, index: buildSelectionIndex(request.column) },
+        } as MessageEvent<SelectionIndexResponse>),
+      );
+    }
+  }
+
+  terminate(): void {
+    this.terminated = true;
+  }
+}
+
+async function warm(
+  masks: BrushMasks,
+  worker: TestWorker,
+  selections: [string, AxisSelection][],
+): Promise<void> {
+  worker.autoReply = true;
+  await masks.prepare(new Map(selections));
+}
+
+describe("incremental indexed brushes", () => {
+  test("pending scans transition to indices without sorting or rereading source rows on warm moves", async () => {
+    let reads = 0;
+    const source = Array.from(
+      { length: 1000 },
+      (_, index): Datapoint => ({
+        uid: String(index),
+        from_uid: null,
+        get x() {
+          ++reads;
+          return index;
+        },
+      }),
+    );
+    const worker = new TestWorker();
+    const masks = new BrushMasks(source, async () => worker as unknown as Worker);
+    const ranges: [string, AxisSelection][] = [["x", [xRange(100, 900)]]];
+    expect(select(masks, ranges)).toHaveLength(801);
+    expect(worker.requests).toHaveLength(0);
+    await warm(masks, worker, ranges);
+    expect(worker.requests).toHaveLength(1);
+    const readCount = reads;
+    const sort = spyOn(Uint32Array.prototype, "sort");
+    const buffer = masks.select(new Map(ranges));
+    for (let i = 0; i < 20; ++i) {
+      expect(masks.select(new Map([["x", [xRange(101 + i, 900)]]]))).toBe(buffer);
+      expect(buffer[100 + i]).toBe(0);
+      expect(buffer[101 + i]).toBe(1);
+    }
+    expect(reads).toBe(readCount);
+    expect(sort).not.toHaveBeenCalled();
+    sort.mockRestore();
+    expect(worker.requests).toHaveLength(1);
+    masks.dispose();
+    expect(worker.terminated).toBe(true);
+  });
+
+  test("intersection updates only changed candidates for moves, overlaps, added axes and removals", async () => {
+    const source = Array.from(
+      { length: 10_000 },
+      (_, i): Datapoint => ({
+        uid: String(i),
+        from_uid: null,
+        x: i,
+        y: i,
+      }),
+    );
+    const worker = new TestWorker();
+    const masks = new BrushMasks(source, async () => worker as unknown as Worker);
+    const full = [xRange(0, 9999)];
+    const y = [{ ...xRange(1, 9999), col: "y" }];
+    await warm(masks, worker, [
+      ["x", full],
+      ["y", y],
+    ]);
+    masks.select(new Map([["x", full]]));
+    const changes = spyOn(
+      masks as unknown as { changeFailure(row: number, delta: number): void },
+      "changeFailure",
+    );
+    masks.select(new Map([["x", [xRange(1, 9999)]]]));
+    expect(changes.mock.calls).toEqual([[0, 1]]);
+    changes.mockClear();
+    masks.select(new Map([["x", [xRange(1, 7000), xRange(6000, 9999)]]]));
+    expect(changes).not.toHaveBeenCalled();
+    masks.select(
+      new Map([
+        ["x", [xRange(1, 9999)]],
+        ["y", y],
+      ]),
+    );
+    expect(changes.mock.calls).toEqual([[0, 1]]);
+    changes.mockClear();
+    masks.select(new Map([["y", y]]));
+    expect(changes.mock.calls).toEqual([[0, -1]]);
+    changes.mockClear();
+    const selected = masks.select(new Map());
+    expect(changes.mock.calls).toEqual([[0, -1]]);
+    expect(selected.every((value) => value === 1)).toBe(true);
+    changes.mockRestore();
+    masks.dispose();
+  });
+
+  test("numeric cache keys distinguish NaN and both infinite bounds", async () => {
+    const worker = new TestWorker();
+    const masks = new BrushMasks(rows, async () => worker as unknown as Worker);
+    await warm(masks, worker, [["x", [xRange(0, 1)]]]);
+    expect(select(masks, [["x", [xRange(NaN, Infinity)]]])).toEqual([]);
+    expect(select(masks, [["x", [xRange(-Infinity, Infinity)]]])).toEqual(["0", "1", "2", "5"]);
+    expect(select(masks, [["x", [xRange(Infinity, Infinity)]]])).toEqual(["2"]);
+    masks.dispose();
+  });
+
+  test("snapshots survive warm deltas, and mutated range objects do not rewrite prior membership", async () => {
+    const worker = new TestWorker();
+    const masks = new BrushMasks(rows, async () => worker as unknown as Worker);
+    const range = xRange(0, 6);
+    await warm(masks, worker, [["x", [range]]]);
+    const snapshot = masks.axisMask("x", [range]);
+    expect(select(masks, [["x", [range]]])).toEqual(["0", "1"]);
+    range.min = 4;
+    expect(select(masks, [["x", [range]]])).toEqual(["1"]);
+    expect(Array.from(snapshot)).toEqual([1, 1, 0, 0, 0, 0]);
+    masks.dispose();
+  });
+
+  test("random unions, axes added and removed, type changes and clears match filters in original row order", async () => {
+    let seed = 15231;
+    const random = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 2 ** 32;
+    };
+    const specials = [
+      undefined,
+      null,
+      NaN,
+      Infinity,
+      -Infinity,
+      "inf",
+      "",
+      false,
+      "1.0000000000000002",
+    ];
+    const source: Datapoint[] = Array.from({ length: 250 }, (_, i) => ({
+      uid: `row-${250 - i}`,
+      from_uid: null,
+      x: i % 3 === 0 ? specials[i % specials.length] : (random() - 0.5) * 20,
+      y: i % 5 === 0 ? undefined : String(Math.floor(random() * 20)),
+      c: i % 7 === 0 ? undefined : ["b", "10", "2", "", null, false][i % 6],
+    }));
+    const worker = new TestWorker();
+    const masks = new BrushMasks(source, async () => worker as unknown as Worker);
+    const scanning = new BrushMasks(source, async () => null);
+    await warm(masks, worker, [
+      ["x", [xRange(0, 1)]],
+      ["c", [cRange("", "z")]],
+      ["y", [{ ...xRange(0, 1), col: "y" }]],
+      ["x-category", [{ ...cRange("", "z"), col: "x" }]],
+    ]);
+    for (let iteration = 0; iteration < 160; ++iteration) {
+      const selections = new Map<string, AxisSelection>();
+      for (const col of ["x", "y", "c"]) {
+        if (random() < 0.25) continue;
+        const ranges: FilterRange[] = [];
+        const count = Math.floor(random() * 4);
+        for (let j = 0; j < count; ++j) {
+          if (col === "c" || (col === "x" && iteration % 9 === 0)) {
+            ranges.push({
+              ...cRange("(empty)", "b"),
+              col,
+              ...(random() < 0.5
+                ? { values: ["10", "b", "null", "false"].filter(() => random() < 0.5) }
+                : {}),
+            });
+          } else {
+            const a = (random() - 0.5) * 30;
+            const b = (random() - 0.5) * 30;
+            ranges.push({ ...xRange(Math.min(a, b), Math.max(a, b), random() < 0.4), col });
+          }
+        }
+        selections.set(col, ranges);
+      }
+      if (iteration % 11 === 0) selections.clear();
+      if (iteration % 13 === 0) selections.set("mixed", [xRange(-2, 3), cValues(["b", "10"])]);
+      const expected = apply_filters(source, Array.from(selections.values(), anyOfRanges));
+      expect(uids(masks.selectedRows(masks.select(selections)))).toEqual(uids(expected));
+      expect(uids(scanning.selectedRows(scanning.select(selections)))).toEqual(uids(expected));
+      for (const [axis, ranges] of selections) {
+        expect(uids(masks.selectedRows(masks.axisMask(axis, ranges)))).toEqual(
+          uids(apply_filters(source, [anyOfRanges(ranges)])),
+        );
+      }
+    }
+    expect(worker.requests).toHaveLength(4);
+    masks.dispose();
+    scanning.dispose();
+  });
+
+  test("dispose releases pending preparation and prevents reuse, including delayed connection", async () => {
+    const worker = new TestWorker();
+    const masks = new BrushMasks(rows, async () => worker as unknown as Worker);
+    const prepared = masks.prepare(new Map([["x", [xRange(0, 6)]]]));
+    await worker.requested;
+    masks.dispose();
+    await prepared;
+    masks.dispose();
+    expect(worker.terminated).toBe(true);
+    expect(() => masks.select(new Map())).toThrow("disposed");
+    expect(() => masks.axisMask("x", [])).toThrow("disposed");
+    const late = new TestWorker();
+    let connect: ((worker: Worker) => void) | undefined;
+    const delayed = new BrushMasks(
+      rows,
+      () =>
+        new Promise((resolve) => {
+          connect = resolve;
+        }),
+    );
+    const ready = delayed.prepare(new Map([["x", [xRange(0, 6)]]]));
+    delayed.dispose();
+    connect?.(late as unknown as Worker);
+    await ready;
+    expect(late.terminated).toBe(true);
+    expect(late.requests).toHaveLength(0);
+  });
+
+  test("worker failures reject preparation and surface on later selection", async () => {
+    const worker = new TestWorker();
+    const masks = new BrushMasks(rows, async () => worker as unknown as Worker);
+    const ready = masks.prepare(new Map([["x", [xRange(0, 6)]]]));
+    await worker.requested;
+    worker.onerror?.({ message: "failed" } as ErrorEvent);
+    await expect(ready).rejects.toThrow("Selection worker failed: failed");
+    expect(() => masks.select(new Map())).toThrow("failed");
+    masks.dispose();
   });
 });
