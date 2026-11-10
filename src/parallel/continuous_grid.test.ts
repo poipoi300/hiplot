@@ -83,7 +83,7 @@ function scratch(
   input: ContinuousRequest,
   leftColumn: number,
   rightColumn: number,
-): ContinuousHistogram {
+): ContinuousHistogram & { minimumCount: Uint32Array; maximumCount: Uint32Array } {
   const colors = input.colors;
   const selection = input.selection;
   if (colors === undefined || selection === undefined)
@@ -137,7 +137,16 @@ function scratch(
     }
   }
   histogram.occupied = Uint32Array.from([...occupied].sort((a, b) => a - b));
-  return histogram;
+  const minimumCount = new Uint32Array(size);
+  const maximumCount = new Uint32Array(size);
+  for (let row = 0; row < selection.length; ++row) {
+    const rank = colors.bins[row];
+    if (selection[row] === 0 || rank >= colors.colorMapBins) continue;
+    const cell = endpoint(left?.[row]) * (bins + 1) + endpoint(right?.[row]);
+    if (rank === histogram.minimum[cell]) minimumCount[cell] += 1;
+    if (rank === histogram.maximum[cell]) maximumCount[cell] += 1;
+  }
+  return { ...histogram, minimumCount, maximumCount };
 }
 
 function matchesScratch(update: ContinuousUpdate, input: ContinuousRequest): void {
@@ -148,7 +157,11 @@ function matchesScratch(update: ContinuousUpdate, input: ContinuousRequest): voi
   expect(update.selectedCount).toBe(selected);
   expect(update.contextCount).toBe(selection.length - selected);
   for (const pair of update.pairs) {
-    sameHistogram(pair.histogram, scratch(input, pair.left.column, pair.right.column));
+    const reference = scratch(input, pair.left.column, pair.right.column);
+    sameHistogram(pair.histogram, reference);
+    for (const name of ["minimumCount", "maximumCount"] as const) {
+      expect(Reflect.get(pair.histogram, name)).toEqual(reference[name]);
+    }
     expect(total(pair.histogram.selected)).toBe(selected);
     expect(total(pair.histogram.context)).toBe(selection.length - selected);
   }
@@ -398,7 +411,70 @@ describe("exact reversible brush updates", () => {
     });
   }
 
-  test("removing tied extrema rescans cell members and missing colors never win", () => {
+  test("removing one of 10000 tied extrema avoids membership traversal", () => {
+    const rows = 10_000;
+    const input = request({
+      height: 255,
+      columns: [1, 2].map((id) => ({ id, pixels: new Float32Array(rows).fill(64) })),
+      selection: new Uint8Array(rows).fill(1),
+      colors: { bins: new Uint32Array(rows), palette, colorMapBins: 4 },
+    });
+    const kernel = new ContinuousKernel();
+    kernel.update(input);
+    const pairs = Reflect.get(kernel, "pairs") as Map<string, { next: Uint32Array }>;
+    const pair = pairs.get("1:2");
+    if (pair === undefined) throw new Error("Missing retained interior pair");
+    let membershipReads = 0;
+    pair.next = new Proxy(pair.next, {
+      get(target, property) {
+        if (typeof property === "string" && /^\d+$/.test(property)) ++membershipReads;
+        return Reflect.get(target, property, target);
+      },
+    });
+    const selection = new Uint8Array(rows).fill(1);
+    selection[0] = 0;
+    const update = kernel.update(cachedRequest(input, { selection }));
+    expect(update.changedRows).toBe(1);
+    matchesScratch(update, { ...input, selection });
+    expect(membershipReads).toBe(0);
+    selection[0] = 1;
+    selection[1] = 0;
+    matchesScratch(kernel.update(cachedRequest(input, { selection })), { ...input, selection });
+    expect(membershipReads).toBe(0);
+    selection.fill(0);
+    selection[2] = 1;
+    matchesScratch(kernel.update(cachedRequest(input, { selection })), { ...input, selection });
+    expect(membershipReads).toBe(0);
+    selection[2] = 0;
+    matchesScratch(kernel.update(cachedRequest(input, { selection })), { ...input, selection });
+    expect(membershipReads).toBe(0);
+    selection.fill(1);
+    matchesScratch(kernel.update(cachedRequest(input, { selection })), { ...input, selection });
+    expect(membershipReads).toBe(0);
+  });
+
+  test("recoloring refreshes multiplicities even when visible statistics and revisions match", () => {
+    const input = request({
+      columns: [1, 2].map((id) => ({ id, pixels: new Float32Array(5).fill(64) })),
+      selection: new Uint8Array(5).fill(1),
+      colors: { bins: new Uint32Array([0, 0, 1, 2, 2]), palette, colorMapBins: 4 },
+    });
+    const kernel = new ContinuousKernel();
+    const first = kernel.update(input);
+    const revisions = first.pairs.map(({ histogram }) => histogram.revision);
+    const colors = { bins: new Uint32Array([0, 1, 1, 1, 2]), palette, colorMapBins: 4 };
+    const recolored = kernel.update(cachedRequest(input, { colors }));
+    expect(recolored.pairs.map(({ histogram }) => histogram.revision)).toEqual(revisions);
+    matchesScratch(recolored, { ...input, colors });
+    const selection = new Uint8Array([0, 1, 1, 1, 1]);
+    matchesScratch(kernel.update(cachedRequest(input, { selection })), {
+      ...input,
+      colors,
+      selection,
+    });
+  });
+
+  test("removing the last tied extrema rescans cell members and missing colors never win", () => {
     const input = request({
       columns: [
         { id: 1, pixels: new Float32Array(6).fill(20) },

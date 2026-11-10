@@ -19,7 +19,7 @@ interface CachedColumn {
 interface CachedPair {
   leftColumn: number;
   rightColumn: number;
-  histogram: ContinuousHistogram;
+  histogram: ContinuousHistogram & ExtremaMultiplicities;
   cells: Uint32Array;
   heads: Uint32Array;
   next: Uint32Array;
@@ -50,10 +50,15 @@ function maskScratch(size: number): MaskScratch {
 }
 
 type FixedPalette = readonly (readonly [number, number, number])[];
+interface ExtremaMultiplicities {
+  minimumCount: Uint32Array;
+  maximumCount: Uint32Array;
+}
 type ColorStatistics = Pick<
   ContinuousHistogram,
   "color0" | "color1" | "color2" | "minimum" | "maximum"
->;
+> &
+  ExtremaMultiplicities;
 
 function quantize(pixels: Float32Array, height: number, bins: number): Uint16Array {
   const quantized = new Uint16Array(pixels.length);
@@ -73,10 +78,12 @@ function emptyColorStatistics(size: number): ColorStatistics {
     color2: new Float64Array(size),
     minimum: new Uint32Array(size).fill(EMPTY_COLOR_KEY),
     maximum: new Uint32Array(size).fill(EMPTY_COLOR_KEY),
+    minimumCount: new Uint32Array(size),
+    maximumCount: new Uint32Array(size),
   };
 }
 
-function emptyHistogram(bins: number): ContinuousHistogram {
+function emptyHistogram(bins: number): ContinuousHistogram & ExtremaMultiplicities {
   const size = (bins + 1) ** 2;
   return {
     bins,
@@ -147,14 +154,23 @@ function addColor(
     return;
   }
   histogram.color0[cell] += direction * rank;
-  if (direction < 0) return;
-  if (histogram.minimum[cell] === EMPTY_COLOR_KEY) {
-    histogram.minimum[cell] = rank;
-    histogram.maximum[cell] = rank;
+  if (direction < 0) {
+    if (rank === histogram.minimum[cell]) histogram.minimumCount[cell] -= 1;
+    if (rank === histogram.maximum[cell]) histogram.maximumCount[cell] -= 1;
     return;
   }
-  histogram.minimum[cell] = Math.min(histogram.minimum[cell], rank);
-  histogram.maximum[cell] = Math.max(histogram.maximum[cell], rank);
+  if (rank < histogram.minimum[cell]) {
+    histogram.minimum[cell] = rank;
+    histogram.minimumCount[cell] = 1;
+  } else if (rank === histogram.minimum[cell]) {
+    histogram.minimumCount[cell] += 1;
+  }
+  if (histogram.maximum[cell] === EMPTY_COLOR_KEY || rank > histogram.maximum[cell]) {
+    histogram.maximum[cell] = rank;
+    histogram.maximumCount[cell] = 1;
+  } else if (rank === histogram.maximum[cell]) {
+    histogram.maximumCount[cell] += 1;
+  }
 }
 
 /**
@@ -376,13 +392,6 @@ export class ContinuousKernel {
       }
       const rank = colors.bins[row];
       const direction = selection[row] === 0 ? -1 : 1;
-      if (
-        direction < 0 &&
-        rank < colors.colorMapBins &&
-        (rank === histogram.minimum[cell] || rank === histogram.maximum[cell])
-      ) {
-        before.state[cell] = 2;
-      }
       histogram.selected[cell] += direction;
       histogram.context[cell] -= direction;
       addColor(histogram, cell, rank, colors, this.palette, direction);
@@ -390,7 +399,17 @@ export class ContinuousKernel {
     let differs = false;
     for (let index = 0; index < touchedCount; ++index) {
       const cell = before.touched[index];
-      if (before.state[cell] === 2) this.rescanExtrema(pair, cell, selection, colors);
+      if (colors.colorMapBins > 0) {
+        if (histogram.selected[cell] === histogram.color1[cell]) {
+          histogram.minimum[cell] = EMPTY_COLOR_KEY;
+          histogram.maximum[cell] = EMPTY_COLOR_KEY;
+          histogram.minimumCount[cell] = 0;
+          histogram.maximumCount[cell] = 0;
+        } else if (histogram.minimumCount[cell] === 0 || histogram.maximumCount[cell] === 0) {
+          // Apply the whole batch first: an exchange can restore an exhausted extreme.
+          this.rescanExtrema(pair, cell, selection, colors);
+        }
+      }
       // Every pair shares this scratch, including cells with cancelling deltas.
       before.state[cell] = 0;
       if (
@@ -415,14 +434,28 @@ export class ContinuousKernel {
   ): void {
     let minimum = EMPTY_COLOR_KEY;
     let maximum = EMPTY_COLOR_KEY;
+    let minimumCount = 0;
+    let maximumCount = 0;
     for (let row = pair.heads[cell]; row !== EMPTY_COLOR_KEY; row = pair.next[row]) {
       const rank = colors.bins[row];
       if (selection[row] === 0 || rank >= colors.colorMapBins) continue;
-      minimum = Math.min(minimum, rank);
-      maximum = maximum === EMPTY_COLOR_KEY ? rank : Math.max(maximum, rank);
+      if (rank < minimum) {
+        minimum = rank;
+        minimumCount = 1;
+      } else if (rank === minimum) {
+        ++minimumCount;
+      }
+      if (maximum === EMPTY_COLOR_KEY || rank > maximum) {
+        maximum = rank;
+        maximumCount = 1;
+      } else if (rank === maximum) {
+        ++maximumCount;
+      }
     }
     pair.histogram.minimum[cell] = minimum;
     pair.histogram.maximum[cell] = maximum;
+    pair.histogram.minimumCount[cell] = minimumCount;
+    pair.histogram.maximumCount[cell] = maximumCount;
   }
 
   private recolor(
