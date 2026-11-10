@@ -284,6 +284,20 @@ describe("continuous pixel evaluation", () => {
     }
   });
 
+  test("dense peak coverage includes sub-bin positions at axis-adjacent pixels", () => {
+    const hist = histogram(33);
+    for (let left = 0; left < 33; ++left) {
+      for (let right = 0; right < 33; ++right) populate(hist, left, right, 1);
+    }
+    const style = frame({ height: 32, curved: true });
+    for (const x of [0.01, 0.1, 15.9, 15.99]) {
+      for (const y of [15.25, 15.5, 15.75, 16]) {
+        const pixel = evaluateContinuousPixel(hist, style, 16, x, y, false);
+        expect(pixel.selectedPeak).toBeCloseTo(1, 6);
+      }
+    }
+  });
+
   test("eased curves change pair-local geometry but not row weights", () => {
     const hist = histogram();
     populate(hist, 0, 8, 5);

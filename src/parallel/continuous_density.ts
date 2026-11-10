@@ -234,7 +234,9 @@ export function evaluateContinuousPixel(
       const right = reverse ? a : endpoint;
       const center = ((1 - w) * left + w * right) * spacing;
       const localSlope = (derivative * (right - left) * spacing) / gap;
-      const coverage = continuousStripCoverage(y - center, localSlope, style.lineWidth);
+      // Dense bins reconstruct a continuous endpoint interval, not coincident bin-center lines.
+      const distance = Math.max(0, Math.abs(y - center) - spacing / 2);
+      const coverage = continuousStripCoverage(distance, localSlope, style.lineWidth);
       addCell(
         output,
         histogram,
@@ -509,7 +511,7 @@ void main() {
         ivec2 endpoints = reverse ? ivec2(endpoint, a) : ivec2(a, endpoint);
         float center = mix(float(endpoints.x), float(endpoints.y), w) * spacing;
         float localSlope = derivative * float(endpoints.y - endpoints.x) * spacing / u_gap;
-        float covered = stripCoverage(y - center, localSlope);
+        float covered = stripCoverage(max(0.0, abs(y - center) - 0.5 * spacing), localSlope);
         addCell(endpoints, (neighbor == 0 ? 1.0 - fraction : fraction) * factor, covered);
       }
     }
