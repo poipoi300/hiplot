@@ -108,6 +108,48 @@ export function continuousReconstructionPlan(
   return null;
 }
 
+/** Unresolved source footprints cannot identify the interior of an expanding envelope. */
+export function continuousReconstructionNeedsRefinement(
+  histogram: ContinuousHistogram,
+  frame: Pick<ContinuousRequest, "height" | "curved" | "lineWidth">,
+  gap: number,
+  sourceWidth: number,
+  plan: ContinuousReconstructionPlan,
+): boolean {
+  const spacing = frame.height / (histogram.bins - 1);
+  const stride = histogram.bins + 1;
+  for (const [counts, support] of [
+    [histogram.selected, plan.selected],
+    [histogram.context, plan.context],
+  ] as const) {
+    let maximumDelta = 0;
+    for (const cell of histogram.occupied) {
+      if (counts[cell] === 0) continue;
+      const left = Math.floor(cell / stride);
+      const right = cell % stride;
+      if (left === histogram.bins || right === histogram.bins) continue;
+      maximumDelta = Math.max(maximumDelta, Math.abs(right - left) * spacing);
+    }
+    const last = support.lower.length - 1;
+    const boundarySpan = Math.min(
+      support.upper[sourceWidth] - support.lower[sourceWidth],
+      support.upper[last] - support.lower[last],
+    );
+    for (let column = 0; column < sourceWidth; ++column) {
+      if (!Number.isFinite(support.lower[column])) continue;
+      const t = (column + 0.5) / sourceWidth;
+      const derivative = frame.curved ? 6 * t * (1 - t) : 1;
+      const slope = (derivative * maximumDelta) / gap;
+      const radius =
+        spacing / 2 + Math.max(frame.lineWidth / 2, 0.5) * Math.hypot(1, slope) + (1 + slope) / 2;
+      const span = support.upper[column] - support.lower[column];
+      // A crossing contracts below both end supports; a thin monotone envelope does not.
+      if (span <= 2 * radius && boundarySpan > span) return true;
+    }
+  }
+  return false;
+}
+
 /** Transport each independent density layer before selected-over-context compositing. */
 export function reconstructContinuousPair(
   image: ContinuousPairImage,

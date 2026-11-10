@@ -142,7 +142,7 @@ for (const curved of [false, true]) {
   });
 }
 
-for (const kind of ["crossing", "stationary-context"] as const) {
+for (const kind of ["crossing", "near-crossing", "stationary-context"] as const) {
   test(`worker reconstruction preserves ${kind} geometry`, async ({ page }) => {
     await loadParallelBenchmark(
       page,
@@ -166,6 +166,7 @@ for (const kind of ["crossing", "stationary-context"] as const) {
       for (let a = 200; a < 256; ++a) for (let b = 200; b < 256; ++b) add(a, b, 0);
       add(0, 255, 1, 1000);
       if (kind === "crossing") add(255, 0, 1, 1000);
+      else if (kind === "near-crossing") add(87, 0, 1, 1000);
       else add(56, 56, 0, 10_000);
       const width = kind === "crossing" ? 80 : 32;
       const selectedCount = selected.reduce((sum, value) => sum + value, 0);
@@ -186,7 +187,7 @@ for (const kind of ["crossing", "stationary-context"] as const) {
           selectedCount,
           contextCount: left.length - selectedCount,
           contextColor: { r: 0, g: 255, b: 0 },
-          contextAlpha: kind === "crossing" ? 0 : 0.2,
+          contextAlpha: kind === "stationary-context" ? 0.2 : 0,
           colorMode: "mean",
         },
         { bins: new Uint32Array(left.length), palette: [{ r: 255, g: 0, b: 0 }], colorMapBins: 0 },
@@ -205,13 +206,30 @@ for (const kind of ["crossing", "stationary-context"] as const) {
         window as unknown as ReconstructionProbe
       ).__parallelProbe.instance.parallelPlot().continuousMetrics;
       const offset =
-        kind === "crossing" ? (120 * image.width + 32) * 4 : (56 * image.width + 15) * 4;
+        kind === "crossing"
+          ? (120 * image.width + 32) * 4
+          : kind === "near-crossing"
+            ? (30 * image.width + 1) * 4
+            : (56 * image.width + 15) * 4;
       return Array.from(image.pixels.slice(offset, offset + 4));
     }, kind);
-    if (kind === "crossing") expect(rgba).toEqual([0, 0, 0, 0]);
+    if (kind !== "stationary-context") expect(rgba).toEqual([0, 0, 0, 0]);
     else {
       expect(rgba.slice(0, 3)).toEqual([0, 255, 0]);
       expect(rgba[3]).toBeGreaterThan(0);
+    }
+    if (kind === "near-crossing") {
+      const coverage = await page.evaluate(() => {
+        const image = (
+          window as unknown as ReconstructionProbe
+        ).__parallelProbe.instance.parallelPlot().continuousMetrics;
+        return [
+          [1, 12],
+          [1, 83],
+          [8, 67],
+        ].map(([x, y]) => image.pixels[(y * image.width + x) * 4 + 3]);
+      });
+      for (const alpha of coverage) expect(alpha).toBeGreaterThan(0);
     }
   });
 }

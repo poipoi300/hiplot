@@ -525,6 +525,29 @@ describe("continuous pair image cache", () => {
     evaluator.dispose();
   });
 
+  test("unresolved crossing footprints refine instead of expanding a false band", () => {
+    const hist = denseContextHistogram();
+    populate(hist, 0, 255, 1000);
+    populate(hist, 87, 0, 1000);
+    const pairs = [pair(hist, "near-crossing", 0, 32)];
+    const state = update(pairs, { selectedCount: 2000, contextCount: 3136, rows: 5136 });
+    const style = frame({ width: 32, height: 255, contextAlpha: 0 });
+    const evaluator = new ContinuousDensityEvaluator({ gl: null, software: true });
+    const gesture = evaluator.render({ ...style, draft: true }, state);
+    const idle = evaluator.render(style, state);
+    expect(at(idle.pixels, 32, 1, 30)[3]).toBe(0);
+    expect(at(gesture.pixels, 32, 1, 30)[3]).toBe(0);
+    expect(gesture.pixels).toEqual(idle.pixels);
+    for (const [x, y] of [
+      [1, 12],
+      [1, 83],
+      [8, 67],
+    ]) {
+      expect(at(gesture.pixels, 32, x, y)[3]).toBeGreaterThan(0);
+    }
+    evaluator.dispose();
+  });
+
   test("a crossing source column cannot inflate into a filled selected band", () => {
     const hist = denseContextHistogram();
     populate(hist, 0, 255, 1000);

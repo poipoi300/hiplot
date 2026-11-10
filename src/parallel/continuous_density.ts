@@ -1,6 +1,7 @@
 import type { RGB } from "../lib/colors";
 import {
   type ContinuousReconstructionPlan,
+  continuousReconstructionNeedsRefinement,
   continuousReconstructionPlan,
   reconstructContinuousPair,
 } from "./continuous_reconstruction";
@@ -913,7 +914,7 @@ export class ContinuousDensityEvaluator {
       if (gap <= 0) continue;
       const dense = pair.histogram.occupied.length > SPARSE_DENSITY_CELLS;
       const fraction = this.software && frame.draft && dense ? 1 / 16 : 1;
-      const columns = Math.max(1, Math.ceil(gap * fraction));
+      let columns = Math.max(1, Math.ceil(gap * fraction));
       const signature = JSON.stringify([
         pair.histogram.revision,
         pair.histogram.bins,
@@ -936,8 +937,15 @@ export class ContinuousDensityEvaluator {
         cached.colors.palette !== update.colors.palette ||
         cached.colors.colorMapBins !== update.colors.colorMapBins
       ) {
-        const plan =
+        let plan =
           fraction < 1 ? continuousReconstructionPlan(pair.histogram, frame, gap, columns) : null;
+        if (
+          plan !== null &&
+          continuousReconstructionNeedsRefinement(pair.histogram, frame, gap, columns, plan)
+        ) {
+          columns = Math.max(1, Math.ceil(gap));
+          plan = null;
+        }
         const evaluated = this.evaluatePair(pair, frame, update, columns, plan);
         const image =
           plan !== null
