@@ -658,3 +658,30 @@ than claiming an always-on sorted-index win. This is a measured deferral of
 that part of item 1, **not** a completed per-axis sorted index. An asynchronous,
 amortized index remains a possible separate design; none is hidden in the
 production path. Its benchmark prototype is retained for reproducibility.
+
+### Incremental density subtraction: rejected
+
+The premise that every density attachment is a reversible sum is false. The
+actual numeric final pass uses RGBA32F selected sums, RGBA16F coverage sums and
+an RGBA32F winning-key target, with RGB ADD but alpha **MAX**. Draft targets
+are half floats; categorical final targets use single floats. MAX peaks and
+winning keys have no subtractive inverse, even before considering rounding.
+
+`tests/density-contract.spec.ts` checks the production formats/blend state and
+executes the same ADD/MAX reduction in an actual one-pixel WebGL framebuffer:
+
+- Add contributions with coverage 1 and 0.25, then remove the first. Subtraction
+  gives `[0.25, 0, 0, 1]`; recomputing the remaining line gives
+  `[0.25, 0, 0, 0.25]`. The retained peak changes tone-mapped opacity by
+  **11.57/255**, not a float-precision tolerance.
+- Repeating 4,096 unit contributions in RGBA16F produces 2,048, because further
+  unit increments round away. Subtracting 4,095 then produces **−2,047**, not
+  the remaining line's 1. Lost contributions cannot be recovered by subtraction.
+
+The first failure needs only one departed row. Consequently there is no
+positive changed-row threshold that makes the proposed general subtraction
+safe, and periodic or end-of-gesture refreshes do not fix incorrect intermediate
+pictures. Recomputing peaks/winning keys and replaying original rounded sums
+would require different retained state and invalidate the claimed cheap delta
+operation. The unchanged-picture fallback remains a full redraw on every
+selection change. No subtractive path or drift/threshold tuning is shipped.
