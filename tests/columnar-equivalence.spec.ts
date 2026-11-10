@@ -142,6 +142,54 @@ test("live WebGL brushes use typed flags and publish identical pixels and ordere
   expect(result.differingChannels).toBe(0);
 });
 
+test("successive live brush moves refresh exact GPU flags even when the mask buffer is reused", async ({
+  page,
+}) => {
+  await load(page);
+  const result = await page.evaluate(() => {
+    const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
+    const dimension = pp.state.dimensions[1];
+    const target = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
+      .find((node) => (node as SVGGElement & { __data__: string }).__data__ === dimension)
+      ?.querySelector(".overlay");
+    if (!target || pp.webgl === null) throw new Error("No exact brush renderer");
+    const read = (): Uint8ClampedArray => {
+      pp.drawWithWebGL(pp.webgl as object);
+      const canvas = pp.foreground_ref.current;
+      const copy = document.createElement("canvas");
+      copy.width = canvas.width;
+      copy.height = canvas.height;
+      const context = copy.getContext("2d");
+      if (context === null) throw new Error("No readback context");
+      context.drawImage(canvas, 0, 0);
+      return context.getImageData(0, 0, copy.width, copy.height).data;
+    };
+    pp.startBrushGesture({ sourceEvent: { target }, y: 0.2 * pp.h }, dimension);
+    pp.continueBrushGesture(0.4 * pp.h);
+    pp.cancelBrushMove();
+    pp.pplot.brush(false);
+    read();
+    const first = pp.selectionMask(pp.geometry()).slice();
+    pp.continueBrushGesture(0.8 * pp.h);
+    pp.cancelBrushMove();
+    pp.pplot.brush(false);
+    const mask = pp.selectionMask(pp.geometry());
+    const actual = read();
+    (pp.webgl as { setSelection: (mask: Uint8Array) => void }).setSelection(mask.slice());
+    const reference = read();
+    let differing = 0;
+    for (let channel = 0; channel < actual.length; ++channel)
+      differing += Number(actual[channel] !== reference[channel]);
+    pp.endBrushGesture();
+    return {
+      differing,
+      changed: first.reduce((sum, value, row) => sum + Number(value !== mask[row]), 0),
+    };
+  });
+  expect(result.changed).toBeGreaterThan(20);
+  expect(result.differing).toBe(0);
+});
+
 test("order-only reorders retain scale and pixel identities with unchanged output", async ({
   page,
 }) => {

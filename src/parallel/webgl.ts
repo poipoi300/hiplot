@@ -958,8 +958,16 @@ export class WebGLLineRenderer {
 
   /** Per-row selection flags (1 = drawn): the only upload a brush move needs. */
   setSelection(selected: Uint8Array): void {
-    if (selected === this.uploadedSelection) {
-      return;
+    // Indexed brushes reuse live buffers; cache the uploaded values, not their identity.
+    if (this.uploadedSelection?.length === selected.length) {
+      let unchanged = true;
+      for (let row = 0; row < selected.length; ++row) {
+        if (selected[row] !== this.uploadedSelection[row]) {
+          unchanged = false;
+          break;
+        }
+      }
+      if (unchanged) return;
     }
     const gl = this.gl;
     this.bind("u_selected");
@@ -974,7 +982,7 @@ export class WebGLLineRenderer {
       gl.UNSIGNED_BYTE,
       padUint8(selected, this.layout),
     );
-    this.uploadedSelection = selected;
+    this.uploadedSelection = selected.slice();
   }
 
   /** Releases the GPU resources; the renderer is unusable afterwards. */
