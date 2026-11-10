@@ -60,6 +60,20 @@ function populate(
   hist.occupied = new Uint32Array([...hist.occupied, cell]);
 }
 
+function denseContextHistogram(): ContinuousHistogram {
+  const hist = histogram(256);
+  const occupied: number[] = [];
+  for (let left = 200; left < 256; ++left) {
+    for (let right = 200; right < 256; ++right) {
+      const cell = left * 257 + right;
+      hist.context[cell] = 1;
+      occupied.push(cell);
+    }
+  }
+  hist.occupied = Uint32Array.from(occupied);
+  return hist;
+}
+
 function pair(hist = histogram(), key = "1:2", left = 0, right = 16): ContinuousPair {
   return { key, left: { column: 1, x: left }, right: { column: 2, x: right }, histogram: hist };
 }
@@ -390,6 +404,77 @@ describe("continuous pair image cache", () => {
     hardware.dispose();
   });
 
+  test("six-column gestures follow the idle brush envelope within two pixels", () => {
+    const bins = 129;
+    const hist = histogram(bins);
+    const occupied: number[] = [];
+    let selectedCount = 0;
+    let contextCount = 0;
+    for (let left = 0; left < bins; ++left) {
+      for (let right = 0; right < bins; ++right) {
+        const cell = left * (bins + 1) + right;
+        occupied.push(cell);
+        if (left >= 26 && left <= 83) {
+          hist.selected[cell] = 100;
+          hist.minimum[cell] = hist.maximum[cell] = 0;
+          selectedCount += 100;
+        } else {
+          hist.context[cell] = 100;
+          contextCount += 100;
+        }
+      }
+    }
+    hist.occupied = Uint32Array.from(occupied);
+    const pairs = [pair(hist, "brushed", 0, 85)];
+    const state = update(pairs, {
+      selectedCount,
+      contextCount,
+      rows: selectedCount + contextCount,
+    });
+    for (const curved of [false, true]) {
+      const evaluator = new ContinuousDensityEvaluator({ gl: null, software: true });
+      const style = frame({ width: 85, height: 128, curved });
+      const gesture = evaluator.render({ ...style, draft: true }, state);
+      const idle = evaluator.render(style, state);
+      expect(gesture.evaluatedColumns).toBe(6);
+      let absolute = 0;
+      let energy = 0;
+      let maximumBoundaryShift = 0;
+      for (let x = 0; x < idle.width; ++x) {
+        let gestureBoundary = -1;
+        let idleBoundary = -1;
+        for (let y = 0; y < idle.height; ++y) {
+          const offset = (y * idle.width + x) * 4;
+          if (gestureBoundary < 0 && gesture.pixels[offset] * gesture.pixels[offset + 3] > 6000)
+            gestureBoundary = y;
+          if (idleBoundary < 0 && idle.pixels[offset] * idle.pixels[offset + 3] > 6000)
+            idleBoundary = y;
+          for (let channel = 0; channel < 4; ++channel) {
+            const reference =
+              channel === 3
+                ? idle.pixels[offset + 3]
+                : (idle.pixels[offset + channel] * idle.pixels[offset + 3]) / 255;
+            const candidate =
+              channel === 3
+                ? gesture.pixels[offset + 3]
+                : (gesture.pixels[offset + channel] * gesture.pixels[offset + 3]) / 255;
+            absolute += Math.abs(candidate - reference);
+            energy += reference;
+          }
+        }
+        expect(gestureBoundary).toBeGreaterThanOrEqual(0);
+        expect(idleBoundary).toBeGreaterThanOrEqual(0);
+        maximumBoundaryShift = Math.max(
+          maximumBoundaryShift,
+          Math.abs(gestureBoundary - idleBoundary),
+        );
+      }
+      expect(absolute / energy).toBeLessThan(0.012);
+      expect(maximumBoundaryShift).toBeLessThanOrEqual(2);
+      evaluator.dispose();
+    }
+  });
+
   test("sparse software gestures retain full columns and do not blur narrow bundles", () => {
     const hist = histogram();
     populate(hist, 0, 8, 8192);
@@ -401,6 +486,69 @@ describe("continuous pair image cache", () => {
     expect(released.evaluatedPairs).toBe(0);
     expect(released.pixels).toEqual(draft.pixels);
     evaluator.dispose();
+  });
+
+  test("a crossing source column cannot inflate into a filled selected band", () => {
+    const hist = denseContextHistogram();
+    populate(hist, 0, 255, 1000);
+    populate(hist, 255, 0, 1000);
+    const pairs = [pair(hist, "crossing", 0, 80)];
+    const state = update(pairs, { selectedCount: 2000, contextCount: 3136, rows: 5136 });
+    const style = frame({ width: 80, height: 255, contextAlpha: 0 });
+    const evaluator = new ContinuousDensityEvaluator({ gl: null, software: true });
+    const gesture = evaluator.render({ ...style, draft: true }, state);
+    const idle = evaluator.render(style, state);
+    expect(at(idle.pixels, 80, 32, 120)[3]).toBe(0);
+    expect(at(gesture.pixels, 80, 32, 120)[3]).toBe(0);
+    evaluator.dispose();
+  });
+
+  test("stationary context remains visible beside a moving selected strand", () => {
+    const hist = denseContextHistogram();
+    populate(hist, 0, 255, 1000);
+    populate(hist, 56, 56, 0, 10_000);
+    const pairs = [pair(hist, "independent-context", 0, 32)];
+    const state = update(pairs, { selectedCount: 1000, contextCount: 13_136, rows: 14_136 });
+    const style = frame({ width: 32, height: 255 });
+    const evaluator = new ContinuousDensityEvaluator({ gl: null, software: true });
+    const gesture = evaluator.render({ ...style, draft: true }, state);
+    const idle = evaluator.render(style, state);
+    expect(at(idle.pixels, 32, 15, 56)[3]).toBeGreaterThan(0);
+    expect(at(gesture.pixels, 32, 15, 56)[3]).toBeGreaterThan(0);
+    expect(at(gesture.pixels, 32, 15, 56).slice(0, 3)).toEqual([0, 255, 0]);
+    evaluator.dispose();
+  });
+
+  test("changed grids discard old gesture pixels and their support guides", () => {
+    const hist = histogram(25);
+    const occupied: number[] = [];
+    const fill = (first: number): void => {
+      for (let left = 0; left < 25; ++left) {
+        for (let right = 0; right < 25; ++right) {
+          const cell = left * 26 + right;
+          hist.selected[cell] = Number(left >= first && left < first + 12);
+          hist.context[cell] = 1 - hist.selected[cell];
+          if (occupied.length < 625) occupied.push(cell);
+        }
+      }
+    };
+    fill(3);
+    hist.occupied = Uint32Array.from(occupied);
+    const pairs = [pair(hist, "moving", 0, 85)];
+    const state = update(pairs, { rows: 625, selectedCount: 300, contextCount: 325 });
+    const style = frame({ width: 85, height: 24, draft: true });
+    const evaluator = new ContinuousDensityEvaluator({ gl: null, software: true });
+    const first = evaluator.render(style, state);
+    expect(evaluator.render(style, state).evaluatedPairs).toBe(0);
+    fill(10);
+    hist.revision++;
+    const moved = evaluator.render(style, state);
+    const fresh = new ContinuousDensityEvaluator({ gl: null, software: true });
+    expect(moved.evaluatedPairs).toBe(1);
+    expect(moved.pixels).not.toEqual(first.pixels);
+    expect(moved.pixels).toEqual(fresh.render(style, state).pixels);
+    evaluator.dispose();
+    fresh.dispose();
   });
 
   test("palette, width, height and context style changes invalidate retained pixels", () => {

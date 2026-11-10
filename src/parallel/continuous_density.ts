@@ -1,5 +1,11 @@
 import type { RGB } from "../lib/colors";
 import {
+  type ContinuousReconstructionPlan,
+  continuousReconstructionPlan,
+  reconstructContinuousPair,
+} from "./continuous_reconstruction";
+import { ContinuousWebGLReconstruction } from "./continuous_reconstruction_gl";
+import {
   COLOR_CHANNEL_SCALE,
   type ContinuousHistogram,
   type ContinuousImage,
@@ -358,9 +364,13 @@ export function evaluateContinuousPairCPU(
   frame: ContinuousRequest,
   update: ContinuousUpdate,
   columns = Math.max(1, Math.ceil(pairGap(pair))),
+  separateLayers = false,
 ): ContinuousPairImage {
   const height = Math.max(1, Math.ceil(frame.height));
   const pixels = new Uint8ClampedArray(columns * height * 4);
+  const contextPixels = separateLayers ? new Uint8ClampedArray(pixels.length) : undefined;
+  const selectedFrame = separateLayers ? { ...frame, contextAlpha: 0 } : frame;
+  const contextReference = densityReference(update.contextCount, frame.height);
   const gap = pairGap(pair);
   for (let y = 0; y < height; ++y) {
     for (let x = 0; x < columns; ++x) {
@@ -373,16 +383,23 @@ export function evaluateContinuousPairCPU(
       );
       const rgba = compositeContinuousPixel(
         pixel,
-        frame,
+        selectedFrame,
         update.colors,
         update.selectedCount,
         update.contextCount,
       );
       const offset = (y * columns + x) * 4;
       for (let channel = 0; channel < 4; ++channel) pixels[offset + channel] = rgba[channel] * 255;
+      if (contextPixels !== undefined) {
+        contextPixels[offset] = frame.contextColor.r;
+        contextPixels[offset + 1] = frame.contextColor.g;
+        contextPixels[offset + 2] = frame.contextColor.b;
+        contextPixels[offset + 3] =
+          255 * frame.contextAlpha * toneMapped(pixel.context, pixel.contextPeak, contextReference);
+      }
     }
   }
-  return { pixels, width: columns, height };
+  return { pixels, width: columns, height, contextPixels };
 }
 
 const VERTEX = `#version 300 es
@@ -405,6 +422,7 @@ uniform int u_colorMapBins;
 uniform int u_mode;
 uniform bool u_sparse;
 uniform bool u_curved;
+uniform bool u_separateLayers;
 uniform float u_height;
 uniform float u_gap;
 uniform float u_columns;
@@ -413,7 +431,8 @@ uniform float u_selectedReference;
 uniform float u_contextReference;
 uniform vec3 u_contextColor;
 uniform float u_contextAlpha;
-out vec4 color;
+layout(location = 0) out vec4 color;
+layout(location = 1) out vec4 contextLayer;
 vec4 sums = vec4(0.0);
 float color2 = 0.0;
 vec2 peaks = vec2(0.0);
@@ -450,7 +469,8 @@ float stripCoverage(float distanceY, float slope) {
 void addCell(ivec2 endpoint, float weight, float covered) {
   if (weight <= 0.0) return;
   vec4 counts = texelFetch(u_counts, endpoint.yx, 0);
-  vec4 extra = texelFetch(u_extra, endpoint.yx, 0);
+  vec4 extra = vec4(0.0);
+  if (u_colorMapBins == 0 || u_mode != 0) extra = texelFetch(u_extra, endpoint.yx, 0);
   sums += counts * weight;
   color2 += extra.r * weight;
   if (counts.r > 0.0) peaks.r = max(peaks.r, covered);
@@ -484,6 +504,7 @@ vec3 colorMapAt(float rank) {
   return mix(paletteAt(below), paletteAt(min(below + 1, u_colorMapBins - 1)), fract(position));
 }
 void main() {
+  contextLayer = vec4(0.0);
   float x = gl_FragCoord.x * u_gap / u_columns;
   // The FBO's low row deliberately stores the image's top row, as does the CPU reference.
   float y = gl_FragCoord.y;
@@ -541,7 +562,10 @@ void main() {
         rgb = mix(rgb, colorMapAt(winner), min(1.0, winnerCoverage / peaks.r));
     } else rgb = vec3(sums.ba, color2) / (sums.r * ${COLOR_CHANNEL_SCALE}.0);
   }
-  color = vec4((rgb * selectedAlpha + u_contextColor * contextShare) / alpha, alpha);
+  if (u_separateLayers) {
+    color = vec4(rgb, selectedAlpha);
+    contextLayer = vec4(u_contextColor, contextAlpha);
+  } else color = vec4((rgb * selectedAlpha + u_contextColor * contextShare) / alpha, alpha);
 }`;
 
 /** Retained WebGL2 evaluator; only pair images, never source rows, leave this context. */
@@ -550,6 +574,8 @@ export class ContinuousWebGLEvaluator {
   private readonly textures: WebGLTexture[];
   private readonly framebuffer: WebGLFramebuffer;
   private readonly image: WebGLTexture;
+  private readonly contextImage: WebGLTexture;
+  private reconstruction: ContinuousWebGLReconstruction | null = null;
   private readonly uniforms = new Map<string, WebGLUniformLocation>();
   readonly software: boolean;
 
@@ -585,6 +611,7 @@ export class ContinuousWebGLEvaluator {
     };
     this.textures = Array.from({ length: 5 }, texture);
     this.image = texture();
+    this.contextImage = texture();
     const framebuffer = gl.createFramebuffer();
     if (framebuffer === null) throw new Error("Cannot allocate continuous density framebuffer");
     this.framebuffer = framebuffer;
@@ -610,6 +637,8 @@ export class ContinuousWebGLEvaluator {
     frame: ContinuousRequest,
     update: ContinuousUpdate,
     columns: number,
+    reconstruct = false,
+    plan?: ContinuousReconstructionPlan,
   ): ContinuousPairImage {
     const { gl } = this;
     if (gl.isContextLost()) throw new Error("Continuous density WebGL context lost");
@@ -622,18 +651,21 @@ export class ContinuousWebGLEvaluator {
     if (Math.max(stride, columns, height, paletteLength) > maximumTexture)
       throw new Error("Continuous density image exceeds WebGL texture capacity");
     const counts = new Float32Array(stride * stride * 4);
-    const extra = new Float32Array(counts.length);
+    const needsExtra = update.colors.colorMapBins === 0 || frame.colorMode !== "mean";
+    const extra = new Float32Array(needsExtra ? counts.length : 4);
     for (const cell of histogram.occupied) {
       const offset = cell * 4;
       counts[offset] = histogram.selected[cell];
       counts[offset + 1] = histogram.context[cell];
       counts[offset + 2] = histogram.color0[cell];
       counts[offset + 3] = histogram.color1[cell];
-      extra[offset] = histogram.color2[cell];
-      extra[offset + 1] =
-        histogram.minimum[cell] === EMPTY_COLOR_KEY ? -1 : histogram.minimum[cell];
-      extra[offset + 2] =
-        histogram.maximum[cell] === EMPTY_COLOR_KEY ? -1 : histogram.maximum[cell];
+      if (needsExtra) {
+        extra[offset] = histogram.color2[cell];
+        extra[offset + 1] =
+          histogram.minimum[cell] === EMPTY_COLOR_KEY ? -1 : histogram.minimum[cell];
+        extra[offset + 2] =
+          histogram.maximum[cell] === EMPTY_COLOR_KEY ? -1 : histogram.maximum[cell];
+      }
     }
     const sparse = histogram.occupied.length <= SPARSE_DENSITY_CELLS;
     const spatial = sparse
@@ -687,7 +719,7 @@ export class ContinuousWebGLEvaluator {
       gl.uniform1i(this.uniform(name), unit);
     };
     upload(0, "counts", stride, stride, counts);
-    upload(1, "extra", stride, stride, extra);
+    upload(1, "extra", needsExtra ? stride : 1, needsExtra ? stride : 1, extra);
     upload(2, "occupied", occupiedWidth, occupiedHeight, occupied);
     upload(3, "palette", paletteLength, 1, palette);
     upload(4, "ranges", sparse ? columns : 1, spatial.tiles, spatial.ranges, 2);
@@ -698,6 +730,7 @@ export class ContinuousWebGLEvaluator {
       mode: { mean: 0, lowest: 1, highest: 2 }[frame.colorMode],
       sparse: Number(sparse),
       curved: Number(frame.curved),
+      separateLayers: Number(reconstruct),
     }))
       gl.uniform1i(this.uniform(name), value);
     for (const [name, value] of Object.entries({
@@ -724,10 +757,50 @@ export class ContinuousWebGLEvaluator {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.image, 0);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    if (reconstruct) {
+      gl.activeTexture(gl.TEXTURE0 + 6);
+      gl.bindTexture(gl.TEXTURE_2D, this.contextImage);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA8,
+        columns,
+        height,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        null,
+      );
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    }
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT1,
+      gl.TEXTURE_2D,
+      reconstruct ? this.contextImage : null,
+      0,
+    );
+    gl.drawBuffers(
+      reconstruct ? [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1] : [gl.COLOR_ATTACHMENT0],
+    );
     if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE)
       throw new Error("Incomplete continuous density framebuffer");
     gl.viewport(0, 0, columns, height);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (reconstruct) {
+      this.reconstruction ??= new ContinuousWebGLReconstruction(gl);
+      return this.reconstruction.render(
+        this.image,
+        this.contextImage,
+        histogram,
+        frame,
+        pairGap(pair),
+        columns,
+        plan,
+      );
+    }
     const pixels = new Uint8ClampedArray(columns * height * 4);
     gl.readPixels(0, 0, columns, height, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(pixels.buffer));
     const error = gl.getError();
@@ -736,8 +809,10 @@ export class ContinuousWebGLEvaluator {
   }
 
   dispose(): void {
+    this.reconstruction?.dispose();
     for (const texture of this.textures) this.gl.deleteTexture(texture);
     this.gl.deleteTexture(this.image);
+    this.gl.deleteTexture(this.contextImage);
     this.gl.deleteFramebuffer(this.framebuffer);
     this.gl.deleteProgram(this.program);
   }
@@ -811,10 +886,16 @@ export class ContinuousDensityEvaluator {
         cached.colors.palette !== update.colors.palette ||
         cached.colors.colorMapBins !== update.colors.colorMapBins
       ) {
-        const image =
+        const plan =
+          fraction < 1 ? continuousReconstructionPlan(pair.histogram, frame, gap, columns) : null;
+        const evaluated =
           this.gpu === null
-            ? evaluateContinuousPairCPU(pair, frame, update, columns)
-            : this.gpu.evaluate(pair, frame, update, columns);
+            ? evaluateContinuousPairCPU(pair, frame, update, columns, plan !== null)
+            : this.gpu.evaluate(pair, frame, update, columns, plan !== null, plan ?? undefined);
+        const image =
+          plan !== null
+            ? reconstructContinuousPair(evaluated, pair.histogram, frame, gap, plan)
+            : evaluated;
         cached = { histogram: pair.histogram, signature, image, colors: update.colors };
         this.cache.set(pair.key, cached);
         evaluatedPairs++;

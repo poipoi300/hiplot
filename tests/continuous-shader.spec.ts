@@ -2,16 +2,23 @@ import { loadParallelBenchmark } from "../bench/parallel";
 import type { ColorMode } from "../src/lib/colors";
 import { evaluateContinuousPairCPU } from "../src/parallel/continuous_density";
 import { ContinuousKernel } from "../src/parallel/continuous_grid";
+import { reconstructContinuousPair } from "../src/parallel/continuous_reconstruction";
 import type { ContinuousImage, ContinuousRequest } from "../src/parallel/continuous_types";
 import type { LineColors, LineFrame } from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
 
-for (const { dense, curved, mode, numeric, paletteSize = 3 } of [
+for (const { dense, curved, mode, numeric, paletteSize = 3, draft = false, gap = 32 } of [
   { dense: false, curved: false, mode: "mean", numeric: true },
   { dense: false, curved: true, mode: "highest", numeric: true },
   { dense: true, curved: false, mode: "lowest", numeric: true },
   { dense: true, curved: true, mode: "mean", numeric: true },
   { dense: true, curved: false, mode: "mean", numeric: false },
+  { dense: true, curved: false, mode: "lowest", numeric: true, draft: true },
+  { dense: true, curved: true, mode: "mean", numeric: true, draft: true },
+  { dense: true, curved: false, mode: "mean", numeric: false, draft: true },
+  { dense: true, curved: false, mode: "lowest", numeric: true, draft: true, gap: 85 },
+  { dense: true, curved: true, mode: "mean", numeric: true, draft: true, gap: 85 },
+  { dense: true, curved: false, mode: "mean", numeric: false, draft: true, gap: 85 },
   { dense: false, curved: true, mode: "mean", numeric: false, paletteSize: 20_000 },
 ] as readonly {
   dense: boolean;
@@ -19,8 +26,10 @@ for (const { dense, curved, mode, numeric, paletteSize = 3 } of [
   mode: ColorMode;
   numeric: boolean;
   paletteSize?: number;
+  draft?: boolean;
+  gap?: number;
 }[]) {
-  test(`histogram shader agrees with CPU for ${dense ? "dense" : "sparse"} ${curved ? "eased" : "straight"} ${numeric ? mode : "RGB"}`, async ({
+  test(`histogram shader agrees with CPU for ${draft ? "draft" : "idle"} ${dense ? "dense" : "sparse"} ${curved ? "eased" : "straight"} ${numeric ? mode : "RGB"} gap${gap}`, async ({
     page,
   }) => {
     const rows = dense ? 600 : 12;
@@ -34,7 +43,9 @@ for (const { dense, curved, mode, numeric, paletteSize = 3 } of [
     right[3] = Number.NaN;
     left[4] = Number.NaN;
     right[4] = Number.NaN;
-    const selection = Uint8Array.from({ length: rows }, (_, row) => Number(row % 4 !== 0));
+    const selection = Uint8Array.from({ length: rows }, (_, row) =>
+      Number(draft ? Math.floor(row / 25) >= 6 && Math.floor(row / 25) <= 18 : row % 4 !== 0),
+    );
     const basePalette = [
       { r: 34, g: 100, b: 220 },
       { r: 240, g: 170, b: 30 },
@@ -47,12 +58,12 @@ for (const { dense, curved, mode, numeric, paletteSize = 3 } of [
     };
     if (paletteSize > 3) colors.bins[1] = paletteSize - 1;
     const frame: Omit<LineFrame, "axes"> = {
-      width: 32,
+      width: gap,
       height: 24,
       lineWidth: 1,
       pixelRatio: 1,
       curved,
-      draft: false,
+      draft,
       resolution: 1,
       drawnRows: rows,
       selectedCount: selection.reduce((sum, value) => sum + value, 0),
@@ -66,7 +77,7 @@ for (const { dense, curved, mode, numeric, paletteSize = 3 } of [
       id: 1,
       axes: [
         { column: 1, x: 0 },
-        { column: 2, x: 32 },
+        { column: 2, x: gap },
       ],
       columns: [
         { id: 1, pixels: left },
@@ -78,7 +89,16 @@ for (const { dense, curved, mode, numeric, paletteSize = 3 } of [
     const update = new ContinuousKernel().update(request);
     const pair = update.pairs.find((pair) => pair.left.column === 1 && pair.right.column === 2);
     if (!pair) throw new Error("No reference pair");
-    const expected = evaluateContinuousPairCPU(pair, request, update);
+    const evaluated = evaluateContinuousPairCPU(
+      pair,
+      request,
+      update,
+      draft ? Math.ceil(gap / 16) : gap,
+      draft,
+    );
+    const expected = draft
+      ? reconstructContinuousPair(evaluated, pair.histogram, request, gap)
+      : evaluated;
     await loadParallelBenchmark(
       page,
       { rows: 3, columns: 2, discrete: true, seed: 20261109 },
@@ -98,7 +118,7 @@ for (const { dense, curved, mode, numeric, paletteSize = 3 } of [
             ...frame,
             axes: [
               { x: 0, pixels: new Float32Array(left) },
-              { x: 32, pixels: new Float32Array(right) },
+              { x: frame.width, pixels: new Float32Array(right) },
             ],
           },
           { ...colors, bins: new Uint32Array(colors.bins) },
