@@ -1244,7 +1244,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return (
       <>
         {slot === undefined ? toolbar : slot !== null && createPortal(toolbar, slot)}
-        <ResizableH initialHeight={this.state.height} onResize={this.onResize}>
+        <ResizableH
+          initialHeight={this.state.height}
+          minHeight={this.m[0] + this.m[2] + 100 + (this.scroller_ref.current?.offsetHeight ?? 0)}
+          onResize={this.onResize}
+        >
           <div
             ref={this.root_ref}
             className={`${pstyle["parallel-plot-chart"]} pplot-root`}
@@ -2441,9 +2445,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.scrollLeft = overflows ? scroller.scrollLeft : 0;
     d3.select(mounted(this.svg_ref)).attr("width", this.state.width).attr("height", height);
     this.placeAxes();
-    this.w = this.state.width - this.m[1] - this.m[3];
+    this.w = Math.max(0, this.state.width - this.m[1] - this.m[3]);
     this.contentW = layout.contentWidth - this.m[1] - this.m[3];
-    this.h = height - this.m[0] - this.m[2];
+    this.h = Math.max(0, height - this.m[0] - this.m[2]);
     // Scale chart and canvas height
     const div = d3.select(mounted(this.root_ref));
     div.style("height", `${this.state.height}px`);
@@ -2769,6 +2773,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
    */
   /** Redraws the selected lines (all filtered rows before any selection exists). */
   redrawLines(): void {
+    // Hidden and undersized layouts have no drawable surface; a later relayout resumes rendering.
+    if (this.w <= 0 || this.h <= 0) return;
     if (this.webgl === null && this.foreground === null) {
       return;
     }
