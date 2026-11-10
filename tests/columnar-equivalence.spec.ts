@@ -47,7 +47,7 @@ async function load(page: Page): Promise<void> {
   await loadParallelBenchmark(page, { rows: 300, columns: 10, discrete: false, seed: 20261109 });
 }
 
-async function pixels(page: Page): Promise<number[]> {
+async function losslessImage(page: Page): Promise<string> {
   return page.evaluate(() => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
     pp.redrawLines();
@@ -60,7 +60,9 @@ async function pixels(page: Page): Promise<number[]> {
       throw new Error("No readback context");
     }
     context.drawImage(canvas, 0, 0);
-    return Array.from(context.getImageData(0, 0, copy.width, copy.height).data);
+    // PNG is lossless; avoid serializing millions of individual numbers over the
+    // browser protocol merely to compare two complete images for exact equality.
+    return copy.toDataURL("image/png");
   });
 }
 
@@ -227,7 +229,7 @@ test("order-only reorders retain scale and pixel identities with unchanged outpu
     return { retainedScales, retainedColumns };
   });
   expect(result).toEqual({ retainedScales: true, retainedColumns: true });
-  const retained = await pixels(page);
+  const retained = await losslessImage(page);
   // A freshly recomputed reference must render exactly the same reordered picture.
   await page.evaluate(() => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
@@ -239,7 +241,7 @@ test("order-only reorders retain scale and pixel identities with unchanged outpu
       pp.yscale[dimension] = scale;
     }
   });
-  expect(await pixels(page)).toEqual(retained);
+  expect(await losslessImage(page)).toEqual(retained);
 });
 
 test("external lasso, Keep and Restore replace row-identified brush flags", async ({ page }) => {
@@ -376,7 +378,7 @@ test("capped spare pixel slots produce the same picture as unrestricted texture 
   context,
 }) => {
   await load(page);
-  const unrestricted = await pixels(page);
+  const unrestricted = await losslessImage(page);
   const capped = await context.newPage();
   await capped.addInitScript(() => {
     const getParameter = WebGL2RenderingContext.prototype.getParameter;
@@ -385,6 +387,6 @@ test("capped spare pixel slots produce the same picture as unrestricted texture 
     };
   });
   await load(capped);
-  expect(await pixels(capped)).toEqual(unrestricted);
+  expect(await losslessImage(capped)).toEqual(unrestricted);
   await capped.close();
 });
