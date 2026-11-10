@@ -198,6 +198,7 @@ test("slow exact frames engage automatic binning and the menu can force exact li
 test("scrolling and its settle redraw remain binned without sampling or exact-row draws", async ({
   page,
 }) => {
+  await page.clock.install({ time: new Date("2026-01-01T00:00:00Z") });
   const columns = Array.from({ length: 40 }, (_, i) => `m${i}`);
   await page.goto(
     `/?provider=upload&hip.PARALLEL_PLOT.renderQuality=${encodeURIComponent('"low"')}`,
@@ -210,6 +211,8 @@ test("scrolling and its settle redraw remain binned without sampling or exact-ro
   });
   await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
   await waitForBinned(page);
+  await page.clock.pauseAt(new Date("2026-01-01T01:00:00Z"));
+  await waitForBinned(page);
   await recordFrames(page);
   const initial = await page.evaluate(
     () =>
@@ -218,12 +221,31 @@ test("scrolling and its settle redraw remain binned without sampling or exact-ro
   await page.getByTestId("pplot-scroller").evaluate((scroller) => {
     scroller.scrollLeft = 300;
   });
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot()?.scrollLeft,
+      ),
+    )
+    .toBe(300);
+  // A slow worker may coalesce scroll and settle jobs. Finish the scroll image
+  // before advancing the settle timer so both rendering paths are exercised.
+  await page.clock.runFor(16);
   await waitForBinned(page, initial);
+  const scrolling = await page.evaluate(
+    () =>
+      (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot()?.binnedFrame ?? 0,
+  );
+  await page.clock.runFor(150);
+  await waitForBinned(page, scrolling);
   await expect
     .poll(() => page.evaluate(() => (window as unknown as HiPlotWindow).__presentations ?? 0))
     .toBeGreaterThanOrEqual(2);
   await expect(qualityButton(page)).toHaveText("Binned density");
   expect(await frames(page)).toEqual([]);
+  const counts = await page.evaluate(() => (window as unknown as HiPlotWindow).__binnedRows ?? []);
+  expect(counts.length).toBeGreaterThanOrEqual(6);
+  expect(counts.every((count) => count === 50)).toBe(true);
 });
 
 test("continuous brushing presents density while worker jobs are slower than input", async ({
