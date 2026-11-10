@@ -493,10 +493,29 @@ precision highp float;
 uniform sampler2D u_image;
 uniform vec2 u_viewport;
 out vec4 color;
+vec4 premultipliedAt(ivec2 pixel, ivec2 size) {
+  vec4 image = texelFetch(u_image, clamp(pixel, ivec2(0), size - 1), 0);
+  return vec4(image.rgb * image.a, image.a);
+}
 void main() {
   vec2 at = gl_FragCoord.xy / u_viewport;
-  vec4 image = texture(u_image, vec2(at.x, 1.0 - at.y));
-  color = vec4(image.rgb * image.a, image.a);
+  vec2 uv = vec2(at.x, 1.0 - at.y);
+  ivec2 size = textureSize(u_image, 0);
+  if (!any(greaterThan(u_viewport, vec2(size)))) {
+    vec4 image = texture(u_image, uv);
+    color = vec4(image.rgb * image.a, image.a);
+    return;
+  }
+  // Interpolate coverage-weighted colors, not hidden RGB in transparent texels.
+  vec2 position = uv * vec2(size) - 0.5;
+  ivec2 below = ivec2(floor(position));
+  vec2 fraction = fract(position);
+  color = mix(
+    mix(premultipliedAt(below, size), premultipliedAt(below + ivec2(1, 0), size), fraction.x),
+    mix(premultipliedAt(below + ivec2(0, 1), size),
+      premultipliedAt(below + ivec2(1, 1), size), fraction.x),
+    fraction.y
+  );
 }
 `;
 
