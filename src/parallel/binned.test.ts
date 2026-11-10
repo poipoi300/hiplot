@@ -6,9 +6,10 @@ import {
   buildPairHistogram,
   DEFAULT_AXIS_BINS,
   MAX_AXIS_BINS,
+  MAX_RASTER_CELLS,
   quantizeColumn,
+  rasterHistogram,
   rasterizeHistograms,
-  rasterWeights,
 } from "./binned";
 import type { LineColors } from "./webgl";
 
@@ -181,15 +182,191 @@ describe("all-row histograms", () => {
   });
 });
 
+function separatedPopulations(order: "alternating" | "grouped" | "shuffled"): BinnedRequest {
+  const perGroup = 4096;
+  const rows = perGroup * 2;
+  const indices = Uint32Array.from({ length: rows }, (_, row) => row);
+  if (order === "shuffled") {
+    let seed = 20261110;
+    for (let index = rows - 1; index > 0; --index) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      const other = seed % (index + 1);
+      [indices[index], indices[other]] = [indices[other], indices[index]];
+    }
+  }
+  const left = new Float32Array(rows);
+  const right = new Float32Array(rows);
+  const bins = new Uint32Array(rows);
+  for (let row = 0; row < rows; ++row) {
+    const source = indices[row];
+    const group = order === "alternating" ? source % 2 : Math.floor(source / perGroup);
+    const member = order === "alternating" ? Math.floor(source / 2) : source % perGroup;
+    left[row] = group * 128 + Math.floor(member / 64) + 0.5;
+    right[row] = group * 128 + (member % 64) + 0.5;
+    bins[row] = group;
+  }
+  return request({
+    height: 256,
+    columns: [
+      { id: 1, pixels: left },
+      { id: 2, pixels: right },
+    ],
+    selection: new Uint8Array(rows).fill(1),
+    colors: { bins, palette, colorMapBins: 0 },
+  });
+}
+
 describe("bounded density raster", () => {
-  test("mass resampling bounds occupied cells while conserving dense row counts", () => {
-    const counts = Float64Array.from({ length: 9000 }, (_, cell) => cell % 19);
-    const weights = rasterWeights(counts);
-    expect(sum(weights)).toBeCloseTo(sum(counts), 6);
-    expect(weights.filter((count) => count > 0).length).toBeLessThanOrEqual(4096);
-    expect(weights.every((count, cell) => count === 0 || counts[cell] > 0)).toBe(true);
-    const sparse = new Float64Array([0, 100, 0, 2]);
-    expect(rasterWeights(sparse)).toBe(sparse);
+  test("dense alternating populations both remain visible between the axes", () => {
+    for (const selected of [true, false]) {
+      const input = separatedPopulations("alternating");
+      if (!selected) input.selection?.fill(0);
+      const image = new BinnedKernel().render(input);
+      const alpha = [0, 0];
+      for (let group = 0; group < 2; ++group) {
+        for (let y = group * 128; y < group * 128 + 64; ++y) {
+          for (let x = 35; x < 65; ++x) {
+            const pixel = rgbaAt(image.pixels, x, y);
+            alpha[group] += pixel[3];
+            if (selected && pixel[3] > 0) {
+              expect(pixel[group === 0 ? 0 : 2]).toBe(255);
+              expect(pixel[group === 0 ? 2 : 0]).toBe(0);
+            }
+          }
+        }
+      }
+      expect(alpha[0]).toBeGreaterThan(10_000);
+      expect(alpha[1]).toBeGreaterThan(10_000);
+      expect(alpha[0]).toBeCloseTo(alpha[1], 0);
+    }
+  });
+
+  test("dense aggregation keeps a one-row population in a separated endpoint region", () => {
+    const population = 128 ** 2;
+    const rows = population + 1;
+    const left = Float32Array.from({ length: rows }, (_, row) => Math.floor(row / 128) + 0.5);
+    const right = Float32Array.from({ length: rows }, (_, row) => (row % 128) + 0.5);
+    left[population] = 225.5;
+    right[population] = 225.5;
+    const selection = new Uint8Array(rows).fill(1);
+    const colors = { bins: new Uint32Array(rows), palette, colorMapBins: 0 };
+    colors.bins[population] = 1;
+    const input = request({
+      height: 256,
+      columns: [
+        { id: 1, pixels: left },
+        { id: 2, pixels: right },
+      ],
+      selection,
+      colors,
+    });
+    const histogram = buildPairHistogram(left, right, selection, colors, 256);
+    expect(histogram.cells.length).toBeGreaterThan(MAX_RASTER_CELLS);
+    const image = new BinnedKernel().render(input);
+    const rarePixel = rgbaAt(image.pixels, 50, 225);
+    expect(rarePixel.slice(0, 3)).toEqual([0, 0, 255]);
+    expect(rarePixel[3]).toBeGreaterThan(0);
+    expect(rgbaAt(image.pixels, 50, 64)[3]).toBeGreaterThan(0);
+  });
+
+  test("dense raster pictures do not depend on input row permutations", () => {
+    const reference = new BinnedKernel().render(separatedPopulations("alternating"));
+    for (const order of ["grouped", "shuffled"] as const) {
+      const candidate = new BinnedKernel().render(separatedPopulations(order));
+      let maximumDifference = 0;
+      for (let channel = 0; channel < reference.pixels.length; ++channel) {
+        maximumDifference = Math.max(
+          maximumDifference,
+          Math.abs(reference.pixels[channel] - candidate.pixels[channel]),
+        );
+      }
+      expect(maximumDifference).toBeLessThanOrEqual(1);
+    }
+  });
+
+  test("spatial aggregation bounds raster cells and retains every statistic and missing identity", () => {
+    const rows = 257 ** 2;
+    const left = Float32Array.from({ length: rows }, (_, row) =>
+      Math.floor(row / 257) === 256 ? Number.NaN : Math.floor(row / 257) + 0.5,
+    );
+    const right = Float32Array.from({ length: rows }, (_, row) =>
+      row % 257 === 256 ? Number.NaN : (row % 257) + 0.5,
+    );
+    for (const colorMapBins of [0, 2]) {
+      const histogram = buildPairHistogram(
+        left,
+        right,
+        Uint8Array.from({ length: rows }, (_, row) => Number(row % 3 !== 0)),
+        { ...numericColors(Array.from({ length: rows }, (_, row) => row % 3)), colorMapBins },
+        256,
+      );
+      const raster = rasterHistogram(histogram);
+      expect(raster.cells.length).toBeLessThanOrEqual(MAX_RASTER_CELLS);
+      expect(raster.bins).toBeLessThan(histogram.bins);
+      expect(rasterHistogram(raster)).toBe(raster);
+      const expected = new Map<number, Record<string, number>>();
+      for (let source = 0; source < histogram.selected.length; ++source) {
+        const leftBin = Math.floor(source / 257);
+        const rightBin = source % 257;
+        const target =
+          Math.floor((leftBin * raster.bins) / 256) * (raster.bins + 1) +
+          Math.floor((rightBin * raster.bins) / 256);
+        const statistics = expected.get(target) ?? {};
+        for (const name of [
+          "selected",
+          "context",
+          "selectedLeft",
+          "selectedRight",
+          "contextLeft",
+          "contextRight",
+          "color0",
+          "color1",
+          "color2",
+        ] as const) {
+          statistics[name] = (statistics[name] ?? 0) + histogram[name][source];
+        }
+        statistics.minimum = Math.min(statistics.minimum ?? Infinity, histogram.minimum[source]);
+        statistics.maximum = Math.max(statistics.maximum ?? -Infinity, histogram.maximum[source]);
+        expected.set(target, statistics);
+      }
+      for (const [cell, statistics] of expected) {
+        for (const name of [
+          "selected",
+          "context",
+          "selectedLeft",
+          "selectedRight",
+          "contextLeft",
+          "contextRight",
+          "color0",
+          "color1",
+          "color2",
+          "minimum",
+          "maximum",
+        ] as const) {
+          expect(raster[name][cell]).toBeCloseTo(statistics[name], 8);
+        }
+      }
+      expect(sum(raster.selected)).toBe(sum(histogram.selected));
+      expect(sum(raster.context)).toBe(sum(histogram.context));
+      const bothMissing = raster.selected.length - 1;
+      expect(raster.cells).not.toContain(bothMissing);
+      expect(raster.selected[bothMissing]).toBe(histogram.selected[rows - 1]);
+      expect(raster.context[bothMissing]).toBe(histogram.context[rows - 1]);
+      const leftMissing = raster.cells.filter(
+        (cell) => Math.floor(cell / (raster.bins + 1)) === raster.bins,
+      );
+      const rightMissing = raster.cells.filter((cell) => cell % (raster.bins + 1) === raster.bins);
+      expect(leftMissing.length).toBeGreaterThan(0);
+      expect(rightMissing.length).toBeGreaterThan(0);
+    }
+    const sparse = buildPairHistogram(
+      new Float32Array([2, 2]),
+      new Float32Array([3, 3]),
+      new Uint8Array([1, 0]),
+      numericColors([0, 1]),
+      256,
+    );
+    expect(rasterHistogram(sparse)).toBe(sparse);
   });
 
   test("sample weights reproduce an equivalent dense population without scaling coverage peaks", () => {

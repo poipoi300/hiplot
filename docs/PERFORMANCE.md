@@ -912,6 +912,9 @@ existing exact-renderer pixel-equivalence tests remain unchanged in purpose.
 
 The measurements below supersede the 32-bin implementation at `a2b1d9d`.
 The preceding sections remain its historical baseline, not the current default.
+The later **Population-preserving raster aggregation** section supersedes the
+mass-resampled raster described in this section; endpoint counting and sampled
+previews retain the resolution and sampling contracts below.
 
 ### Resolution is not the raster budget
 
@@ -1267,3 +1270,85 @@ No experimental merging or WebGPU code is shipped. The 10M continuous
 application-loading limitation, first-preview hardware tail, visibly sampled
 preview and slower fine-resolution refinement remain explicit above; test
 success does not remove those measured limitations.
+
+## Population-preserving raster aggregation
+
+The fixed-offset mass resampler above was incorrect, not just approximate.
+With 8,192 distinct occupied cells, alternating 4,096 red upper-region rows
+and 4,096 blue lower-region rows gave red **zero** raster weight and blue
+8,192. Grouping the same rows restored both populations. Layer mass conservation
+alone did not detect this: first-occurrence cell order aliased the periodic
+resampling tickets. The focused unit regressions failed before the fix with
+zero upper-region alpha and a row-permutation channel difference of 255.
+
+The raster now **aggregates every occupied cell** rather than selecting cells
+and reallocating their mass. Fine counting still uses up to 256 height-limited
+endpoint bins. Pairs above 4,096 occupied drawable cells merge neighboring
+endpoint-space tiles until at most 4,096 remain, across selected and context
+layers together. Counts, selected/context endpoint sums, color sums, missing
+color shares and numeric extrema all reduce into their own tile. Missing
+endpoints remain distinct; both-missing counts survive but consume no drawable
+tile. Canonical endpoint order removes first-occurrence ordering from both
+raster accumulation and tile reduction. The prepared raster histograms use the
+existing pair/revision cache, so scrolling does not repeat the reduction.
+
+This retains all populations' count and color contributions, **not their
+individual geometry**. Each layer draws its own count-weighted endpoint means.
+The dense continuous benchmark reduces 256 fine bins to 64 raster bins: a tile
+spans four fine endpoint bins, about 7.3 CSS pixels at 465px height. An endpoint
+can move by almost a whole tile, and colors/geometric features within one tile
+can mix. Sparse pairs retain every fine cell without further coarsening; rare
+features outside the populated endpoint region retain their own contributions.
+The 128-row gesture preview is unchanged and can still miss rare selected rows
+until all-row refinement. Exact lines and exact highlighted rows are unchanged.
+
+### Measured choice and completed latency
+
+Measured 2026-11-10 with the same seeded 1M × 10 public-API benchmark,
+1000 × 700 viewport, verified RTX 5090 / ANGLE D3D11 and SwiftShader renderers.
+Before/after use **three loads and three gesture steps**, summarized as medians
+of per-load p50s. The every-cell alternative uses one load and three steps per
+backend/data variant; its figures are exploratory, but the multi-second cost
+rejects it as an interactive full-frame replacement. All figures are milliseconds.
+
+| Backend / continuous data | Before full | Draw every fine cell | Aggregate full | Before / aggregate brush input → fence | Before / aggregate release refinement |
+|---|---:|---:|---:|---:|---:|
+| RTX 5090 | 271.7 | 3253.0 | 225.5 | 38.7 / 39.0 | 643.1 / 582.7 |
+| SwiftShader | 267.6 | 3172.5 | 234.5 | 38.8 / 37.3 | 639.4 / 585.7 |
+
+Drawing every cell also increased continuous release refinement to
+5047.7 / 5060.2ms on hardware/software. It preserves fine geometry but costs
+about 12 times the old cached full frame. Aggregation avoids dropping cells
+without that cost. Cached raster CPU changed from 264.6 / 259.7ms to
+218.6 / 226.4ms; all-row release count/reduction is 232.8 / 233.7ms.
+The latter includes preparing the spatial aggregate, not just row counting.
+
+| Backend / integer data | Before / aggregate full | Before / aggregate brush input → fence | Before / aggregate release refinement |
+|---|---:|---:|---:|
+| RTX 5090 | 33.9 / 51.3 | 37.1 / 36.6 | 140.3 / 130.0 |
+| SwiftShader | 29.1 / 27.6 | 30.0 / 32.1 | 147.5 / 134.0 |
+
+The hardware integer full-frame median is **higher**, not a claimed speedup:
+its worker raster is essentially unchanged (21.3 → 21.0ms), while observed
+GPU-fence latency moves from 10.5 to 29.1ms. These three-load wall-clock samples
+do not establish the cause of that scheduling variation. Software integer
+brush input also increases by 2.1ms. Continuous input p95 after aggregation is
+67.5ms hardware / 46.5ms software; the earlier first-preview tail is not fixed.
+Full/release figures start at renderer request, while brush input starts at
+brush-method entry. Nested worker/fence medians must not be added.
+
+Reproduce using the existing benchmark commands with `--quality low`,
+`--rows 1000000 --reps 3 --steps 3`, once with `--backend hardware` and once
+with the default SwiftShader backend. Raw before/after and every-cell results
+are local artifacts in `C:/Users/Administrator/AppData/Local/Temp/hb/gpt-fix/`
+(`before-{hardware,software}.json`, `after-{hardware,software}.json` and
+`all-cells-{hardware,software}.json`), not repository assets.
+
+Unit tests check every aggregate statistic, numeric and categorical colors,
+missing endpoints, both-missing mass, both selected/context population visibility,
+a separated single-row population and grouped/shuffled picture stability.
+The browser worker regression independently requires both separated populations
+and at most one differing RGBA8 level after row permutations. The unchanged
+sparse-picture fidelity and exact-highlight tests still pass. The brief related
+binned-path audit found no additional concrete order-dependent/data-loss defect;
+that audit is source inspection, not a claim that previews are permutation invariant.

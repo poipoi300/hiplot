@@ -108,6 +108,114 @@ async function saveImage(page: Page, name: string, exact: boolean): Promise<void
   );
 }
 
+test("the all-row worker preserves dense populations across row-order permutations", async ({
+  page,
+}) => {
+  await loadParallelBenchmark(
+    page,
+    { rows: 8192, columns: 2, discrete: false, seed: 20261109 },
+    "low",
+  );
+  for (const order of ["alternating", "grouped", "shuffled"] as const) {
+    const before = await page.evaluate((order) => {
+      const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
+      const perGroup = 4096;
+      const rows = perGroup * 2;
+      const indices = Uint32Array.from({ length: rows }, (_, row) => row);
+      if (order === "shuffled") {
+        let seed = 20261110;
+        for (let index = rows - 1; index > 0; --index) {
+          seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+          const other = seed % (index + 1);
+          [indices[index], indices[other]] = [indices[other], indices[index]];
+        }
+      }
+      const left = new Float32Array(rows);
+      const right = new Float32Array(rows);
+      const bins = new Uint32Array(rows);
+      for (let row = 0; row < rows; ++row) {
+        const source = indices[row];
+        const group = order === "alternating" ? source % 2 : Math.floor(source / perGroup);
+        const member = order === "alternating" ? Math.floor(source / 2) : source % perGroup;
+        left[row] = group * 128 + Math.floor(member / 64) + 0.5;
+        right[row] = group * 128 + (member % 64) + 0.5;
+        bins[row] = group;
+      }
+      const geometry = pp.geometry();
+      const mask = new Uint8Array(rows).fill(1);
+      pp.binned?.draw(
+        {
+          ...pp.lineFrame(geometry, mask),
+          axes: [
+            { x: 20, pixels: left },
+            { x: 80, pixels: right },
+          ],
+          width: 100,
+          height: 256,
+          lineWidth: 1,
+          draft: false,
+        },
+        {
+          bins,
+          palette: [
+            { r: 255, g: 0, b: 0 },
+            { r: 0, g: 0, b: 255 },
+          ],
+          colorMapBins: 0,
+        },
+        mask,
+      );
+      return pp.binnedFrame;
+    }, order);
+    await waitForBinned(page, before);
+    const result = await page.evaluate((order) => {
+      const win = window as unknown as ProbeWindow;
+      const pp = win.__parallelProbe.instance.parallelPlot();
+      const image = pp.binnedMetrics;
+      if (image === null) throw new Error("Missing population image");
+      win.__binnedImages ??= {};
+      win.__binnedImages[order] = { ...image, pixels: image.pixels.slice() };
+      const reference = win.__binnedImages.alternating;
+      let maximumDifference = 0;
+      for (let channel = 0; channel < image.pixels.length; ++channel) {
+        maximumDifference = Math.max(
+          maximumDifference,
+          Math.abs(image.pixels[channel] - reference.pixels[channel]),
+        );
+      }
+      const alpha = [0, 0];
+      const wrongColor = [0, 0];
+      for (let group = 0; group < 2; ++group) {
+        for (let y = group * 128; y < group * 128 + 64; ++y) {
+          for (let x = 35; x < 65; ++x) {
+            const pixel = (y * image.width + x) * 4;
+            alpha[group] += image.pixels[pixel + 3];
+            if (image.pixels[pixel + 3] > 0)
+              wrongColor[group] += image.pixels[pixel + (group === 0 ? 2 : 0)];
+          }
+        }
+      }
+      return { maximumDifference, alpha, wrongColor, sampledRows: image.sampledRows };
+    }, order);
+    expect(result.sampledRows).toBe(8192);
+    expect(result.alpha[0]).toBeGreaterThan(100_000);
+    expect(result.alpha[1]).toBeGreaterThan(100_000);
+    expect(result.wrongColor).toEqual([0, 0]);
+    expect(result.maximumDifference).toBeLessThanOrEqual(1);
+  }
+  const image = await page.evaluate(() => {
+    const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
+    const image = pp.binnedMetrics;
+    if (image === null) throw new Error("Missing population image");
+    pp.webgl.present(image.pixels, image.width, image.height);
+    return pp.foreground_ref.current.toDataURL("image/png");
+  });
+  await test.info().attach("dense-populations", {
+    body: Buffer.from(image.split(",")[1], "base64"),
+    contentType: "image/png",
+  });
+});
+
 test("an idle large-brush preview starts before RAF and busy moves remain coalesced", async ({
   page,
 }) => {
