@@ -135,7 +135,9 @@ test.describe("XY plot", () => {
   test("dragging a box zooms in and a click zooms back out", async ({ page }) => {
     await loadDemo(page);
     await xyPlot(page).scrollIntoViewIfNeeded();
-    const box = await xyPlot(page).locator("g.brush rect.overlay").boundingBox();
+    const overlay = xyPlot(page).locator("g.brush rect.overlay");
+    await expect(overlay).toBeVisible();
+    const box = await overlay.boundingBox();
     if (box === null) {
       throw new Error("No XY plot");
     }
