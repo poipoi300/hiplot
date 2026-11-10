@@ -137,17 +137,21 @@ test.describe("XY plot", () => {
     await xyPlot(page).scrollIntoViewIfNeeded();
     const overlay = xyPlot(page).locator("g.brush rect.overlay");
     await expect(overlay).toBeVisible();
-    const box = await overlay.boundingBox();
-    if (box === null) {
-      throw new Error("No XY plot");
-    }
     const initial = await settledXTicks(page);
-    await page.mouse.move(box.x + box.width * 0.3, box.y + box.height * 0.3);
-    await page.mouse.down();
-    await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.6, { steps: 6 });
-    await page.mouse.up();
+    const size = await overlay.evaluate((node) => ({
+      width: Number(node.getAttribute("width")),
+      height: Number(node.getAttribute("height")),
+    }));
+    expect(size.width).toBeGreaterThan(0);
+    expect(size.height).toBeGreaterThan(0);
+    // Scale/resize redraws replace the brush node. Locator actions re-resolve it
+    // and check stability instead of using a detached bounding-box handle.
+    await overlay.dragTo(overlay, {
+      sourcePosition: { x: size.width * 0.3, y: size.height * 0.3 },
+      targetPosition: { x: size.width * 0.5, y: size.height * 0.6 },
+    });
     await expect.poll(() => xTicks(page)).not.toEqual(initial);
-    await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.5);
+    await overlay.click({ position: { x: size.width * 0.4, y: size.height * 0.5 } });
     await expect.poll(() => xTicks(page)).toEqual(initial);
   });
 
