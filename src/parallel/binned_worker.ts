@@ -1,4 +1,5 @@
 import type { BinnedImage, BinnedRequest } from "./binned";
+import { BinnedPreview, PREVIEW_SCALE } from "./binned_preview";
 import type { LineColors, LineFrame } from "./webgl";
 
 interface PendingFrame {
@@ -6,10 +7,12 @@ interface PendingFrame {
   frame: LineFrame;
   colors: LineColors;
   selection: Uint8Array;
+  rowWeight: number;
+  stubWidth: number;
 }
 
 /** One worker job in flight, with only the most recent requested frame retained. */
-export class BinnedRenderer {
+class BinnedChannel {
   private worker: Worker | null = null;
   private readonly columnIds = new WeakMap<Float32Array, number>();
   private sentColumns = new Set<number>();
@@ -65,10 +68,16 @@ export class BinnedRenderer {
     return this.running || this.pending !== null;
   }
 
-  draw(frame: LineFrame, colors: LineColors, selection: Uint8Array): void {
+  draw(
+    frame: LineFrame,
+    colors: LineColors,
+    selection: Uint8Array,
+    rowWeight = 1,
+    stubWidth = 15,
+  ): void {
     if (this.disposed) throw new Error("Cannot draw with a disposed binned renderer");
     if (this.failure !== null) throw this.failure;
-    const pending = { id: ++this.nextFrameId, frame, colors, selection };
+    const pending = { id: ++this.nextFrameId, frame, colors, selection, rowWeight, stubWidth };
     if (this.worker === null) {
       this.pending = pending;
       if (!this.running) {
@@ -96,7 +105,7 @@ export class BinnedRenderer {
     this.dispatch(pending);
   }
 
-  private dispatch({ id, frame, colors, selection }: PendingFrame): void {
+  private dispatch({ id, frame, colors, selection, rowWeight, stubWidth }: PendingFrame): void {
     if (this.worker === null) throw new Error("Binned worker has not initialized");
     const transfer: Transferable[] = [];
     const columns: BinnedRequest["columns"][number][] = [];
@@ -126,6 +135,8 @@ export class BinnedRenderer {
       contextColor: frame.contextColor,
       contextAlpha: frame.contextAlpha,
       colorMode: frame.colorMode,
+      rowWeight,
+      stubWidth,
     };
     if (
       this.colors === null ||
@@ -176,5 +187,53 @@ export class BinnedRenderer {
     this.sentColumns.clear();
     this.worker?.terminate();
     this.worker = null;
+  }
+}
+
+/** Preview work never queues behind an all-row refinement in another worker. */
+export class BinnedRenderer {
+  private readonly preview = new BinnedPreview();
+  private readonly full: BinnedChannel;
+  private readonly quick: BinnedChannel;
+  private active: BinnedChannel;
+
+  constructor(onImage: (image: BinnedImage) => void) {
+    this.full = new BinnedChannel((image) => {
+      if (this.active === this.full) onImage(image);
+    });
+    this.quick = new BinnedChannel((image) => {
+      if (this.active === this.quick) onImage(image);
+    });
+    this.active = this.full;
+  }
+
+  get busy(): boolean {
+    return this.active.busy;
+  }
+
+  get previewing(): boolean {
+    return this.active === this.quick;
+  }
+
+  draw(frame: LineFrame, colors: LineColors, selection: Uint8Array): void {
+    if (!frame.draft) {
+      this.active = this.full;
+      this.full.draw(frame, colors, selection);
+      return;
+    }
+    this.active = this.quick;
+    const preview = this.preview.frame(frame, colors, selection);
+    this.quick.draw(
+      preview.frame,
+      preview.colors,
+      preview.selection,
+      preview.rowWeight,
+      15 * PREVIEW_SCALE,
+    );
+  }
+
+  dispose(): void {
+    this.full.dispose();
+    this.quick.dispose();
   }
 }

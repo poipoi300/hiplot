@@ -8,6 +8,7 @@ import type { HiPlot } from "../src/component";
 import type { HiPlotRenderOptions } from "../src/hiplot_web";
 import type { LineFrame, WebGLLineRenderer } from "../src/parallel/webgl";
 import type { HiPlotExperiment } from "../src/types";
+import { withDeadline } from "./deadline";
 import { type ParallelBenchmarkConfig, parallelExperiment, quantile } from "./parallel_data";
 
 interface Sample {
@@ -43,6 +44,7 @@ interface ProbeWindow {
     draws: number;
     loadStart: number;
     generateMs: number;
+    brushInputAt: number | null;
     lastFrame: LineFrame | null;
     axisGesture?: { x: number; y: number; span: number; dimension: string };
   };
@@ -60,12 +62,14 @@ export async function loadParallelBenchmark(
   page: Page,
   config: ParallelBenchmarkConfig,
   quality: "full" | "low" | "auto" = "full",
+  onStage: (stage: string) => void = () => {},
 ): Promise<{
   generateMs: number;
   firstFrameMs: number;
   renderer: string;
   renderMode: "binned" | "exact";
 }> {
+  onStage("navigation and bundle setup");
   await page.route("http://hiplot.benchmark/**", (route) =>
     route.fulfill({ contentType: "text/html", body: '<div id="plot"></div>' }),
   );
@@ -74,6 +78,7 @@ export async function loadParallelBenchmark(
   );
   await page.addScriptTag({ path: path.resolve("hiplot/static/built/hiplot.bundle.js") });
   await page.addScriptTag({ content: `window.__parallelData = ${parallelExperiment.toString()};` });
+  onStage("payload generation and render setup");
   await page.evaluate((config) => {
     const win = window as unknown as ProbeWindow;
     const start = performance.now();
@@ -101,9 +106,11 @@ export async function loadParallelBenchmark(
       draws: 0,
       generateMs,
       loadStart,
+      brushInputAt: null,
       lastFrame: null,
     };
   }, config);
+  onStage("loading/inference and first completed image");
   await page.waitForFunction(
     () => {
       const failure = document.querySelector(".alert-danger");
@@ -158,7 +165,31 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
     if (pp.pplot === null) {
       throw new Error("No brush driver");
     }
-    pp.pplot.brush = timed("brushCpu", pp.pplot.brush.bind(pp.pplot));
+    const gestures = pp as unknown as ProbePlot;
+    const startBrush = gestures.startBrushGesture.bind(gestures);
+    gestures.startBrushGesture = (event, axis) => {
+      probe.brushInputAt = performance.now();
+      startBrush(event, axis);
+    };
+    const continueBrush = gestures.continueBrushGesture.bind(gestures);
+    gestures.continueBrushGesture = (y) => {
+      probe.brushInputAt = performance.now();
+      continueBrush(y);
+    };
+    const endBrush = gestures.endBrushGesture.bind(gestures);
+    gestures.endBrushGesture = () => {
+      probe.brushInputAt = null;
+      endBrush();
+    };
+    const brush = timed("brushCpu", pp.pplot.brush.bind(pp.pplot));
+    pp.pplot.brush = (...args) => {
+      if (probe.brushInputAt !== null)
+        probe.samples.push({
+          stage: "brushQueue",
+          milliseconds: performance.now() - probe.brushInputAt,
+        });
+      return brush(...args);
+    };
     const masks = pp.brushMasks();
     masks.select = timed("filter", masks.select.bind(masks));
     masks.selectedRows = timed("materialize", masks.selectedRows.bind(masks));
@@ -169,7 +200,11 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
     const renderer = pp.webgl as unknown as ProbeRenderer;
     renderer.setSelection = timed("selectionUpload", renderer.setSelection.bind(renderer));
     renderer.slotsFor = timed("geometryUpload", renderer.slotsFor.bind(renderer));
-    const fenceFrame = (submittedAt: number, requestedAt = submittedAt): void => {
+    const fenceFrame = (
+      submittedAt: number,
+      requestedAt = submittedAt,
+      inputAt = probe.brushInputAt,
+    ): void => {
       const gl = renderer.gl;
       const fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
       if (fence === null) {
@@ -189,6 +224,8 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
           { stage: "fence", milliseconds: finishedAt - submittedAt },
           { stage: "completedFrame", milliseconds: finishedAt - requestedAt },
         );
+        if (inputAt !== null)
+          probe.samples.push({ stage: "inputToVisible", milliseconds: finishedAt - inputAt });
       };
       setTimeout(poll, 0);
     };
@@ -204,9 +241,16 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
     const binned = pp as unknown as BinnedProbe;
     if (binned.binned !== null) {
       let requestedAt = performance.now();
+      let requestedInputAt: number | null = null;
       const request = binned.binned.draw.bind(binned.binned);
       binned.binned.draw = (...args) => {
         requestedAt = performance.now();
+        requestedInputAt = probe.brushInputAt;
+        if (requestedInputAt !== null)
+          probe.samples.push({
+            stage: "inputToRequest",
+            milliseconds: requestedAt - requestedInputAt,
+          });
         request(...args);
         probe.samples.push({
           stage: "binnedSubmit",
@@ -229,7 +273,7 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
         probe.draws += 1;
         present(pixels, width, height);
         probe.samples.push({ stage: "submit", milliseconds: performance.now() - start });
-        fenceFrame(start, requestedAt);
+        fenceFrame(start, requestedAt, requestedInputAt);
       };
     }
   });
@@ -446,6 +490,7 @@ async function main(): Promise<void> {
       quality: { type: "string", default: "full" },
       out: { type: "string" },
       label: { type: "string", default: "baseline" },
+      "timeout-ms": { type: "string", default: "180000" },
     },
   });
   const [rows, columns, steps, reps] = [values.rows, values.columns, values.steps, values.reps].map(
@@ -454,6 +499,10 @@ async function main(): Promise<void> {
   if (![rows, columns, steps, reps].every((value) => Number.isSafeInteger(value) && value > 0)) {
     throw new Error("Rows, columns, steps, and reps must be positive integers");
   }
+  const timeoutMs = Number(values["timeout-ms"]);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("Attempt timeout must be a positive integer in milliseconds");
+  }
   if (values.backend !== "swiftshader" && values.backend !== "hardware") {
     throw new Error("Backend must be swiftshader or hardware");
   }
@@ -461,7 +510,7 @@ async function main(): Promise<void> {
   if (quality !== "full" && quality !== "low" && quality !== "auto") {
     throw new Error("Quality must be full, low, or auto");
   }
-  const browser = await chromium.launch({
+  const server = await chromium.launchServer({
     ...(values.backend === "hardware" ? { channel: "chromium" } : {}),
     args: [
       "--js-flags=--max-old-space-size=8192",
@@ -470,32 +519,50 @@ async function main(): Promise<void> {
         : ["--ignore-gpu-blocklist", "--enable-gpu-rasterization"]),
     ],
   });
+  const browser = await chromium.connect(server.wsEndpoint());
   const runs = [];
   try {
-    for (const discrete of [false, true]) {
+    attempts: for (const discrete of [false, true]) {
       for (let rep = 0; rep < reps; ++rep) {
         const context = await browser.newContext({ viewport: { width: 1000, height: 700 } });
         const page = await context.newPage();
         const attemptStart = performance.now();
         const pageErrors: string[] = [];
+        let stage = "starting";
+        let crashed = false;
         page.on("pageerror", (error) => pageErrors.push(error.message));
+        page.on("crash", () => {
+          crashed = true;
+        });
         try {
-          const load = await loadParallelBenchmark(
-            page,
-            { rows, columns, discrete, seed: 20261109 },
-            quality,
+          const result = await withDeadline(
+            async () => {
+              const load = await loadParallelBenchmark(
+                page,
+                { rows, columns, discrete, seed: 20261109 },
+                quality,
+                (next) => {
+                  stage = next;
+                },
+              );
+              stage = "gesture measurements";
+              process.stderr.write(
+                `${values.backend} ${discrete ? "integer" : "continuous"} loaded in ${load.firstFrameMs.toFixed(0)} ms\n`,
+              );
+              const samples = await measureParallelBenchmark(page, steps);
+              if (pageErrors.length > 0) {
+                throw new Error(pageErrors.join("\n"));
+              }
+              const summary = Object.fromEntries(
+                Object.entries(samples).map(([name, samples]) => [name, summarize(samples)]),
+              );
+              return { discrete, rep, ...load, summary, samples };
+            },
+            timeoutMs,
+            () =>
+              `Parallel benchmark (${rows} rows, ${discrete ? "integer" : "continuous"}), last stage: ${stage}`,
+            () => server.kill(),
           );
-          process.stderr.write(
-            `${values.backend} ${discrete ? "integer" : "continuous"} loaded in ${load.firstFrameMs.toFixed(0)} ms\n`,
-          );
-          const samples = await measureParallelBenchmark(page, steps);
-          if (pageErrors.length > 0) {
-            throw new Error(pageErrors.join("\n"));
-          }
-          const summary = Object.fromEntries(
-            Object.entries(samples).map(([name, samples]) => [name, summarize(samples)]),
-          );
-          const result = { discrete, rep, ...load, summary, samples };
           runs.push(result);
           console.log(JSON.stringify({ ...result, samples: undefined }));
         } catch (error) {
@@ -503,24 +570,32 @@ async function main(): Promise<void> {
             discrete,
             rep,
             elapsedMs: performance.now() - attemptStart,
-            error: error instanceof Error ? error.message : String(error),
+            stage,
+            crashed,
+            error: crashed
+              ? `Browser page crashed during ${stage}`
+              : error instanceof Error
+                ? error.message
+                : String(error),
           };
           runs.push(result);
           console.log(JSON.stringify(result));
           process.exitCode = 1;
         } finally {
           await context.close();
+          if (values.out !== undefined) {
+            writeFileSync(
+              values.out,
+              JSON.stringify({ label: values.label, rows, columns, steps, quality, runs }, null, 2),
+            );
+          }
         }
+        if (!browser.isConnected()) break attempts;
       }
     }
   } finally {
     await browser.close();
-  }
-  if (values.out !== undefined) {
-    writeFileSync(
-      values.out,
-      JSON.stringify({ label: values.label, rows, columns, steps, quality, runs }, null, 2),
-    );
+    await server.close();
   }
 }
 

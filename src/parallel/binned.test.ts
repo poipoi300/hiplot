@@ -8,6 +8,7 @@ import {
   MAX_AXIS_BINS,
   quantizeColumn,
   rasterizeHistograms,
+  rasterWeights,
 } from "./binned";
 import type { LineColors } from "./webgl";
 
@@ -78,12 +79,17 @@ function sameHistogram(
 }
 
 describe("all-row histograms", () => {
+  test("pixel-scale bins retain endpoint and missing identities above 255", () => {
+    expect(
+      Array.from(quantizeColumn(new Float32Array([0, 255, 499, Number.NaN]), 500, 512)),
+    ).toEqual([0, 255, 499, 500]);
+  });
   test("quantization bounds storage and gives missing values a distinct bin", () => {
     const pixels = new Float32Array([-2, 0, 50, 100, 200, Number.NaN, Number.POSITIVE_INFINITY]);
     expect(Array.from(quantizeColumn(pixels, 100, MAX_AXIS_BINS))).toEqual([
-      0, 0, 32, 63, 63, 64, 64,
+      0, 0, 50, 99, 99, 100, 100,
     ]);
-    expect(Array.from(quantizeColumn(pixels, 100))).toEqual([0, 0, 16, 31, 31, 32, 32]);
+    expect(Array.from(quantizeColumn(pixels, 100, 32))).toEqual([0, 0, 16, 31, 31, 32, 32]);
     expect(Array.from(quantizeColumn(new Float32Array([0, 2, Number.NaN]), 3))).toEqual([0, 2, 3]);
   });
 
@@ -97,9 +103,11 @@ describe("all-row histograms", () => {
       numericColors([0, 1, 2, 1, 0]),
       100,
     );
-    expect(counts.selected.length).toBe((DEFAULT_AXIS_BINS + 1) ** 2);
+    expect(counts.selected.length).toBe((Math.min(100, DEFAULT_AXIS_BINS) + 1) ** 2);
     expect(sum(counts.selected)).toBe(4);
     expect(sum(counts.context)).toBe(1);
+    expect(new Set(counts.cells).size).toBe(counts.cells.length);
+    expect(counts.cells).not.toContain(counts.selected.length - 1);
     expect(sum(counts.color0)).toBe(1);
     expect(sum(counts.color1)).toBe(1);
     expect(sum(counts.selectedLeft)).toBeCloseTo(20.2);
@@ -174,6 +182,33 @@ describe("all-row histograms", () => {
 });
 
 describe("bounded density raster", () => {
+  test("mass resampling bounds occupied cells while conserving dense row counts", () => {
+    const counts = Float64Array.from({ length: 9000 }, (_, cell) => cell % 19);
+    const weights = rasterWeights(counts);
+    expect(sum(weights)).toBeCloseTo(sum(counts), 6);
+    expect(weights.filter((count) => count > 0).length).toBeLessThanOrEqual(4096);
+    expect(weights.every((count, cell) => count === 0 || counts[cell] > 0)).toBe(true);
+    const sparse = new Float64Array([0, 100, 0, 2]);
+    expect(rasterWeights(sparse)).toBe(sparse);
+  });
+
+  test("sample weights reproduce an equivalent dense population without scaling coverage peaks", () => {
+    const sampled = new BinnedKernel().render(request({ rowWeight: 32 }));
+    const repeated = new BinnedKernel().render(
+      request({
+        columns: [
+          { id: 1, pixels: new Float32Array(96).fill(20.5) },
+          { id: 2, pixels: new Float32Array(96).fill(20.5) },
+        ],
+        selection: Uint8Array.from({ length: 96 }, (_, row) => Number(row % 3 !== 2)),
+        colors: numericColors(Array.from({ length: 96 }, (_, row) => row % 3)),
+      }),
+    );
+    expect(Array.from(sampled.pixels)).toEqual(Array.from(repeated.pixels));
+    expect(sampled.sourceRows).toBe(96);
+    expect(sampled.sampledRows).toBe(3);
+    expect(repeated.sourceRows).toBe(repeated.sampledRows);
+  });
   test("numeric means and extrema select the same palette semantics", () => {
     const kernel = new BinnedKernel();
     const mean = kernel.render(request());
@@ -255,6 +290,25 @@ describe("bounded density raster", () => {
       }),
     );
     expect(missing.pixels.every((value) => value === 0)).toBe(true);
+  });
+
+  test("half-resolution previews keep stubs at fifteen CSS pixels after enlargement", () => {
+    const image = new BinnedKernel().render(
+      request({
+        width: 50,
+        height: 50,
+        lineWidth: 0.5,
+        stubWidth: 7.5,
+        axes: [{ column: 1, x: 20 }],
+        columns: [{ id: 1, pixels: new Float32Array([15.25]) }],
+        colors: numericColors([0]),
+        selection: new Uint8Array([1]),
+      }),
+    );
+    expect(rgbaAt(image.pixels, 13, 15, 50)[3]).toBeGreaterThan(0);
+    expect(rgbaAt(image.pixels, 26, 15, 50)[3]).toBeGreaterThan(0);
+    expect(rgbaAt(image.pixels, 11, 15, 50)[3]).toBe(0);
+    expect(rgbaAt(image.pixels, 28, 15, 50)[3]).toBe(0);
   });
 
   test("a single axis retains its leading and trailing exact-width stubs", () => {

@@ -108,7 +108,49 @@ async function saveImage(page: Page, name: string, exact: boolean): Promise<void
   );
 }
 
-test("binned straight density agrees within one-bin spatial and 20% relative tolerance", async ({
+test("an idle large-brush preview starts before RAF and busy moves remain coalesced", async ({
+  page,
+}) => {
+  await loadParallelBenchmark(
+    page,
+    { rows: 50_000, columns: 4, discrete: false, seed: 20261109 },
+    "low",
+  );
+  const result = await page.evaluate(() => {
+    const pp = (
+      window as unknown as ProbeWindow
+    ).__parallelProbe.instance.parallelPlot() as PlotProbe &
+      Pick<CanvasPlotProbe, "startBrushGesture" | "continueBrushGesture" | "endBrushGesture"> & {
+        brushMoveFrame: number | null;
+      };
+    if (pp.binned === null) throw new Error("No binned renderer");
+    const dimension = pp.state.dimensions[1];
+    const target = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
+      .find((node) => (node as SVGGElement & { __data__: string }).__data__ === dimension)
+      ?.querySelector(".overlay");
+    if (!target) throw new Error("No brush overlay");
+    const draw = pp.binned.draw.bind(pp.binned);
+    let requests = 0;
+    pp.binned.draw = (...args) => {
+      requests += 1;
+      draw(...args);
+    };
+    pp.startBrushGesture({ sourceEvent: { target }, y: pp.h * 0.2 }, dimension);
+    pp.continueBrushGesture(pp.h * 0.5);
+    const first = { requests, scheduled: pp.brushMoveFrame };
+    pp.continueBrushGesture(pp.h * 0.6);
+    const pending = pp.brushMoveFrame;
+    pp.continueBrushGesture(pp.h * 0.7);
+    const busy = { requests, coalesced: pending !== null && pending === pp.brushMoveFrame };
+    pp.endBrushGesture();
+    return { first, busy, cancelled: pp.brushMoveFrame === null };
+  });
+  expect(result.first).toEqual({ requests: 1, scheduled: null });
+  expect(result.busy).toEqual({ requests: 1, coalesced: true });
+  expect(result.cancelled).toBe(true);
+});
+
+test("pixel-scale density agrees within two pixels and 6.5% relative tolerance", async ({
   page,
 }) => {
   await loadParallelBenchmark(page, { rows: 300, columns: 4, discrete: false, seed: 20261109 });
@@ -130,8 +172,8 @@ test("binned straight density agrees within one-bin spatial and 20% relative tol
       throw new Error("Comparable renderer images are missing");
     }
     const { width, height } = exact;
-    // Endpoints move within one histogram bin; compare that spatial scale, not hard pixel equality.
-    const radius = Math.ceil(height / 32);
+    // Fixed CSS-pixel tolerance cannot silently grow when endpoint bins become coarser.
+    const radius = 2;
     const blur = (image: Image): Float64Array => {
       const result = new Float64Array(image.pixels.length);
       for (let x = 0; x < width; ++x) {
@@ -191,10 +233,80 @@ test("binned straight density agrees within one-bin spatial and 20% relative tol
     body: JSON.stringify(result, null, 2),
     contentType: "application/json",
   });
-  expect(result.relativeError).toBeLessThanOrEqual(0.2);
-  expect(result.absoluteError).toBeLessThanOrEqual(4 / 255);
-  expect(result.alphaRatio).toBeGreaterThan(0.9);
-  expect(result.alphaRatio).toBeLessThan(1.1);
+  expect(result.relativeError).toBeLessThanOrEqual(0.065);
+  expect(result.absoluteError).toBeLessThanOrEqual(2.2 / 255);
+  expect(result.alphaRatio).toBeGreaterThan(0.93);
+  expect(result.alphaRatio).toBeLessThan(0.97);
+});
+
+test("a brush preview presents while a delayed all-row refinement is still busy", async ({
+  page,
+}) => {
+  await loadParallelBenchmark(
+    page,
+    { rows: 50_000, columns: 4, discrete: false, seed: 20261109 },
+    "low",
+  );
+  const before = await page.evaluate(() => {
+    const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
+    const renderer = pp.binned as unknown as Pick<BinnedRenderer, "draw"> & {
+      full: { busy: boolean };
+    };
+    if (renderer === null) throw new Error("Missing density renderer");
+    const post = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (
+      this: Worker,
+      ...args: Parameters<Worker["postMessage"]>
+    ) {
+      const request = args[0] as { selection?: Uint8Array };
+      if (request.selection !== undefined && request.selection.length > 1024) {
+        setTimeout(() => post.apply(this, args), 1000);
+      } else {
+        post.apply(this, args);
+      }
+    } as Worker["postMessage"];
+    const geometry = pp.geometry();
+    const mask = new Uint8Array(geometry.rows.length).fill(1);
+    const frame = pp.lineFrame(geometry, mask);
+    // Change the mask so the full channel really submits another job.
+    mask[0] = 0;
+    renderer.draw({ ...frame, draft: false }, pp.lineColors(geometry), mask);
+    renderer.draw({ ...frame, draft: true }, pp.lineColors(geometry), mask);
+    Worker.prototype.postMessage = post;
+    return pp.binnedFrame;
+  });
+  await waitForBinned(page, before);
+  const result = await page.evaluate(() => {
+    const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
+    const renderer = pp.binned as unknown as Pick<BinnedRenderer, "draw"> & {
+      full: { busy: boolean };
+    };
+    return { image: pp.binnedMetrics, fullBusy: renderer.full.busy };
+  });
+  expect(result.fullBusy).toBe(true);
+  expect(result.image?.sampledRows).toBe(128);
+  expect(result.image?.sourceRows).toBe(50_000);
+  expect(result.image?.axisBins).toBeGreaterThan(200);
+  // Finish through the full channel; an obsolete preview cannot overwrite its image.
+  const preview = await page.evaluate(() => {
+    const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
+    const geometry = pp.geometry();
+    const mask = pp.selectionMask(geometry);
+    pp.binned?.draw(
+      { ...pp.lineFrame(geometry, mask), draft: false },
+      pp.lineColors(geometry),
+      mask,
+    );
+    return pp.binnedFrame;
+  });
+  await waitForBinned(page, preview);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot().binnedMetrics
+          ?.sampledRows,
+    ),
+  ).toBe(50_000);
 });
 
 test("hover draws the original unquantized row exactly above the binned picture", async ({

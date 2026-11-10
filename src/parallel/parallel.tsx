@@ -445,7 +445,8 @@ const RENDER_QUALITY_LABELS: Record<RenderQuality, { label: string; title: strin
   },
   low: {
     label: "Binned density",
-    title: "Count every row in quantized straight-segment histograms; highlights stay exact",
+    title:
+      "Pixel-scale density with sampled brush previews and all-row refinement; highlights stay exact",
   },
   full: {
     label: "Exact lines",
@@ -943,7 +944,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.drawBrushes(dimension);
   }
 
-  /** Follows the pointer at `y` (axis pixels); the selection updates once per frame. */
+  /** Follows the pointer at `y` (axis pixels), coalescing moves while rendering is busy. */
   private continueBrushGesture(y: number): void {
     const gesture = this.brushGesture;
     if (gesture === null) {
@@ -1131,9 +1132,19 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
   }
 
-  /** Brush moves are coalesced to one selection update per animation frame. */
+  /** Busy moves share a frame; an idle preview starts without waiting for display vsync. */
   private brushMoveFrame: number | null = null;
   private scheduleBrushFrame(): void {
+    if (
+      this.binnedMode() &&
+      this.draftFrame() &&
+      (!this.binned?.busy || !this.binned.previewing) &&
+      !this.webgl?.busy
+    ) {
+      this.cancelBrushMove();
+      this.pplot?.brush(false);
+      return;
+    }
     if (this.brushMoveFrame !== null) {
       return;
     }
@@ -1286,7 +1297,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       <Popover
         trigger={binned ? "Binned density" : "Exact lines"}
         label="Drawing quality"
-        title="Binned density counts every row using quantized straight segments; highlighted rows stay exact"
+        title="Pixel-scale density uses sampled previews while brushing, then refines all-row counts with a bounded segment budget; highlights stay exact"
         align="start"
         testId="render-quality-button"
       >
@@ -2762,8 +2773,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       return;
     }
     if (this.binnedMode()) {
-      // Let an issued job present during continuous input, then count the latest state.
-      if (this.interactiveFrame() && (this.binned?.busy || this.webgl?.busy)) {
+      // Preview jobs may finish during input, but never wait behind an all-row refinement.
+      if (
+        this.interactiveFrame() &&
+        ((this.binned?.busy && (!this.draftFrame() || this.binned.previewing)) || this.webgl?.busy)
+      ) {
         this.redrawWhenGpuIdle();
         return;
       }

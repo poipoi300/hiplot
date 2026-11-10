@@ -2,8 +2,39 @@ import type { ColorMode, RGB } from "../lib/colors";
 import type { LineColors } from "./webgl";
 
 /** Bounded geometry, independent of the number of source rows. */
-export const MAX_AXIS_BINS = 64;
-export const DEFAULT_AXIS_BINS = 32;
+export const MAX_AXIS_BINS = 512;
+export const DEFAULT_AXIS_BINS = 256;
+export const MAX_RASTER_CELLS = 4096;
+
+/** Systematic mass resampling bounds raster work without coarsening endpoint coordinates. */
+export function rasterWeights(
+  counts: Float64Array,
+  limit = MAX_RASTER_CELLS,
+  cells?: readonly number[],
+): Float64Array {
+  if (cells !== undefined && cells.length <= limit) return counts;
+  let occupied = 0;
+  let total = 0;
+  const length = cells?.length ?? counts.length;
+  for (let index = 0; index < length; ++index) {
+    const count = counts[cells?.[index] ?? index];
+    occupied += Number(count > 0);
+    total += count;
+  }
+  if (occupied <= limit) return counts;
+  const weights = new Float64Array(counts.length);
+  const step = total / limit;
+  let cumulative = 0;
+  let ticket = 0;
+  for (let index = 0; index < length; ++index) {
+    const cell = cells?.[index] ?? index;
+    cumulative += counts[cell];
+    const first = ticket;
+    while (ticket < limit && (ticket + 0.5) * step < cumulative) ++ticket;
+    weights[cell] = (ticket - first) * step;
+  }
+  return weights;
+}
 
 export interface BinnedColumn {
   id: number;
@@ -17,6 +48,8 @@ export interface BinnedAxis {
 
 export interface BinnedHistogram {
   bins: number;
+  /** Both-missing rows are counted, but cannot consume the drawable-cell budget. */
+  cells: number[];
   selected: Float64Array;
   context: Float64Array;
   selectedLeft: Float64Array;
@@ -34,6 +67,7 @@ export interface BinnedFrame {
   width: number;
   height: number;
   lineWidth: number;
+  stubWidth?: number;
   axes: readonly BinnedAxis[];
   contextColor: RGB;
   contextAlpha: number;
@@ -45,6 +79,8 @@ export interface BinnedRequest extends BinnedFrame {
   columns: readonly BinnedColumn[];
   colors?: LineColors;
   selection?: Uint8Array;
+  /** Source rows represented by each deterministically sampled preview row. */
+  rowWeight?: number;
 }
 
 export interface BinnedImage {
@@ -54,6 +90,9 @@ export interface BinnedImage {
   milliseconds: number;
   countMs: number;
   rasterMs: number;
+  sampledRows: number;
+  sourceRows: number;
+  axisBins: number;
 }
 
 /** Missing coordinates have their own bin, distinct from every finite value. */
@@ -61,9 +100,9 @@ export function quantizeColumn(
   pixels: Float32Array,
   height: number,
   maxBins = DEFAULT_AXIS_BINS,
-): Uint8Array {
+): Uint16Array {
   const bins = Math.min(MAX_AXIS_BINS, maxBins, Math.max(1, Math.ceil(height)));
-  const quantized = new Uint8Array(pixels.length);
+  const quantized = new Uint16Array(pixels.length);
   for (let row = 0; row < pixels.length; ++row) {
     const pixel = pixels[row];
     quantized[row] = Number.isFinite(pixel)
@@ -95,6 +134,7 @@ export function buildPairHistogram(
   const size = (bins + 1) ** 2;
   const histogram: BinnedHistogram = {
     bins,
+    cells: [],
     selected: new Float64Array(size),
     context: new Float64Array(size),
     selectedLeft: new Float64Array(size),
@@ -110,6 +150,8 @@ export function buildPairHistogram(
   const valueColors = colors.colorMapBins > 0;
   for (let row = 0; row < left.length; ++row) {
     const cell = leftBins[row] * (bins + 1) + rightBins[row];
+    if (cell !== size - 1 && histogram.selected[cell] === 0 && histogram.context[cell] === 0)
+      histogram.cells.push(cell);
     const yLeft = Number.isFinite(left[row]) ? left[row] : 0;
     const yRight = Number.isFinite(right[row]) ? right[row] : 0;
     if (selection[row] === 0) {
@@ -222,6 +264,7 @@ export function rasterizeHistograms(
   colors: LineColors,
   selectedCount: number,
   contextCount: number,
+  rowWeight = 1,
 ): Pick<BinnedImage, "pixels" | "width" | "height"> {
   const width = Math.max(1, Math.ceil(frame.width));
   const height = Math.max(1, Math.ceil(frame.height));
@@ -239,22 +282,28 @@ export function rasterizeHistograms(
   const winningCoverage = new Float64Array(size);
   const valueColors = colors.colorMapBins > 0;
   const withWinner = valueColors && frame.colorMode !== "mean";
+  const stubWidth = frame.stubWidth ?? 15;
   for (const { left, right, histogram } of pairs) {
-    if (Math.max(left.x, right.x) + 15 < 0 || Math.min(left.x, right.x) - 15 > width) continue;
+    if (Math.max(left.x, right.x) + stubWidth < 0 || Math.min(left.x, right.x) - stubWidth > width)
+      continue;
     const stride = histogram.bins + 1;
-    for (let cell = 0; cell < histogram.selected.length; ++cell) {
+    const selectedWeights = rasterWeights(histogram.selected, MAX_RASTER_CELLS, histogram.cells);
+    const contextWeights = rasterWeights(histogram.context, MAX_RASTER_CELLS, histogram.cells);
+    for (const cell of histogram.cells) {
       const hasLeft = Math.floor(cell / stride) !== histogram.bins;
       const hasRight = cell % stride !== histogram.bins;
       if (!hasLeft && !hasRight) continue;
       for (const isSelected of [true, false]) {
         const count = isSelected ? histogram.selected[cell] : histogram.context[cell];
-        if (count === 0) continue;
+        const represented = isSelected ? selectedWeights[cell] : contextWeights[cell];
+        if (represented === 0) continue;
+        const colorWeight = represented / count;
         const leftSum = isSelected ? histogram.selectedLeft[cell] : histogram.contextLeft[cell];
         const rightSum = isSelected ? histogram.selectedRight[cell] : histogram.contextRight[cell];
         const yLeft = hasLeft ? leftSum / count : rightSum / count;
         const yRight = hasRight ? rightSum / count : leftSum / count;
-        const xLeft = hasLeft ? left.x : right.x - 15;
-        const xRight = hasRight ? right.x : left.x + 15;
+        const xLeft = hasLeft ? left.x : right.x - stubWidth;
+        const xRight = hasRight ? right.x : left.x + stubWidth;
         const extreme =
           frame.colorMode === "lowest" ? histogram.minimum[cell] : histogram.maximum[cell];
         rasterSegment(
@@ -266,16 +315,17 @@ export function rasterizeHistograms(
           height,
           frame.lineWidth,
           (pixel, covered) => {
+            const weightedCoverage = covered * rowWeight;
             if (!isSelected) {
-              context[pixel] += count * covered;
+              context[pixel] += represented * weightedCoverage;
               contextPeak[pixel] = Math.max(contextPeak[pixel], covered);
               return;
             }
-            selected[pixel] += count * covered;
+            selected[pixel] += represented * weightedCoverage;
             selectedPeak[pixel] = Math.max(selectedPeak[pixel], covered);
-            color0[pixel] += histogram.color0[cell] * covered;
-            color1[pixel] += histogram.color1[cell] * covered;
-            color2[pixel] += histogram.color2[cell] * covered;
+            color0[pixel] += histogram.color0[cell] * colorWeight * weightedCoverage;
+            color1[pixel] += histogram.color1[cell] * colorWeight * weightedCoverage;
+            color2[pixel] += histogram.color2[cell] * colorWeight * weightedCoverage;
             if (!withWinner || !Number.isFinite(extreme)) return;
             const previous = winningValue[pixel];
             if (
@@ -293,8 +343,11 @@ export function rasterizeHistograms(
     }
   }
   const pixels = new Uint8ClampedArray(size * 4);
-  const selectedReference = Math.max(2, (12 * selectedCount) / Math.max(1, frame.height));
-  const contextReference = Math.max(2, (12 * contextCount) / Math.max(1, frame.height));
+  const selectedReference = Math.max(
+    2,
+    (12 * selectedCount * rowWeight) / Math.max(1, frame.height),
+  );
+  const contextReference = Math.max(2, (12 * contextCount * rowWeight) / Math.max(1, frame.height));
   const missing = colors.palette[colors.colorMapBins];
   for (let pixel = 0; pixel < size; ++pixel) {
     const selectedAlpha = toneMapped(selected[pixel], selectedPeak[pixel], selectedReference);
@@ -341,7 +394,7 @@ export function rasterizeHistograms(
 
 interface CachedColumn {
   pixels: Float32Array;
-  bins: Uint8Array;
+  bins: Uint16Array;
 }
 
 /** Worker-owned columns and pair counts survive scrolling and unchanged adjacencies. */
@@ -396,13 +449,14 @@ export class BinnedKernel {
       );
     }
     const axes = request.axes;
+    const stubWidth = request.stubWidth ?? 15;
     const drawnPairs: BinnedPair[] = [];
     const activePairs = new Set<string>();
     for (let pair = 0; pair <= axes.length; ++pair) {
       if (axes.length === 0) break;
-      const left = pair > 0 ? axes[pair - 1] : { column: -1, x: axes[0].x - 15 };
+      const left = pair > 0 ? axes[pair - 1] : { column: -1, x: axes[0].x - stubWidth };
       const right =
-        pair < axes.length ? axes[pair] : { column: -1, x: axes[axes.length - 1].x + 15 };
+        pair < axes.length ? axes[pair] : { column: -1, x: axes[axes.length - 1].x + stubWidth };
       const leftColumn = left.column === -1 ? this.missingColumn : this.columns.get(left.column);
       const rightColumn = right.column === -1 ? this.missingColumn : this.columns.get(right.column);
       if (leftColumn === undefined || rightColumn === undefined)
@@ -436,6 +490,7 @@ export class BinnedKernel {
       colors,
       this.selectedCount,
       selection.length - this.selectedCount,
+      request.rowWeight,
     );
     const finished = performance.now();
     return {
@@ -443,6 +498,9 @@ export class BinnedKernel {
       milliseconds: finished - started,
       countMs: counted - started,
       rasterMs: finished - counted,
+      sampledRows: selection.length,
+      sourceRows: selection.length * (request.rowWeight ?? 1),
+      axisBins: Math.min(MAX_AXIS_BINS, this.maxAxisBins, Math.max(1, Math.ceil(request.height))),
     };
   }
 }

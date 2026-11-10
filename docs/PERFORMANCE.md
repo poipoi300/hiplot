@@ -907,3 +907,234 @@ tests cover latest-only worker coalescing, preserved source buffers, offline
 worker startup, mode switching/persistence, and Canvas-only image presentation
 with zero live object-selection materializations and one on publication. The
 existing exact-renderer pixel-equivalence tests remain unchanged in purpose.
+
+## Pixel-scale endpoints and progressive brushing
+
+The measurements below supersede the 32-bin implementation at `a2b1d9d`.
+The preceding sections remain its historical baseline, not the current default.
+
+### Resolution is not the raster budget
+
+Merely increasing the old kernel's bins reproduced its quadratic cost. A Node
+V8 probe at 1M continuous rows, ten axes, 1000 × 500 pixels measured:
+
+| Bins | First count ms | First raster ms | Brushed count ms | Brushed raster ms |
+|---|---:|---:|---:|---:|
+| 32 | 140.8 | 87.4 | 107.3 | 132.8 |
+| 64 | 116.3 | 244.6 | 108.3 | 387.1 |
+| 128 | 125.8 | 840.0 | 142.3 | 1352.4 |
+| 256 | 171.2 | 3478.8 | 209.8 | 6086.5 |
+| 500 (512 requested) | 250.7 | 12634.5 | 262.0 | 17241.9 |
+
+The revised kernel separates **endpoint resolution** from **raster work**.
+Endpoints use `min(256, ceil(axis height))` CSS-pixel bins by default, with
+16-bit indices and an internal maximum of 512. At the 465px benchmark height,
+a bin is 1.82px rather than 14.53px; endpoint means can still move by up to a
+whole bin. CSS resolution intentionally bounds cost independently of DPR;
+exact highlights retain the original device-resolution path.
+
+Every row contributes to the final histogram. For a selected/context layer
+with more than 4,096 occupied drawable cells per pair, deterministic systematic
+mass resampling chooses at most 4,096 weighted representatives from those
+**fine-resolution cells**, without snapping their endpoints back to a coarse
+grid. It conserves layer count mass, not individual cell geometry or per-pixel
+color/extrema. Sparse layers, including the integer benchmark's bundles and the
+300-row visual fixture, render every occupied cell. Both-missing cells count
+toward the row statistics but cannot consume the drawable-cell budget.
+Iteration visits occupied cells, not every empty entry in the fine grid.
+
+This is a deliberate additional approximation. Counts are all-row Float64
+reductions; the raster is no longer a rendering of every occupied fine cell.
+Rare geometric/color features can be omitted by the representative budget.
+The exact override and independent exact highlight remain available.
+
+A hardware browser comparison (one seeded load per dataset, all selected,
+straight exact reference, 1000 × 700 viewport) measured the following. Raster
+cost is a warmed worker-equivalent CPU kernel, **not** complete input latency.
+The error is premultiplied RGBA relative L1 after a fixed two-pixel vertical
+blur, excluding ten-pixel axis joins; the spatial tolerance does not grow with
+the chosen bin count.
+
+| Requested bins | Actual bins | 300-row raster ms | 300-row error | 1M continuous raster ms | 1M continuous error | 1M integer raster ms / error |
+|---|---:|---:|---:|---:|---:|---:|
+| 32 | 32 | 28.2 | 12.96% | 77.7 | 12.60% | 20.5 / 6.30% |
+| 64 | 64 | 27.2 | 6.93% | 245.7 | 4.04% | 21.1 / 6.30% |
+| 128 | 128 | 28.3 | 5.83% | 244.4 | 4.57% | 19.3 / 6.30% |
+| 256 | 256 | 26.7 | 5.69% | 267.0 | 5.07% | 20.0 / 6.30% |
+| 512 | 465 | 27.4 | 5.69% | 311.7 | 5.40% | 19.2 / 6.30% |
+
+The 256-bin default removes needless coarse geometry on sparse pictures and
+has essentially the same moderate-data error as pixel-height bins. Going to
+465 bins costs about 44% more first counting (158.2 → 228.0ms), 17% more cached
+raster, and about 3.3× histogram storage for ten axes (roughly 64 → 210MB,
+excluding pixel columns and image buffers), without improving this dense
+budgeted picture. The 64-bin dense picture actually has lower aggregate error
+than 256 because its 4,096 cells do not require mass resampling: finer endpoints
+and a fixed raster budget are not a monotone density-fidelity improvement.
+The chosen compromise favors fine geometry without unbounded rasterization;
+it is not a claim that every metric improves with resolution.
+
+Against the unblurred 1M continuous picture, relative error falls from
+13.42% at 32 bins to 5.96% at 256; channel MAE falls from 15.40 to 6.84/255,
+and integrated alpha from 0.8747 to 0.9557 of exact. The sparse 300-row
+unblurred error falls from 24.68% to 5.97%, MAE from 7.91 to 1.92/255.
+The integer picture is unchanged by the bin increase: its distinct endpoints
+already fit in 32 bins, and its approximately 6.3% error is from the existing
+approximate antialiasing, not histogram resolution.
+
+Exact and 32/64/128/256/512-bin screenshots for 300 continuous, 1M continuous
+and 1M integer rows are saved in
+`C:/Users/Administrator/AppData/Local/Temp/hb/gpt-run3/` as
+`exact-<rows>-<variant>.png` and `binned-<bins>-<rows>-<variant>.png`.
+The corresponding raw timings/errors are in `visual-comparison.json` there.
+These are local review artifacts, not repository assets. Visual inspection
+shows the old coarse lattice and large holes in the dense 32-bin picture;
+the fine bounded raster removes that lattice, but retains representative-line
+texture rather than the exact picture's perfectly smooth dense gradients.
+
+### Preview first, all-row refinement after the gesture
+
+The prior 208.7ms hardware brush completion was not image upload: its median
+worker recount/raster were 88.0/123.3ms, while the final GPU fence was only
+about 5–6ms. The direct kernel probe reproduced about 95ms recount/122ms raster
+at 32 bins. Increasing endpoint resolution alone makes this worse.
+
+During gestures above the existing 20,000-row draft threshold, a separate
+worker renders a stable **128-row stratified preview at half CSS resolution**.
+The sample is deterministic, spans source-row strata, and does not use a
+periodic stride that can alias a column's period. Geometry and colors share
+the same sampled row identities; selection is re-read for those identities.
+Counts/color sums and the tone-map reference carry the source/sample weight;
+coverage peaks do not. Preview endpoints have approximately two-CSS-pixel
+resolution even though the temporary image is half size.
+
+On release the full worker recounts every row at the fine resolution and
+refines the picture. A subsequent gesture can immediately use the preview
+worker even if that refinement is still running; obsolete full images cannot
+overwrite an active preview, nor obsolete previews the final full image.
+Each channel retains one active and one latest pending job; active input is
+paced to allow issued previews to present. Small non-preview gestures retain
+the same pacing, preventing the previously discovered starvation bug.
+
+This buys interaction latency, **not cheaper final refinement**. Sparse preview
+selection can miss a rare selected feature until refinement; the menu tooltip
+explicitly identifies sampled previews. Preview and full images must not be
+reported as equivalent work or as unchanged per-row pictures.
+
+The visual regression now uses a **fixed two-CSS-pixel** blur, relative error
+**≤6.5%**, channel MAE **≤2.2/255**, and integrated-alpha ratio **0.93–0.97**.
+These replace the historical one-bin blur, 20%, 4/255 and 0.9–1.1 limits;
+nonblank energy checks and exact highlighted-row geometry remain required.
+Separate browser regressions require a sampled image while an all-row job is
+still running, all-row refinement afterward, continuous-input presentation,
+coalesced busy moves and cancellation on release. Half-resolution stubs are
+scaled with the image so they remain 15 CSS pixels rather than doubling in
+width. Sampled columns, colors and masks must identify the same source rows;
+malformed source lengths fail rather than silently changing identities.
+The final browser fixture measured **5.3026%** relative error, **1.58845/255**
+MAE and **0.947254** alpha ratio. These are the actual regression attachment
+values, distinct from the separate resolution-comparison probe above.
+
+Actual 1M-row gesture screenshots are also saved as
+`gesture-preview-<variant>.png`, `gesture-refined-<variant>.png` and
+`gesture-exact-<variant>.png`, with metadata in `preview-inspection.json`.
+They have been visually inspected: the temporary 128-row picture is visibly
+sparse and is **not density-equivalent** to the refinement. It shows the brush's
+geometric effect quickly; the tight visual tolerance applies to the all-row
+refinement, not that temporary preview.
+
+### Completed input-path measurements
+
+The benchmark now separately timestamps brush-method entry, brush callback
+entry, renderer request, worker stages and the observed GPU fence. Its
+`inputToVisible` is **brush-method entry → completed GPU frame**, including
+selection and scheduling, not compositor/photon timing. `completedFrame` keeps
+its historical renderer-request origin; the two must not be confused.
+
+That distinction exposed a second bottleneck. With 512 preview rows, renderer
+request → completion was 45.4ms hardware / 43.5ms software, but input → completion
+was **83.4 / 65.2ms**. A hardware scheduling probe measured 31.2ms waiting for
+the brush RAF before the 8.1ms callback. An idle large binned preview now starts
+immediately; busy moves still coalesce and use the existing paced redraw.
+Exact mode and small gestures retain their original RAF path. The new browser
+regression first failed with zero immediate requests, then passed with one,
+while retaining busy-move coalescing and release cancellation.
+
+Removing that queue alone gave 68.1 / 51.1ms continuous input latency: the
+512-row worker still cost about 35ms, and hardware fence observation added
+18–29ms on these frames. Reducing the sample to 256 rows lowered software input
+latency to 44.2ms but left hardware at 68.4ms; its roughly 29ms worker still
+missed the earlier presentation opportunity. At 128 rows, continuous worker
+cost fell to 17.5 / 18.6ms and typical hardware completion reached the earlier
+frame. This chooses a measured temporary preview budget, not a lower final
+histogram resolution. Full images and their tightened visual limits are
+unchanged by preview sample size.
+
+Final 1M × 10 measurements on the actual RTX 5090 and SwiftShader, three loads
+and three settled gesture steps per dataset/backend, milliseconds. Entries are
+medians of per-load p50s; the last column is the median of per-load p95s. With
+only three steps, that p95 is essentially each load's slowest step, not a
+well-estimated population tail.
+
+| Backend / data | Load → image | Full completed | Brush CPU | Worker count / raster | Request → fence | Input → fence | Input p95 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| RTX 5090 / continuous | 6892.3 | 273.9 | 7.1 | 6.0 / 12.8 | 32.5 | **39.3** | 68.1 |
+| RTX 5090 / integer | 1701.7 | 50.4 | 8.0 | 3.6 / 9.0 | 27.0 | **37.1** | 38.2 |
+| SwiftShader / continuous | 6792.6 | 267.8 | 7.3 | 5.6 / 13.3 | 30.6 | **38.0** | 47.0 |
+| SwiftShader / integer | 1656.5 | 28.4 | 8.1 | 3.3 / 8.9 | 21.5 | **29.4** | 40.3 |
+
+The approximately 50ms goal is met for typical moves in these samples, **not a
+hard bound**: the first hardware continuous preview took 62.9–68.6ms, while
+subsequent steps took 35.9–39.6ms. Preview sampling can miss rare selections;
+all-row refinement remains necessary. Input → request is now about 7–8ms,
+with less than 0.1ms brush queue wait. Nested medians must not be added.
+
+| Backend / data | Axis completed | Release all-row refinement | Scroll completed |
+|---|---:|---:|---:|
+| RTX 5090 / continuous | 37.2 | 647.3 | 305.4 |
+| RTX 5090 / integer | 34.9 | 145.3 | 37.7 |
+| SwiftShader / continuous | 26.5 | 648.6 | 280.8 |
+| SwiftShader / integer | 14.4 | 145.3 | 17.5 |
+
+Fine continuous full/scroll frames are **slower** than the historical 32-bin
+94.5 / 86.7ms full frames; release refinement takes about 0.65s. This is the
+explicit fidelity cost, not an across-the-board speedup. Exact mode is unchanged.
+Raw final data are `preview128-hardware-1m.json` and
+`preview128-software-1m.json`; intermediate `input-*`, `queue-*`, `idle-*` and
+`preview256-*` files retain the measurement trail in the artifact directory.
+
+### Bounded 10M continuous failure
+
+A fresh, isolated capacity probe imposed a 150s whole-attempt deadline and
+recorded browser-side stage/heap observations externally. Generation finished
+in 1.76s; the payload held about 1,061MB of JS heap. Row materialization reached
+about 3,367MB; `makeDatasets` finished at 6.41s with about 3,536MB observed.
+Inference then copied a 10M-entry distinct Set and mapped a 10M-entry numeric
+array. At 10.65s the numeric mapping had returned (about 3,443MB observed);
+the first numeric sort had **not started** when the attempt was forcibly
+terminated at 150.20s. No 10M geometry, histogram, texture upload or image had
+been reached. The process tree was gone and the blocked evaluation rejected
+by 150.36s. Raw stage evidence is `capacity-diagnostic.json` in the local
+artifact directory.
+
+This localizes the hang to loading/inference and severe allocation pressure,
+not worker counting or a WebGL texture-size failure. It does **not** establish
+an OOM exception or a universal browser capacity limit. Continuous column
+expansion stores 100M non-integer row properties; inference additionally retains
+all distinct values and creates mapped/filtered/deduplicated numeric copies.
+Eight-integer data has the same row/property count but only eight distinct
+numeric values per column and different VM number storage costs. Reworking the
+public object model or dropping distinct values would be a separate design,
+not a safe incidental renderer optimization.
+
+The benchmark now has a default **180s whole-attempt deadline**, configurable
+with `--timeout-ms`, covering the initial evaluation as well as all frame and
+gesture waits. On expiry it kills its own Playwright `BrowserServer` process,
+reports dataset/row count and last stage, flushes structured JSON, exits nonzero
+and stops remaining attempts. Merely racing a promise leaves the renderer
+running; graceful context closure was also measured taking about six seconds
+on a deliberately CPU-bound evaluation. The regression retains its <5s cleanup
+limit and uses the owned server's force-kill instead. This is an explicit,
+bounded unsupported-capacity result, **not a claim that 10M continuous data now
+loads in the application**. The prior successful 10M integer result remains
+valid, and neither result generalizes to every dataset.

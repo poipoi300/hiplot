@@ -250,17 +250,18 @@ test("continuous brushing presents density while worker jobs are slower than inp
       .find((node) => (node as SVGGElement & { __data__: string }).__data__ === dimension)
       ?.querySelector(".overlay");
     if (!target) throw new Error("No continuous brush overlay");
-    const worker = (pp.binned as NonNullable<QualityProbe["binned"]> & { worker: Worker }).worker;
-    const postMessage = worker.postMessage.bind(worker);
+    const postMessage = Worker.prototype.postMessage;
     let workerJobs = 0;
-    worker.postMessage = (
+    Worker.prototype.postMessage = function (
+      this: Worker,
       message: unknown,
       options?: Transferable[] | StructuredSerializeOptions,
-    ) => {
+    ) {
       workerJobs += 1;
+      const send = postMessage.bind(this);
       setTimeout(() => {
-        if (Array.isArray(options)) postMessage(message, options);
-        else postMessage(message, options);
+        if (Array.isArray(options)) send(message, options);
+        else send(message, options);
       }, 80);
     };
     const initialFrame = pp.binnedFrame;
@@ -288,7 +289,7 @@ test("continuous brushing presents density while worker jobs are slower than inp
       elapsed: performance.now() - started,
       interacting: pp.interacting,
     };
-    worker.postMessage = postMessage;
+    Worker.prototype.postMessage = postMessage;
     pp.endBrushGesture();
     return during;
   });
