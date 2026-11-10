@@ -525,6 +525,24 @@ describe("continuous pair image cache", () => {
     evaluator.dispose();
   });
 
+  test("reduced columns never extend missing-coordinate stubs beyond support", () => {
+    for (const missingLeft of [false, true]) {
+      const hist = denseContextHistogram();
+      populate(hist, missingLeft ? 256 : 64, missingLeft ? 64 : 256, 1000);
+      const pairs = [pair(hist, "missing-stub", 0, 85)];
+      const state = update(pairs, { selectedCount: 1000, contextCount: 3136, rows: 4136 });
+      const style = frame({ width: 85, height: 255, contextAlpha: 0 });
+      const evaluator = new ContinuousDensityEvaluator({ gl: null, software: true });
+      const gesture = evaluator.render({ ...style, draft: true }, state);
+      const idle = evaluator.render(style, state);
+      const unsupportedX = missingLeft ? 66 : 18;
+      expect(at(idle.pixels, 85, unsupportedX, 64)[3]).toBe(0);
+      expect(at(gesture.pixels, 85, unsupportedX, 64)[3]).toBe(0);
+      expect(at(gesture.pixels, 85, missingLeft ? 80 : 4, 64)[3]).toBeGreaterThan(0);
+      evaluator.dispose();
+    }
+  });
+
   test("unresolved crossing footprints refine instead of expanding a false band", () => {
     const hist = denseContextHistogram();
     populate(hist, 0, 255, 1000);

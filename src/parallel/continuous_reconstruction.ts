@@ -96,14 +96,21 @@ export function continuousReconstructionPlan(
     let maximumLower = -Infinity;
     let minimumUpper = Infinity;
     let maximumUpper = -Infinity;
+    let present = false;
+    let absent = false;
     for (let column = 0; column < lower.length; ++column) {
-      if (!Number.isFinite(lower[column])) continue;
+      if (!Number.isFinite(lower[column])) {
+        absent = true;
+        continue;
+      }
+      present = true;
       minimumLower = Math.min(minimumLower, lower[column]);
       maximumLower = Math.max(maximumLower, lower[column]);
       minimumUpper = Math.min(minimumUpper, upper[column]);
       maximumUpper = Math.max(maximumUpper, upper[column]);
     }
-    if (maximumLower - minimumLower > 1 || maximumUpper - minimumUpper > 1) return plan;
+    if ((present && absent) || maximumLower - minimumLower > 1 || maximumUpper - minimumUpper > 1)
+      return plan;
   }
   return null;
 }
@@ -224,6 +231,7 @@ function reconstructLayer(
     neighbors[3] = Math.min(image.width - 1, above + 1);
     const destinationLower = lower[image.width + x];
     const destinationUpper = upper[image.width + x];
+    if (!Number.isFinite(destinationLower)) continue;
     const cubic =
       image.width >= 4 &&
       Number.isFinite(destinationLower) &&
@@ -287,10 +295,15 @@ function reconstructLayer(
         const first = (Math.max(0, Math.min(image.height - 1, top)) * image.width + column) * 4;
         const second = (Math.max(0, Math.min(image.height - 1, bottom)) * image.width + column) * 4;
         // Replicating a clipped border pixel stretches its partial coverage into a false band.
+        const supported = Number.isFinite(lower[column]);
         const firstAlpha =
-          top >= 0 && top < image.height ? image.pixels[first + 3] * (1 - vertical) : 0;
+          supported && top >= 0 && top < image.height
+            ? image.pixels[first + 3] * (1 - vertical)
+            : 0;
         const secondAlpha =
-          bottom >= 0 && bottom < image.height ? image.pixels[second + 3] * vertical : 0;
+          supported && bottom >= 0 && bottom < image.height
+            ? image.pixels[second + 3] * vertical
+            : 0;
         const sampleAlpha = firstAlpha + secondAlpha;
         alpha += sampleAlpha * mix;
         if (neighbor === 1 || neighbor === 2) {

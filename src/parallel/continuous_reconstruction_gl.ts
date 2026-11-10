@@ -54,6 +54,7 @@ float mappedCenter(float center, vec2 source, vec2 destination) {
   return center * scale + offset;
 }
 vec4 verticalSample(sampler2D image, int column, float center, vec2 source, vec2 destination) {
+  if (!validGuide(source) || !validGuide(destination)) return vec4(0.0);
   float sourceY = mappedCenter(center, source, destination) - 0.5;
   int top = int(floor(sourceY));
   float fraction = sourceY - float(top);
