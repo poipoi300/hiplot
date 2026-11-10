@@ -1,0 +1,196 @@
+import type { ContinuousImage, ContinuousRequest } from "./continuous_types";
+import type { LineColors, LineFrame } from "./webgl";
+
+interface PendingFrame {
+  id: number;
+  frame: LineFrame;
+  colors: LineColors;
+  selection: Uint8Array;
+}
+
+export type ContinuousWorkerFactory = () => Promise<Worker>;
+
+/** Single all-row worker, one active job and one latest pending frame. */
+export class ContinuousRenderer {
+  private worker: Worker | null = null;
+  private readonly columnIds = new WeakMap<Float32Array, number>();
+  private sentColumns = new Set<number>();
+  private nextColumnId = 0;
+  private nextFrameId = 0;
+  private activeId = 0;
+  private running = false;
+  private pending: PendingFrame | null = null;
+  private disposed = false;
+  private failure: Error | null = null;
+  private colors: LineColors | null = null;
+  private selection: Uint8Array | null = null;
+
+  constructor(
+    private readonly onImage: (image: ContinuousImage) => void,
+    private readonly createWorker: ContinuousWorkerFactory = async () => {
+      const { default: InlineWorker } = await import("./continuous_entry?worker&inline");
+      return new InlineWorker();
+    },
+  ) {}
+
+  get busy(): boolean {
+    return this.running || this.pending !== null;
+  }
+
+  draw(frame: LineFrame, colors: LineColors, selection: Uint8Array): void {
+    if (this.disposed) throw new Error("Cannot draw with a disposed continuous renderer");
+    if (this.failure !== null) throw this.failure;
+    const rows = colors.bins.length;
+    if (selection.length !== rows || frame.axes.some((axis) => axis.pixels.length !== rows)) {
+      throw new Error(
+        "Continuous renderer columns, colors and selection must identify the same rows",
+      );
+    }
+    const pending: PendingFrame = {
+      id: ++this.nextFrameId,
+      frame: {
+        ...frame,
+        axes: frame.axes.map((axis) => ({ ...axis })),
+        contextColor: { ...frame.contextColor },
+      },
+      colors,
+      selection: selection.slice(),
+    };
+    if (this.worker === null) {
+      this.pending = pending;
+      if (!this.running) {
+        this.running = true;
+        void this.createWorker()
+          .then((worker) => {
+            if (this.disposed) {
+              worker.terminate();
+              return;
+            }
+            this.connect(worker);
+            this.dispatchPending();
+          })
+          .catch((error: unknown) => {
+            if (!this.disposed)
+              this.fail(error instanceof Error ? error : new Error(String(error)));
+          });
+      }
+      return;
+    }
+    if (this.running) {
+      this.pending = pending;
+      return;
+    }
+    this.dispatch(pending);
+  }
+
+  private connect(worker: Worker): void {
+    this.worker = worker;
+    worker.onmessage = ({
+      data,
+    }: MessageEvent<{ id: number; image?: ContinuousImage; error?: string }>) => {
+      if (this.disposed) return;
+      if (data.error !== undefined) {
+        this.fail(new Error(`Continuous renderer: ${data.error}`));
+        return;
+      }
+      if (data.id !== this.activeId || data.image === undefined) {
+        this.fail(new Error("Continuous worker returned an unexpected frame"));
+        return;
+      }
+      // The host paces gesture requests. Unpaced finite bursts retain latest-only rejection.
+      if (this.pending !== null) {
+        this.dispatchPending();
+        return;
+      }
+      try {
+        this.onImage(data.image);
+      } finally {
+        this.running = false;
+        if (!this.disposed) this.dispatchPending();
+      }
+    };
+    worker.onerror = (event) => this.fail(new Error(`Continuous worker failed: ${event.message}`));
+    worker.onmessageerror = () =>
+      this.fail(new Error("Continuous worker returned an unreadable image"));
+  }
+
+  private dispatchPending(): void {
+    const next = this.pending;
+    this.pending = null;
+    if (next !== null) this.dispatch(next);
+  }
+
+  private dispatch({ id, frame, colors, selection }: PendingFrame): void {
+    if (this.worker === null) throw new Error("Continuous worker has not initialized");
+    const transfer: Transferable[] = [];
+    const columns: ContinuousRequest["columns"][number][] = [];
+    const activeColumns = new Set<number>();
+    const axes = frame.axes.map((axis) => {
+      let column = this.columnIds.get(axis.pixels);
+      if (column === undefined) {
+        column = ++this.nextColumnId;
+        this.columnIds.set(axis.pixels, column);
+      }
+      const firstUse = !activeColumns.has(column);
+      activeColumns.add(column);
+      if (firstUse && !this.sentColumns.has(column)) {
+        const pixels = axis.pixels.slice();
+        columns.push({ id: column, pixels });
+        transfer.push(pixels.buffer);
+      }
+      return { column, x: axis.x };
+    });
+    this.sentColumns = activeColumns;
+    const request: ContinuousRequest = { ...frame, id, axes, columns };
+    if (
+      this.colors === null ||
+      this.colors.bins !== colors.bins ||
+      this.colors.palette !== colors.palette ||
+      this.colors.colorMapBins !== colors.colorMapBins
+    ) {
+      const bins = colors.bins.slice();
+      request.colors = { ...colors, bins, palette: colors.palette.map((rgb) => ({ ...rgb })) };
+      transfer.push(bins.buffer);
+      this.colors = colors;
+    }
+    let selectionChanged = this.selection === null || this.selection.length !== selection.length;
+    if (!selectionChanged && this.selection !== null) {
+      for (let row = 0; row < selection.length; ++row) {
+        if (this.selection[row] !== selection[row]) {
+          selectionChanged = true;
+          break;
+        }
+      }
+    }
+    if (selectionChanged) {
+      this.selection = selection.slice();
+      request.selection = selection;
+      transfer.push(selection.buffer);
+    }
+    this.activeId = id;
+    this.running = true;
+    this.worker.postMessage(request, transfer);
+  }
+
+  private fail(error: Error): void {
+    this.failure = error;
+    this.running = false;
+    this.pending = null;
+    this.worker?.terminate();
+    // Async worker failures must be visible, not an indefinitely busy plot.
+    setTimeout(() => {
+      throw error;
+    }, 0);
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.running = false;
+    this.pending = null;
+    this.selection = null;
+    this.colors = null;
+    this.sentColumns.clear();
+    this.worker?.terminate();
+    this.worker = null;
+  }
+}

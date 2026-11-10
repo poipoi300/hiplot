@@ -1,0 +1,877 @@
+import type { RGB } from "../lib/colors";
+import {
+  COLOR_CHANNEL_SCALE,
+  type ContinuousHistogram,
+  type ContinuousImage,
+  type ContinuousPair,
+  type ContinuousRequest,
+  type ContinuousUpdate,
+  EMPTY_COLOR_KEY,
+} from "./continuous_types";
+import { densityReference, type LineColors } from "./webgl";
+
+/** Sparse grids query every intersecting occupied cell; dense grids reconstruct the field. */
+export const SPARSE_DENSITY_CELLS = 512;
+export const DENSITY_TILE_ROWS = 16;
+
+export interface SparseDensityIndex {
+  indices: Uint32Array;
+  ranges: Uint32Array;
+  tiles: number;
+}
+
+/** CSR pixel-tile index: reject only geometrically disjoint strips, never occupied cells. */
+export function continuousSparseIndex(
+  histogram: ContinuousHistogram,
+  style: DensityStyle,
+  gap: number,
+  columns: number,
+  height: number,
+): SparseDensityIndex {
+  const tiles = Math.ceil(height / DENSITY_TILE_ROWS);
+  const cells = histogram.occupied;
+  const starts = new Int32Array(columns * cells.length).fill(-1);
+  const ends = new Int32Array(starts.length);
+  const counts = new Uint32Array(columns * tiles);
+  const spacing = style.height / (histogram.bins - 1);
+  const stride = histogram.bins + 1;
+  for (let x = 0; x < columns; ++x) {
+    const position = ((x + 0.5) * gap) / columns;
+    const t = position / gap;
+    const weight = style.curved ? t * t * (3 - 2 * t) : t;
+    const derivative = style.curved ? 6 * t * (1 - t) : 1;
+    for (let index = 0; index < cells.length; ++index) {
+      const left = Math.floor(cells[index] / stride);
+      const right = cells[index] % stride;
+      if (left === histogram.bins && right === histogram.bins) continue;
+      if (
+        (left === histogram.bins && position < gap - 15) ||
+        (right === histogram.bins && position >= 15)
+      )
+        continue;
+      const missing = left === histogram.bins || right === histogram.bins;
+      const center = missing
+        ? (left === histogram.bins ? right : left) * spacing
+        : ((1 - weight) * left + weight * right) * spacing;
+      const slope = missing ? 0 : (derivative * (right - left) * spacing) / gap;
+      const radius =
+        Math.max(style.lineWidth / 2, 0.5) * Math.hypot(1, slope) + (1 + Math.abs(slope)) / 2;
+      // Whole-pixel outward rounding also includes float-roundoff at tile boundaries.
+      const first = Math.max(0, Math.floor(center - radius - 0.5));
+      const last = Math.min(height - 1, Math.ceil(center + radius - 0.5));
+      if (first > last) continue;
+      const start = Math.floor(first / DENSITY_TILE_ROWS);
+      const end = Math.floor(last / DENSITY_TILE_ROWS);
+      starts[x * cells.length + index] = start;
+      ends[x * cells.length + index] = end;
+      for (let tile = start; tile <= end; ++tile) counts[tile * columns + x]++;
+    }
+  }
+  const ranges = new Uint32Array(counts.length * 2);
+  let total = 0;
+  for (let bucket = 0; bucket < counts.length; ++bucket) {
+    ranges[bucket * 2] = total;
+    total += counts[bucket];
+    ranges[bucket * 2 + 1] = total;
+  }
+  const indices = new Uint32Array(total);
+  counts.fill(0);
+  for (let x = 0; x < columns; ++x) {
+    for (let index = 0; index < cells.length; ++index) {
+      const start = starts[x * cells.length + index];
+      if (start < 0) continue;
+      const end = ends[x * cells.length + index];
+      for (let tile = start; tile <= end; ++tile) {
+        const bucket = tile * columns + x;
+        indices[ranges[bucket * 2] + counts[bucket]++] = cells[index];
+      }
+    }
+  }
+  return { indices, ranges, tiles };
+}
+
+export interface ContinuousPixel {
+  selected: number;
+  context: number;
+  selectedPeak: number;
+  contextPeak: number;
+  color0: number;
+  color1: number;
+  color2: number;
+  winner: number;
+  winnerCoverage: number;
+}
+
+type DensityStyle = Pick<ContinuousRequest, "height" | "lineWidth" | "curved" | "colorMode">;
+
+function squareBelow(position: number, narrow: number, wide: number): number {
+  const outer = (narrow + wide) / 2;
+  const inner = (wide - narrow) / 2;
+  if (position <= -outer) return 0;
+  if (position >= outer) return 1;
+  if (position < -inner) return (position + outer) ** 2 / (2 * narrow * wide);
+  if (position <= inner) return 0.5 + position / wide;
+  return 1 - (outer - position) ** 2 / (2 * narrow * wide);
+}
+
+/** Same normalized, exact square/strip intersection used by the exact line renderer. */
+export function continuousStripCoverage(
+  distanceY: number,
+  slope: number,
+  lineWidth: number,
+): number {
+  const length = Math.hypot(1, slope);
+  const narrow = Math.min(1, Math.abs(slope)) / length;
+  const wide = Math.max(1, Math.abs(slope)) / length;
+  const halfWidth = Math.max(lineWidth / 2, 0.5);
+  const across = distanceY / length;
+  const center = squareBelow(halfWidth, narrow, wide) - squareBelow(-halfWidth, narrow, wide);
+  return Math.max(
+    0,
+    ((squareBelow(across + halfWidth, narrow, wide) -
+      squareBelow(across - halfWidth, narrow, wide)) /
+      center) *
+      Math.min(lineWidth, 1),
+  );
+}
+
+function emptyPixel(): ContinuousPixel {
+  return {
+    selected: 0,
+    context: 0,
+    selectedPeak: 0,
+    contextPeak: 0,
+    color0: 0,
+    color1: 0,
+    color2: 0,
+    winner: EMPTY_COLOR_KEY,
+    winnerCoverage: 0,
+  };
+}
+
+function addCell(
+  output: ContinuousPixel,
+  histogram: ContinuousHistogram,
+  cell: number,
+  weight: number,
+  coverage: number,
+  colorMode: ContinuousRequest["colorMode"],
+): void {
+  if (weight <= 0) return;
+  const selected = histogram.selected[cell];
+  const context = histogram.context[cell];
+  output.selected += selected * weight;
+  output.context += context * weight;
+  output.color0 += histogram.color0[cell] * weight;
+  output.color1 += histogram.color1[cell] * weight;
+  output.color2 += histogram.color2[cell] * weight;
+  if (selected > 0) output.selectedPeak = Math.max(output.selectedPeak, coverage);
+  if (context > 0) output.contextPeak = Math.max(output.contextPeak, coverage);
+  if (selected === 0 || coverage <= 0 || colorMode === "mean") return;
+  const key = colorMode === "lowest" ? histogram.minimum[cell] : histogram.maximum[cell];
+  if (key === EMPTY_COLOR_KEY) return;
+  if (
+    output.winner === EMPTY_COLOR_KEY ||
+    (colorMode === "lowest" ? key < output.winner : key > output.winner)
+  ) {
+    output.winner = key;
+    output.winnerCoverage = coverage;
+  } else if (key === output.winner) {
+    output.winnerCoverage = Math.max(output.winnerCoverage, coverage);
+  }
+}
+
+/**
+ * CPU reference for the fragment evaluator. x and y are pair-local CSS pixel centers.
+ * Missing endpoints are finite-endpoint, 15 CSS pixel horizontal stubs.
+ */
+export function evaluateContinuousPixel(
+  histogram: ContinuousHistogram,
+  style: DensityStyle,
+  gap: number,
+  x: number,
+  y: number,
+  sparse = histogram.occupied.length <= SPARSE_DENSITY_CELLS,
+): ContinuousPixel {
+  const output = emptyPixel();
+  if (gap <= 0 || x < 0 || x >= gap) return output;
+  const { bins } = histogram;
+  const stride = bins + 1;
+  const spacing = style.height / (bins - 1);
+  const t = x / gap;
+  const w = style.curved ? t * t * (3 - 2 * t) : t;
+  const derivative = style.curved ? 6 * t * (1 - t) : 1;
+  const exact = (left: number, right: number, cell: number): void => {
+    if (left === bins && right === bins) return;
+    if ((left === bins && x < gap - 15) || (right === bins && x >= 15)) return;
+    const missing = left === bins || right === bins;
+    const center = missing
+      ? (left === bins ? right : left) * spacing
+      : ((1 - w) * left + w * right) * spacing;
+    const slope = missing ? 0 : (derivative * (right - left) * spacing) / gap;
+    const coverage = continuousStripCoverage(y - center, slope, style.lineWidth);
+    addCell(output, histogram, cell, coverage, coverage, style.colorMode);
+  };
+  if (sparse) {
+    for (const cell of histogram.occupied) exact(Math.floor(cell / stride), cell % stride, cell);
+    return output;
+  }
+  const reverse = w < 0.5;
+  const weight = reverse ? 1 - w : w;
+  for (let a = 0; a < bins; ++a) {
+    const b = (y / spacing - (1 - weight) * a) / weight;
+    const below = Math.floor(b);
+    const fraction = b - below;
+    const slope = (derivative * (b - a) * spacing) / gap;
+    // Integral of the normalized strip over endpoint space, including its Jacobian.
+    const centerCoverage = stripCenterCoverage(slope, style.lineWidth);
+    const factor = (style.lineWidth * Math.hypot(1, slope)) / (weight * spacing * centerCoverage);
+    for (let neighbor = 0; neighbor < 2; ++neighbor) {
+      const endpoint = below + neighbor;
+      if (endpoint < 0 || endpoint >= bins) continue;
+      const interpolation = neighbor === 0 ? 1 - fraction : fraction;
+      const left = reverse ? endpoint : a;
+      const right = reverse ? a : endpoint;
+      const center = ((1 - w) * left + w * right) * spacing;
+      const localSlope = (derivative * (right - left) * spacing) / gap;
+      const coverage = continuousStripCoverage(y - center, localSlope, style.lineWidth);
+      addCell(
+        output,
+        histogram,
+        left * stride + right,
+        interpolation * factor,
+        coverage,
+        style.colorMode,
+      );
+    }
+    exact(a, bins, a * stride + bins);
+    exact(bins, a, bins * stride + a);
+  }
+  return output;
+}
+
+function stripCenterCoverage(slope: number, lineWidth: number): number {
+  const length = Math.hypot(1, slope);
+  const narrow = Math.min(1, Math.abs(slope)) / length;
+  const wide = Math.max(1, Math.abs(slope)) / length;
+  const halfWidth = Math.max(lineWidth / 2, 0.5);
+  return squareBelow(halfWidth, narrow, wide) - squareBelow(-halfWidth, narrow, wide);
+}
+
+function toneMapped(sum: number, peak: number, reference: number): number {
+  if (sum <= 0 || peak <= 0) return 0;
+  return peak * Math.min(1, Math.log1p(sum / peak) / Math.log1p(reference));
+}
+
+function paletteAt(colors: LineColors, rank: number): RGB {
+  const position = Math.max(0, Math.min(colors.colorMapBins - 1, rank));
+  const below = Math.floor(position);
+  const fraction = position - below;
+  const left = colors.palette[below];
+  const right = colors.palette[Math.min(below + 1, colors.colorMapBins - 1)];
+  return {
+    r: left.r + (right.r - left.r) * fraction,
+    g: left.g + (right.g - left.g) * fraction,
+    b: left.b + (right.b - left.b) * fraction,
+  };
+}
+
+/** Returns unpremultiplied RGBA in [0, 1], preserving selected-over-context. */
+export function compositeContinuousPixel(
+  pixel: ContinuousPixel,
+  frame: Pick<ContinuousRequest, "height" | "contextColor" | "contextAlpha" | "colorMode">,
+  colors: LineColors,
+  selectedCount: number,
+  contextCount: number,
+): readonly [number, number, number, number] {
+  const selectedAlpha = toneMapped(
+    pixel.selected,
+    pixel.selectedPeak,
+    densityReference(selectedCount, frame.height),
+  );
+  const contextAlpha =
+    frame.contextAlpha *
+    toneMapped(pixel.context, pixel.contextPeak, densityReference(contextCount, frame.height));
+  const contextShare = contextAlpha * (1 - selectedAlpha);
+  const alpha = selectedAlpha + contextShare;
+  if (alpha <= 0) return [0, 0, 0, 0];
+  let rgb: RGB = { r: 0, g: 0, b: 0 };
+  if (pixel.selected > 0) {
+    if (colors.colorMapBins > 0) {
+      const valued = Math.max(0, pixel.selected - pixel.color1);
+      const mean = valued > 0 ? paletteAt(colors, pixel.color0 / valued) : rgb;
+      const missing = colors.palette[colors.colorMapBins];
+      const missingShare = pixel.color1 / pixel.selected;
+      rgb = {
+        r: mean.r * (1 - missingShare) + missing.r * missingShare,
+        g: mean.g * (1 - missingShare) + missing.g * missingShare,
+        b: mean.b * (1 - missingShare) + missing.b * missingShare,
+      };
+      if (
+        frame.colorMode !== "mean" &&
+        pixel.winner !== EMPTY_COLOR_KEY &&
+        pixel.selectedPeak > 0
+      ) {
+        const winner = paletteAt(colors, pixel.winner);
+        const share = Math.min(1, pixel.winnerCoverage / pixel.selectedPeak);
+        rgb = {
+          r: rgb.r + (winner.r - rgb.r) * share,
+          g: rgb.g + (winner.g - rgb.g) * share,
+          b: rgb.b + (winner.b - rgb.b) * share,
+        };
+      }
+    } else {
+      const divisor = pixel.selected * COLOR_CHANNEL_SCALE;
+      rgb = {
+        r: (pixel.color0 / divisor) * 255,
+        g: (pixel.color1 / divisor) * 255,
+        b: (pixel.color2 / divisor) * 255,
+      };
+    }
+  }
+  return [
+    (rgb.r * selectedAlpha + frame.contextColor.r * contextShare) / (255 * alpha),
+    (rgb.g * selectedAlpha + frame.contextColor.g * contextShare) / (255 * alpha),
+    (rgb.b * selectedAlpha + frame.contextColor.b * contextShare) / (255 * alpha),
+    alpha,
+  ];
+}
+
+export interface ContinuousPairImage {
+  pixels: Uint8ClampedArray;
+  width: number;
+  height: number;
+}
+
+// Fixed subpixel geometry prevents translation cancellation from invalidating pair-local caches.
+function pairGap(pair: ContinuousPair): number {
+  return Math.round((pair.right.x - pair.left.x) * 65536) / 65536;
+}
+
+/** Evaluate all pixels without a GL context; also serves as the browser GPU reference. */
+export function evaluateContinuousPairCPU(
+  pair: ContinuousPair,
+  frame: ContinuousRequest,
+  update: ContinuousUpdate,
+  columns = Math.max(1, Math.ceil(pairGap(pair))),
+): ContinuousPairImage {
+  const height = Math.max(1, Math.ceil(frame.height));
+  const pixels = new Uint8ClampedArray(columns * height * 4);
+  const gap = pairGap(pair);
+  for (let y = 0; y < height; ++y) {
+    for (let x = 0; x < columns; ++x) {
+      const pixel = evaluateContinuousPixel(
+        pair.histogram,
+        frame,
+        gap,
+        ((x + 0.5) * gap) / columns,
+        y + 0.5,
+      );
+      const rgba = compositeContinuousPixel(
+        pixel,
+        frame,
+        update.colors,
+        update.selectedCount,
+        update.contextCount,
+      );
+      const offset = (y * columns + x) * 4;
+      for (let channel = 0; channel < 4; ++channel) pixels[offset + channel] = rgba[channel] * 255;
+    }
+  }
+  return { pixels, width: columns, height };
+}
+
+const VERTEX = `#version 300 es
+void main() {
+  vec2 corner = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  gl_Position = vec4(corner * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+const FRAGMENT = `#version 300 es
+precision highp float;
+precision highp int;
+uniform sampler2D u_counts;
+uniform sampler2D u_extra;
+uniform highp usampler2D u_occupied;
+uniform highp usampler2D u_ranges;
+uniform sampler2D u_palette;
+uniform int u_bins;
+uniform int u_occupiedWidth;
+uniform int u_colorMapBins;
+uniform int u_mode;
+uniform bool u_sparse;
+uniform bool u_curved;
+uniform float u_height;
+uniform float u_gap;
+uniform float u_columns;
+uniform float u_lineWidth;
+uniform float u_selectedReference;
+uniform float u_contextReference;
+uniform vec3 u_contextColor;
+uniform float u_contextAlpha;
+out vec4 color;
+vec4 sums = vec4(0.0);
+float color2 = 0.0;
+vec2 peaks = vec2(0.0);
+float winner = -1.0;
+float winnerCoverage = 0.0;
+float squareBelow(float x, float narrow, float wide) {
+  if (narrow == 0.0) return clamp(0.5 + x / wide, 0.0, 1.0);
+  float outer = 0.5 * (narrow + wide);
+  float inner = 0.5 * (wide - narrow);
+  float clipped = clamp(x, -outer, outer);
+  float corner = max(abs(clipped) - inner, 0.0);
+  // The trapezoid CDF is its central ramp minus the outer triangular excess.
+  return 0.5 + clipped / wide - sign(clipped) * corner * corner / (2.0 * narrow * wide);
+}
+float centerCoverage(float slope) {
+  // halfWidth >= 0.5 lies beyond the trapezoid's inner corner. Its two omitted
+  // corner triangles have total area excess^2 / abs(slope), in unnormalized units.
+  float magnitude = abs(slope);
+  float excess = max(0.0, 0.5 * (1.0 + magnitude) -
+    max(u_lineWidth * 0.5, 0.5) * sqrt(1.0 + slope * slope));
+  return excess <= 0.0 ? 1.0 : 1.0 - excess * excess / magnitude;
+}
+float stripCoverage(float distanceY, float slope) {
+  float length = sqrt(1.0 + slope * slope);
+  float narrow = min(1.0, abs(slope)) / length;
+  float wide = max(1.0, abs(slope)) / length;
+  float halfWidth = max(u_lineWidth * 0.5, 0.5);
+  // Reject disjoint square/strip footprints before evaluating their intersection.
+  if (abs(distanceY) >= halfWidth * length + 0.5 * (1.0 + abs(slope))) return 0.0;
+  float across = distanceY / length;
+  return max(0.0, (squareBelow(across + halfWidth, narrow, wide) -
+    squareBelow(across - halfWidth, narrow, wide)) / centerCoverage(slope) * min(u_lineWidth, 1.0));
+}
+void addCell(ivec2 endpoint, float weight, float covered) {
+  if (weight <= 0.0) return;
+  vec4 counts = texelFetch(u_counts, endpoint.yx, 0);
+  vec4 extra = texelFetch(u_extra, endpoint.yx, 0);
+  sums += counts * weight;
+  color2 += extra.r * weight;
+  if (counts.r > 0.0) peaks.r = max(peaks.r, covered);
+  if (counts.g > 0.0) peaks.g = max(peaks.g, covered);
+  if (u_mode == 0 || counts.r <= 0.0 || covered <= 0.0) return;
+  float key = u_mode == 1 ? extra.g : extra.b;
+  if (key < 0.0) return;
+  if (winner < 0.0 || (u_mode == 1 ? key < winner : key > winner)) {
+    winner = key;
+    winnerCoverage = covered;
+  } else if (key == winner) winnerCoverage = max(winnerCoverage, covered);
+}
+void exactCell(ivec2 endpoint, float x, float y, float w, float derivative, float spacing) {
+  if (endpoint.x == u_bins && endpoint.y == u_bins) return;
+  if ((endpoint.x == u_bins && x < u_gap - 15.0) || (endpoint.y == u_bins && x >= 15.0)) return;
+  bool missing = endpoint.x == u_bins || endpoint.y == u_bins;
+  float center = missing ? float(endpoint.x == u_bins ? endpoint.y : endpoint.x) * spacing :
+    mix(float(endpoint.x), float(endpoint.y), w) * spacing;
+  float slope = missing ? 0.0 : derivative * float(endpoint.y - endpoint.x) * spacing / u_gap;
+  float covered = stripCoverage(y - center, slope);
+  addCell(endpoint, covered, covered);
+}
+float toneMapped(float sum, float peak, float reference) {
+  if (sum <= 0.0 || peak <= 0.0) return 0.0;
+  return peak * clamp(log(1.0 + sum / peak) / log(1.0 + reference), 0.0, 1.0);
+}
+vec3 paletteAt(int bin) { return texelFetch(u_palette, ivec2(bin, 0), 0).rgb; }
+vec3 colorMapAt(float rank) {
+  float position = clamp(rank, 0.0, float(u_colorMapBins - 1));
+  int below = int(floor(position));
+  return mix(paletteAt(below), paletteAt(min(below + 1, u_colorMapBins - 1)), fract(position));
+}
+void main() {
+  float x = gl_FragCoord.x * u_gap / u_columns;
+  // The FBO's low row deliberately stores the image's top row, as does the CPU reference.
+  float y = gl_FragCoord.y;
+  float t = x / u_gap;
+  float w = u_curved ? t * t * (3.0 - 2.0 * t) : t;
+  float derivative = u_curved ? 6.0 * t * (1.0 - t) : 1.0;
+  float spacing = u_height / float(u_bins - 1);
+  if (u_sparse) {
+    uvec2 range = texelFetch(u_ranges,
+      ivec2(int(gl_FragCoord.x), int(gl_FragCoord.y) / ${DENSITY_TILE_ROWS}), 0).rg;
+    for (int i = int(range.r); i < int(range.g); ++i) {
+      uint cell = texelFetch(u_occupied, ivec2(i % u_occupiedWidth, i / u_occupiedWidth), 0).r;
+      exactCell(ivec2(int(cell) / (u_bins + 1), int(cell) % (u_bins + 1)), x, y, w, derivative, spacing);
+    }
+  } else {
+    bool reverse = w < 0.5;
+    float weight = reverse ? 1.0 - w : w;
+    for (int a = 0; a < u_bins; ++a) {
+      float b = (y / spacing - (1.0 - weight) * float(a)) / weight;
+      int below = int(floor(b));
+      float fraction = fract(b);
+      float slope = derivative * (b - float(a)) * spacing / u_gap;
+      float factor = u_lineWidth * sqrt(1.0 + slope * slope) / (weight * spacing * centerCoverage(slope));
+      for (int neighbor = 0; neighbor < 2; ++neighbor) {
+        int endpoint = below + neighbor;
+        if (endpoint < 0 || endpoint >= u_bins) continue;
+        ivec2 endpoints = reverse ? ivec2(endpoint, a) : ivec2(a, endpoint);
+        float center = mix(float(endpoints.x), float(endpoints.y), w) * spacing;
+        float localSlope = derivative * float(endpoints.y - endpoints.x) * spacing / u_gap;
+        float covered = stripCoverage(y - center, localSlope);
+        addCell(endpoints, (neighbor == 0 ? 1.0 - fraction : fraction) * factor, covered);
+      }
+    }
+    // Horizontal missing-value stubs intersect only the bins inside this pixel's footprint.
+    float radius = max(u_lineWidth * 0.5, 0.5) + 0.5;
+    int firstStub = max(0, int(ceil((y - radius) / spacing)));
+    int lastStub = min(u_bins - 1, int(floor((y + radius) / spacing)));
+    for (int a = firstStub; a <= lastStub; ++a) {
+      exactCell(ivec2(a, u_bins), x, y, w, derivative, spacing);
+      exactCell(ivec2(u_bins, a), x, y, w, derivative, spacing);
+    }
+  }
+  float selectedAlpha = toneMapped(sums.r, peaks.r, u_selectedReference);
+  float contextAlpha = u_contextAlpha * toneMapped(sums.g, peaks.g, u_contextReference);
+  float contextShare = contextAlpha * (1.0 - selectedAlpha);
+  float alpha = selectedAlpha + contextShare;
+  if (alpha <= 0.0) { color = vec4(0.0); return; }
+  vec3 rgb = vec3(0.0);
+  if (sums.r > 0.0) {
+    if (u_colorMapBins > 0) {
+      float valued = max(0.0, sums.r - sums.a);
+      rgb = valued > 0.0 ? colorMapAt(sums.b / valued) : vec3(0.0);
+      rgb = mix(rgb, paletteAt(u_colorMapBins), sums.a / sums.r);
+      if (u_mode != 0 && winner >= 0.0 && peaks.r > 0.0)
+        rgb = mix(rgb, colorMapAt(winner), min(1.0, winnerCoverage / peaks.r));
+    } else rgb = vec3(sums.ba, color2) / (sums.r * ${COLOR_CHANNEL_SCALE}.0);
+  }
+  color = vec4((rgb * selectedAlpha + u_contextColor * contextShare) / alpha, alpha);
+}`;
+
+/** Retained WebGL2 evaluator; only pair images, never source rows, leave this context. */
+export class ContinuousWebGLEvaluator {
+  private readonly program: WebGLProgram;
+  private readonly textures: WebGLTexture[];
+  private readonly framebuffer: WebGLFramebuffer;
+  private readonly image: WebGLTexture;
+  private readonly uniforms = new Map<string, WebGLUniformLocation>();
+  readonly software: boolean;
+
+  constructor(private readonly gl: WebGL2RenderingContext) {
+    const compile = (type: number, source: string): WebGLShader => {
+      const shader = gl.createShader(type);
+      if (shader === null) throw new Error("Cannot allocate continuous density shader");
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        const message = gl.getShaderInfoLog(shader);
+        gl.deleteShader(shader);
+        throw new Error(`Continuous density shader: ${message}`);
+      }
+      return shader;
+    };
+    const vertex = compile(gl.VERTEX_SHADER, VERTEX);
+    const fragment = compile(gl.FRAGMENT_SHADER, FRAGMENT);
+    const program = gl.createProgram();
+    if (program === null) throw new Error("Cannot allocate continuous density program");
+    gl.attachShader(program, vertex);
+    gl.attachShader(program, fragment);
+    gl.linkProgram(program);
+    gl.deleteShader(vertex);
+    gl.deleteShader(fragment);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS))
+      throw new Error(`Continuous density link: ${gl.getProgramInfoLog(program)}`);
+    this.program = program;
+    const texture = (): WebGLTexture => {
+      const result = gl.createTexture();
+      if (result === null) throw new Error("Cannot allocate continuous density texture");
+      return result;
+    };
+    this.textures = Array.from({ length: 5 }, texture);
+    this.image = texture();
+    const framebuffer = gl.createFramebuffer();
+    if (framebuffer === null) throw new Error("Cannot allocate continuous density framebuffer");
+    this.framebuffer = framebuffer;
+    const diagnostic = gl.getExtension("WEBGL_debug_renderer_info");
+    const renderer =
+      diagnostic === null ? "unknown" : String(gl.getParameter(diagnostic.UNMASKED_RENDERER_WEBGL));
+    this.software = /unknown|swiftshader|llvmpipe|softpipe|software|basic render/i.test(renderer);
+  }
+
+  private uniform(name: string): WebGLUniformLocation {
+    let location = this.uniforms.get(name);
+    if (location === undefined) {
+      const found = this.gl.getUniformLocation(this.program, `u_${name}`);
+      if (found === null) throw new Error(`Missing continuous density uniform ${name}`);
+      location = found;
+      this.uniforms.set(name, location);
+    }
+    return location;
+  }
+
+  evaluate(
+    pair: ContinuousPair,
+    frame: ContinuousRequest,
+    update: ContinuousUpdate,
+    columns: number,
+  ): ContinuousPairImage {
+    const { gl } = this;
+    if (gl.isContextLost()) throw new Error("Continuous density WebGL context lost");
+    const height = Math.max(1, Math.ceil(frame.height));
+    const histogram = pair.histogram;
+    const stride = histogram.bins + 1;
+    const maximumTexture = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+    // Categorical RGB is already reduced into cell sums; no categorical lookup texture is needed.
+    const paletteLength = update.colors.colorMapBins > 0 ? update.colors.palette.length : 1;
+    if (Math.max(stride, columns, height, paletteLength) > maximumTexture)
+      throw new Error("Continuous density image exceeds WebGL texture capacity");
+    const counts = new Float32Array(stride * stride * 4);
+    const extra = new Float32Array(counts.length);
+    for (const cell of histogram.occupied) {
+      const offset = cell * 4;
+      counts[offset] = histogram.selected[cell];
+      counts[offset + 1] = histogram.context[cell];
+      counts[offset + 2] = histogram.color0[cell];
+      counts[offset + 3] = histogram.color1[cell];
+      extra[offset] = histogram.color2[cell];
+      extra[offset + 1] =
+        histogram.minimum[cell] === EMPTY_COLOR_KEY ? -1 : histogram.minimum[cell];
+      extra[offset + 2] =
+        histogram.maximum[cell] === EMPTY_COLOR_KEY ? -1 : histogram.maximum[cell];
+    }
+    const sparse = histogram.occupied.length <= SPARSE_DENSITY_CELLS;
+    const spatial = sparse
+      ? continuousSparseIndex(histogram, frame, pairGap(pair), columns, height)
+      : { indices: new Uint32Array(), ranges: new Uint32Array(2), tiles: 1 };
+    const occupiedWidth = Math.max(1, Math.min(maximumTexture, spatial.indices.length));
+    const occupiedHeight = Math.max(1, Math.ceil(spatial.indices.length / occupiedWidth));
+    if (occupiedHeight > maximumTexture)
+      throw new Error("Continuous density spatial index exceeds WebGL texture capacity");
+    const occupied = new Uint32Array(occupiedWidth * occupiedHeight);
+    occupied.set(spatial.indices);
+    const palette = new Float32Array(paletteLength * 4);
+    if (update.colors.colorMapBins > 0) {
+      update.colors.palette.forEach((rgb, index) => {
+        palette[index * 4] = rgb.r / 255;
+        palette[index * 4 + 1] = rgb.g / 255;
+        palette[index * 4 + 2] = rgb.b / 255;
+        palette[index * 4 + 3] = 1;
+      });
+    }
+    // biome-ignore lint/correctness/useHookAtTopLevel: WebGL2RenderingContext.useProgram, not a React hook.
+    gl.useProgram(this.program);
+    gl.disable(gl.BLEND);
+    gl.disable(gl.DITHER);
+    const upload = (
+      unit: number,
+      name: string,
+      width: number,
+      height: number,
+      data: Float32Array | Uint32Array,
+      components: 1 | 2 = 1,
+    ): void => {
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, this.textures[unit]);
+      const integer = data instanceof Uint32Array;
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        integer ? (components === 2 ? gl.RG32UI : gl.R32UI) : gl.RGBA32F,
+        width,
+        height,
+        0,
+        integer ? (components === 2 ? gl.RG_INTEGER : gl.RED_INTEGER) : gl.RGBA,
+        integer ? gl.UNSIGNED_INT : gl.FLOAT,
+        data,
+      );
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.uniform1i(this.uniform(name), unit);
+    };
+    upload(0, "counts", stride, stride, counts);
+    upload(1, "extra", stride, stride, extra);
+    upload(2, "occupied", occupiedWidth, occupiedHeight, occupied);
+    upload(3, "palette", paletteLength, 1, palette);
+    upload(4, "ranges", sparse ? columns : 1, spatial.tiles, spatial.ranges, 2);
+    for (const [name, value] of Object.entries({
+      bins: histogram.bins,
+      occupiedWidth,
+      colorMapBins: update.colors.colorMapBins,
+      mode: { mean: 0, lowest: 1, highest: 2 }[frame.colorMode],
+      sparse: Number(sparse),
+      curved: Number(frame.curved),
+    }))
+      gl.uniform1i(this.uniform(name), value);
+    for (const [name, value] of Object.entries({
+      height: frame.height,
+      gap: pairGap(pair),
+      columns,
+      lineWidth: frame.lineWidth,
+      selectedReference: densityReference(update.selectedCount, frame.height),
+      contextReference: densityReference(update.contextCount, frame.height),
+      contextAlpha: frame.contextAlpha,
+    }))
+      gl.uniform1f(this.uniform(name), value);
+    gl.uniform3f(
+      this.uniform("contextColor"),
+      frame.contextColor.r / 255,
+      frame.contextColor.g / 255,
+      frame.contextColor.b / 255,
+    );
+    // The output texture uses a separate unit so none of the input samplers alias it.
+    gl.activeTexture(gl.TEXTURE0 + 5);
+    gl.bindTexture(gl.TEXTURE_2D, this.image);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, columns, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.image, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE)
+      throw new Error("Incomplete continuous density framebuffer");
+    gl.viewport(0, 0, columns, height);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const pixels = new Uint8ClampedArray(columns * height * 4);
+    gl.readPixels(0, 0, columns, height, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(pixels.buffer));
+    const error = gl.getError();
+    if (error !== gl.NO_ERROR) throw new Error(`Continuous density WebGL error ${error}`);
+    return { pixels, width: columns, height };
+  }
+
+  dispose(): void {
+    for (const texture of this.textures) this.gl.deleteTexture(texture);
+    this.gl.deleteTexture(this.image);
+    this.gl.deleteFramebuffer(this.framebuffer);
+    this.gl.deleteProgram(this.program);
+  }
+}
+
+interface CachedPairImage {
+  histogram: ContinuousHistogram;
+  signature: string;
+  image: ContinuousPairImage;
+  colors: LineColors;
+}
+
+export interface ContinuousDensityOptions {
+  /** null explicitly selects the CPU reference. Omitted selects worker OffscreenCanvas GL. */
+  gl?: WebGL2RenderingContext | null;
+  software?: boolean;
+}
+
+/** Pair-local cache keys exclude screen position: a scroll only composites retained images. */
+export class ContinuousDensityEvaluator {
+  private readonly gpu: ContinuousWebGLEvaluator | null;
+  private readonly software: boolean;
+  private readonly cache = new Map<string, CachedPairImage>();
+
+  constructor(options: ContinuousDensityOptions = {}) {
+    const gl =
+      options.gl === undefined
+        ? typeof OffscreenCanvas === "undefined"
+          ? null
+          : new OffscreenCanvas(1, 1).getContext("webgl2", { antialias: false })
+        : options.gl;
+    this.gpu = gl === null ? null : new ContinuousWebGLEvaluator(gl);
+    this.software = options.software ?? this.gpu?.software ?? true;
+  }
+
+  render(frame: ContinuousRequest, update: ContinuousUpdate): ContinuousImage {
+    const started = performance.now();
+    const width = Math.max(1, Math.ceil(frame.width));
+    const height = Math.max(1, Math.ceil(frame.height));
+    const pixels = new Uint8ClampedArray(width * height * 4);
+    const active = new Set<string>();
+    let evaluatedPairs = 0;
+    let evaluatedColumns = 0;
+    // Evaluate even offscreen pairs so later scroll frames cannot trigger histogram evaluation.
+    for (const pair of update.pairs) {
+      active.add(pair.key);
+      const gap = pairGap(pair);
+      if (gap <= 0) continue;
+      const dense = pair.histogram.occupied.length > SPARSE_DENSITY_CELLS;
+      const fraction = this.software && frame.draft && dense ? 1 / 16 : 1;
+      const columns = Math.max(1, Math.ceil(gap * fraction));
+      const signature = JSON.stringify([
+        pair.histogram.revision,
+        pair.histogram.bins,
+        gap,
+        frame.height,
+        columns,
+        frame.lineWidth,
+        frame.curved,
+        frame.colorMode,
+        frame.contextColor,
+        frame.contextAlpha,
+        densityReference(update.selectedCount, frame.height),
+        densityReference(update.contextCount, frame.height),
+      ]);
+      let cached = this.cache.get(pair.key);
+      if (
+        cached === undefined ||
+        cached.histogram !== pair.histogram ||
+        cached.signature !== signature ||
+        cached.colors.palette !== update.colors.palette ||
+        cached.colors.colorMapBins !== update.colors.colorMapBins
+      ) {
+        const image =
+          this.gpu === null
+            ? evaluateContinuousPairCPU(pair, frame, update, columns)
+            : this.gpu.evaluate(pair, frame, update, columns);
+        cached = { histogram: pair.histogram, signature, image, colors: update.colors };
+        this.cache.set(pair.key, cached);
+        evaluatedPairs++;
+        evaluatedColumns += columns;
+      }
+      compositePairImage(pixels, width, height, cached.image, pair.left.x, gap);
+    }
+    for (const key of this.cache.keys()) if (!active.has(key)) this.cache.delete(key);
+    const rasterMs = performance.now() - started;
+    return {
+      pixels,
+      width,
+      height,
+      milliseconds: update.countMs + rasterMs,
+      countMs: update.countMs,
+      rasterMs,
+      rows: update.rows,
+      axisBins: update.axisBins,
+      evaluatedColumns,
+      evaluatedPairs,
+    };
+  }
+
+  dispose(): void {
+    this.cache.clear();
+    this.gpu?.dispose();
+  }
+}
+
+/** Interpolation stays inside each pair and is performed in premultiplied color space. */
+function compositePairImage(
+  destination: Uint8ClampedArray,
+  width: number,
+  height: number,
+  image: ContinuousPairImage,
+  origin: number,
+  gap: number,
+): void {
+  const start = Math.max(0, Math.ceil(origin - 0.5));
+  const end = Math.min(width, Math.ceil(origin + gap - 0.5));
+  for (let y = 0; y < height; ++y) {
+    for (let x = start; x < end; ++x) {
+      const source = Math.max(
+        0,
+        Math.min(image.width - 1, ((x + 0.5 - origin) / gap) * image.width - 0.5),
+      );
+      const below = Math.floor(source);
+      const above = Math.min(below + 1, image.width - 1);
+      const fraction = source - below;
+      const left = (y * image.width + below) * 4;
+      const right = (y * image.width + above) * 4;
+      const alpha = image.pixels[left + 3] * (1 - fraction) + image.pixels[right + 3] * fraction;
+      const offset = (y * width + x) * 4;
+      if (alpha <= 0) continue;
+      for (let channel = 0; channel < 3; ++channel) {
+        destination[offset + channel] =
+          (image.pixels[left + channel] * image.pixels[left + 3] * (1 - fraction) +
+            image.pixels[right + channel] * image.pixels[right + 3] * fraction) /
+          alpha;
+      }
+      destination[offset + 3] = alpha;
+    }
+  }
+}
