@@ -331,7 +331,7 @@ export async function main(): Promise<void> {
       },
       600_000,
       () => `Continuous density probe at ${stage}`,
-      () => server.kill(),
+      () => server.close(),
     );
   } finally {
     if (values.out)

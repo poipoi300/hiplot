@@ -580,7 +580,7 @@ async function main(): Promise<void> {
             timeoutMs,
             () =>
               `Parallel benchmark (${rows} rows, ${discrete ? "integer" : "continuous"}), last stage: ${stage}`,
-            () => server.kill(),
+            () => server.close(),
           );
           runs.push(result);
           console.log(JSON.stringify({ ...result, samples: undefined }));

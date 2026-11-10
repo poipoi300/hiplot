@@ -20,7 +20,7 @@ test("the whole-attempt deadline interrupts a CPU-bound initial browser evaluati
           }),
         100,
         () => "Parallel benchmark, last stage: initial evaluation",
-        () => server.kill(),
+        () => server.close(),
       ),
     ).rejects.toThrow("last stage: initial evaluation exceeded 100 ms");
     // Callers may clean up or start another attempt immediately after rejection.
