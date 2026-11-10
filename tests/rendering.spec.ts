@@ -609,7 +609,12 @@ async function uploadRows(
   colorBy: string,
   state: Record<string, unknown> = {},
 ): Promise<void> {
-  const saved = { "PARALLEL_PLOT.hide": ["uid", colorBy], color_by: colorBy, ...state };
+  const saved = {
+    "PARALLEL_PLOT.hide": ["uid", colorBy],
+    "PARALLEL_PLOT.renderQuality": "full",
+    color_by: colorBy,
+    ...state,
+  };
   const query = Object.entries(saved)
     .map(([key, value]) => `hip.${key}=${encodeURIComponent(JSON.stringify(value))}`)
     .join("&");

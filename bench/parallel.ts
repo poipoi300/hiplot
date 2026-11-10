@@ -17,6 +17,16 @@ interface Sample {
 interface ProbeRenderer extends Pick<WebGLLineRenderer, "draw" | "setSelection" | "busy"> {
   gl: WebGL2RenderingContext;
   slotsFor: (columns: readonly Float32Array[]) => number[];
+  present: (pixels: Uint8ClampedArray, width: number, height: number) => void;
+}
+interface BinnedProbe {
+  binned: {
+    busy: boolean;
+    draw: (...args: unknown[]) => void;
+  } | null;
+  binnedFrame: number;
+  binnedMetrics: { milliseconds: number; countMs: number; rasterMs: number } | null;
+  binnedMode: () => boolean;
 }
 type ProbePlot = Pick<NonNullable<ReturnType<HiPlot["parallelPlot"]>>, "state" | "h"> & {
   startBrushGesture: (event: { sourceEvent: { target: Element }; y: number }, axis: string) => void;
@@ -49,11 +59,19 @@ export const SWIFTSHADER_FLAGS = [
 export async function loadParallelBenchmark(
   page: Page,
   config: ParallelBenchmarkConfig,
-): Promise<{ generateMs: number; firstFrameMs: number; renderer: string }> {
+  quality: "full" | "low" | "auto" = "full",
+): Promise<{
+  generateMs: number;
+  firstFrameMs: number;
+  renderer: string;
+  renderMode: "binned" | "exact";
+}> {
   await page.route("http://hiplot.benchmark/**", (route) =>
     route.fulfill({ contentType: "text/html", body: '<div id="plot"></div>' }),
   );
-  await page.goto("http://hiplot.benchmark/?hip.PARALLEL_PLOT.renderQuality=%22full%22");
+  await page.goto(
+    `http://hiplot.benchmark/?hip.PARALLEL_PLOT.renderQuality=${encodeURIComponent(JSON.stringify(quality))}`,
+  );
   await page.addScriptTag({ path: path.resolve("hiplot/static/built/hiplot.bundle.js") });
   await page.addScriptTag({ content: `window.__parallelData = ${parallelExperiment.toString()};` });
   await page.evaluate((config) => {
@@ -93,7 +111,13 @@ export async function loadParallelBenchmark(
         throw new Error(failure.textContent ?? "Parallel display failed");
       }
       const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
-      return pp?.webgl !== null && pp?.webgl !== undefined && !pp.webgl.busy;
+      if (pp?.webgl === null || pp?.webgl === undefined) {
+        return false;
+      }
+      const binned = pp as unknown as BinnedProbe;
+      return (
+        !pp.webgl.busy && (!binned.binnedMode() || (binned.binnedFrame > 0 && !binned.binned?.busy))
+      );
     },
     undefined,
     { timeout: 240_000, polling: 10 },
@@ -102,10 +126,12 @@ export async function loadParallelBenchmark(
     const probe = (window as unknown as ProbeWindow).__parallelProbe;
     const gl = document.createElement("canvas").getContext("webgl2");
     const info = gl?.getExtension("WEBGL_debug_renderer_info");
+    const pp = probe.instance.parallelPlot() as unknown as BinnedProbe;
     return {
       generateMs: probe.generateMs,
       firstFrameMs: performance.now() - probe.loadStart,
       renderer: gl && info ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) : "unavailable",
+      renderMode: pp.binnedMode() ? ("binned" as const) : ("exact" as const),
     };
   });
 }
@@ -143,13 +169,7 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
     const renderer = pp.webgl as unknown as ProbeRenderer;
     renderer.setSelection = timed("selectionUpload", renderer.setSelection.bind(renderer));
     renderer.slotsFor = timed("geometryUpload", renderer.slotsFor.bind(renderer));
-    const draw = renderer.draw.bind(renderer);
-    renderer.draw = (frame) => {
-      probe.lastFrame = frame;
-      probe.draws += 1;
-      const start = performance.now();
-      draw(frame);
-      probe.samples.push({ stage: "submit", milliseconds: performance.now() - start });
+    const fenceFrame = (submittedAt: number, requestedAt = submittedAt): void => {
       const gl = renderer.gl;
       const fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
       if (fence === null) {
@@ -164,46 +184,88 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
         }
         gl.deleteSync(fence);
         probe.pending -= 1;
-        probe.samples.push({ stage: "fence", milliseconds: performance.now() - start });
+        const finishedAt = performance.now();
+        probe.samples.push(
+          { stage: "fence", milliseconds: finishedAt - submittedAt },
+          { stage: "completedFrame", milliseconds: finishedAt - requestedAt },
+        );
       };
       setTimeout(poll, 0);
     };
+    const draw = renderer.draw.bind(renderer);
+    renderer.draw = (frame) => {
+      probe.lastFrame = frame;
+      probe.draws += 1;
+      const start = performance.now();
+      draw(frame);
+      probe.samples.push({ stage: "submit", milliseconds: performance.now() - start });
+      fenceFrame(start);
+    };
+    const binned = pp as unknown as BinnedProbe;
+    if (binned.binned !== null) {
+      let requestedAt = performance.now();
+      const request = binned.binned.draw.bind(binned.binned);
+      binned.binned.draw = (...args) => {
+        requestedAt = performance.now();
+        request(...args);
+        probe.samples.push({
+          stage: "binnedSubmit",
+          milliseconds: performance.now() - requestedAt,
+        });
+      };
+      const present = renderer.present.bind(renderer);
+      renderer.present = (pixels, width, height) => {
+        const start = performance.now();
+        const metrics = binned.binnedMetrics;
+        if (metrics === null) {
+          throw new Error("Binned presentation has no worker metrics");
+        }
+        probe.samples.push(
+          { stage: "worker", milliseconds: metrics.milliseconds },
+          { stage: "histogram", milliseconds: metrics.countMs },
+          { stage: "raster", milliseconds: metrics.rasterMs },
+          { stage: "workerLatency", milliseconds: start - requestedAt },
+        );
+        probe.draws += 1;
+        present(pixels, width, height);
+        probe.samples.push({ stage: "submit", milliseconds: performance.now() - start });
+        fenceFrame(start, requestedAt);
+      };
+    }
   });
 }
 
 async function settle(page: Page): Promise<void> {
-  await page.waitForFunction(
-    () => {
-      const probe = (window as unknown as ProbeWindow).__parallelProbe;
-      const pp = probe.instance.parallelPlot();
-      const callbacks = pp as unknown as {
-        scrollSettle: unknown;
-        scrollFrame: number | null;
-        brushMoveFrame: number | null;
-        idleRedraw: number | null;
-      };
-      return (
-        probe.pending === 0 &&
-        pp?.webgl !== null &&
-        !pp?.webgl?.busy &&
-        callbacks.scrollSettle === null &&
-        callbacks.scrollFrame === null &&
-        callbacks.brushMoveFrame === null &&
-        callbacks.idleRedraw === null
-      );
-    },
-    undefined,
-    { timeout: 240_000, polling: 10 },
-  );
-  // Flush queued React, brush, and scroll animation callbacks as well as GPU work.
+  const ready = (): boolean => {
+    const probe = (window as unknown as ProbeWindow).__parallelProbe;
+    const pp = probe.instance.parallelPlot();
+    if (pp?.webgl === null || pp?.webgl === undefined) {
+      return false;
+    }
+    const binned = pp as unknown as BinnedProbe;
+    const callbacks = pp as unknown as {
+      scrollSettle: unknown;
+      scrollFrame: number | null;
+      brushMoveFrame: number | null;
+      idleRedraw: number | null;
+    };
+    return (
+      probe.pending === 0 &&
+      !pp.webgl.busy &&
+      !binned.binned?.busy &&
+      (!binned.binnedMode() || binned.binnedFrame > 0) &&
+      callbacks.scrollSettle === null &&
+      callbacks.scrollFrame === null &&
+      callbacks.brushMoveFrame === null &&
+      callbacks.idleRedraw === null
+    );
+  };
+  await page.waitForFunction(ready, undefined, { timeout: 240_000, polling: 10 });
+  // Queued React/brush/scroll callbacks can submit another asynchronous worker job.
   await page.evaluate(
     () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
   );
-  await page.waitForFunction(
-    () => (window as unknown as ProbeWindow).__parallelProbe.pending === 0,
-    undefined,
-    { timeout: 240_000, polling: 10 },
-  );
+  await page.waitForFunction(ready, undefined, { timeout: 240_000, polling: 10 });
 }
 
 async function takeSamples(page: Page): Promise<Sample[]> {
@@ -381,6 +443,7 @@ async function main(): Promise<void> {
       steps: { type: "string", default: "8" },
       reps: { type: "string", default: "3" },
       backend: { type: "string", default: "swiftshader" },
+      quality: { type: "string", default: "full" },
       out: { type: "string" },
       label: { type: "string", default: "baseline" },
     },
@@ -393,6 +456,10 @@ async function main(): Promise<void> {
   }
   if (values.backend !== "swiftshader" && values.backend !== "hardware") {
     throw new Error("Backend must be swiftshader or hardware");
+  }
+  const quality = values.quality;
+  if (quality !== "full" && quality !== "low" && quality !== "auto") {
+    throw new Error("Quality must be full, low, or auto");
   }
   const browser = await chromium.launch({
     ...(values.backend === "hardware" ? { channel: "chromium" } : {}),
@@ -413,12 +480,11 @@ async function main(): Promise<void> {
         const pageErrors: string[] = [];
         page.on("pageerror", (error) => pageErrors.push(error.message));
         try {
-          const load = await loadParallelBenchmark(page, {
-            rows,
-            columns,
-            discrete,
-            seed: 20261109,
-          });
+          const load = await loadParallelBenchmark(
+            page,
+            { rows, columns, discrete, seed: 20261109 },
+            quality,
+          );
           process.stderr.write(
             `${values.backend} ${discrete ? "integer" : "continuous"} loaded in ${load.firstFrameMs.toFixed(0)} ms\n`,
           );
@@ -453,7 +519,7 @@ async function main(): Promise<void> {
   if (values.out !== undefined) {
     writeFileSync(
       values.out,
-      JSON.stringify({ label: values.label, rows, columns, steps, runs }, null, 2),
+      JSON.stringify({ label: values.label, rows, columns, steps, quality, runs }, null, 2),
     );
   }
 }

@@ -52,6 +52,7 @@ import {
   tickCountFor,
   valueFormatter,
 } from "./axisformat";
+import { BinnedRenderer } from "./binned_worker";
 import {
   type AxisBrush,
   brushesAfterClick,
@@ -73,17 +74,15 @@ import { defaultHiddenColumns } from "./hidden";
 import { type ColorOrientation, colorOrientation, NO_ORIENTATION } from "./orientation";
 import pstyle from "./parallel.module.css";
 import {
+  binnedRendering,
   FramePerformance,
   isRenderQuality,
-  LOW_PERFORMANCE_RESOLUTION,
-  LOW_PERFORMANCE_ROWS,
-  lowPerformance,
   RENDER_QUALITIES,
   type RenderQuality,
 } from "./performance";
 import { type AxisSelection, BrushMasks } from "./selection";
 import { monotoneSlope, SPLINE_HANDLE, splineParameter, splineY } from "./spline";
-import { type LineColors, WebGLLineRenderer } from "./webgl";
+import { type LineColors, type LineFrame, WebGLLineRenderer } from "./webgl";
 
 interface ParallelPlotState {
   height: number;
@@ -96,7 +95,7 @@ interface ParallelPlotState {
   upright: Set<string>;
   dimensions: Array<string>;
   lineShape: LineShape;
-  /** How frames during a drag or a scroll are drawn (see performance.ts). */
+  /** Exact or bounded all-row density rendering (see performance.ts). */
   renderQuality: RenderQuality;
   /** Whether measured frames are slow, which the "auto" quality follows. */
   slowFrames: boolean;
@@ -442,15 +441,15 @@ const SCROLL_SETTLE_MS = 150;
 const RENDER_QUALITY_LABELS: Record<RenderQuality, { label: string; title: string }> = {
   auto: {
     label: "Automatic",
-    title: "Low-performance mode while drawing is slow (under 20 frames a second)",
+    title: "Binned density for large datasets or when exact frames are slow",
   },
   low: {
-    label: "Always low-performance",
-    title: "Drags and scrolls drawn at half resolution over a sample of the rows",
+    label: "Binned density",
+    title: "Count every row in quantized straight-segment histograms; highlights stay exact",
   },
   full: {
-    label: "Always full quality",
-    title: "Drags and scrolls drawn at full quality, however slow",
+    label: "Exact lines",
+    title: "Draw individual rows, however slow",
   },
 };
 /** Peak opacity of the deselected-rows layer per theme. */
@@ -523,6 +522,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   private masks: BrushMasks | null = null;
   /** Line renderer on the GPU; null when WebGL2 is unavailable and Canvas 2D draws. */
   webgl: WebGLLineRenderer | null = null;
+  binned: BinnedRenderer | null = null;
+  binnedFrame = 0;
+  binnedMetrics: { milliseconds: number; countMs: number; rasterMs: number } | null = null;
   /** The selection flags last computed, reused while the selection is unchanged. */
   private maskMemo: {
     geometry: LineGeometry;
@@ -711,6 +713,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.autoscroll = null;
     d3.select(this.svgg_ref.current).selectAll("*").remove();
     this.cancelDrawing();
+    this.binned?.dispose();
+    this.binned = null;
     this.webgl?.dispose();
     this.webgl = null;
     this.props.context_menu_ref?.current?.removeCallbacks(this);
@@ -795,7 +799,16 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       }
     }
     // Highlight polylines
-    if (prevProps.rows_highlighted !== this.props.rows_highlighted && this.highlighted !== null) {
+    if (
+      this.highlighted !== null &&
+      (prevProps.rows_highlighted !== this.props.rows_highlighted ||
+        prevProps.rows_filtered !== this.props.rows_filtered ||
+        prevProps.dark !== this.props.dark ||
+        prevProps.color_binning !== this.props.color_binning ||
+        prevState.lineShape !== this.state.lineShape ||
+        prevState.renderQuality !== this.state.renderQuality ||
+        prevState.slowFrames !== this.state.slowFrames)
+    ) {
       const highlighted = this.highlighted;
       highlighted.clearRect(0, 0, this.w, this.h);
       if (this.props.rows_highlighted.length === 0) {
@@ -851,6 +864,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       prevProps.color_mode !== this.props.color_mode ||
       prevProps.dark !== this.props.dark ||
       prevState.lineShape !== this.state.lineShape ||
+      prevState.renderQuality !== this.state.renderQuality ||
+      prevState.slowFrames !== this.state.slowFrames ||
       prevProps.colorby !== this.props.colorby ||
       prevState.height !== this.state.height ||
       prevState.width !== this.state.width
@@ -1184,9 +1199,14 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             <button
               key={shape}
               type="button"
-              title={title}
+              title={
+                this.binnedMode()
+                  ? "Binned density uses straight segments; choose Exact lines to change shape"
+                  : title
+              }
+              disabled={this.binnedMode()}
               aria-label={label}
-              aria-pressed={this.state.lineShape === shape}
+              aria-pressed={(this.binnedMode() ? "straight" : this.state.lineShape) === shape}
               className={icon === undefined ? undefined : controls.iconSegment}
               onClick={() => this.setState({ lineShape: shape })}
             >
@@ -1258,27 +1278,21 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     );
   }
 
-  /**
-   * Shown while low-performance mode is on, or a quality is forced: what
-   * frames during a gesture look like, and the choice to force either.
-   */
+  /** Always available: an exact picture and a bounded density are explicit choices. */
   renderQualityControl(): React.ReactElement | null {
-    const { renderQuality, slowFrames } = this.state;
-    const low = lowPerformance(renderQuality, slowFrames);
-    if (renderQuality === "auto" && !low) {
-      return null;
-    }
+    const { renderQuality } = this.state;
+    const binned = this.binnedMode();
     return (
       <Popover
-        trigger={low ? "Low-performance mode" : "Full quality"}
+        trigger={binned ? "Binned density" : "Exact lines"}
         label="Drawing quality"
-        title="During drags and scrolls, lines are drawn at half resolution over a sample of the rows; the picture after them is full quality"
+        title="Binned density counts every row using quantized straight segments; highlighted rows stay exact"
         align="start"
         testId="render-quality-button"
       >
         {(close) => (
           <fieldset className={style.colorMapGroup}>
-            <legend className={style.colorMapKind}>While dragging or scrolling</legend>
+            <legend className={style.colorMapKind}>Density rendering</legend>
             {RENDER_QUALITIES.map((quality) => (
               <label
                 key={quality}
@@ -1799,7 +1813,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       );
       const masks = me.brushMasks();
       const mask = masks.select(selections);
-      const canvasSelection = me.webgl === null ? masks.selectedRows(mask) : null;
+      const canvasSelection =
+        me.webgl === null && !me.binnedMode() ? masks.selectedRows(mask) : null;
       me.updateFlowBadges(new Set(actives), mask);
       me.liveBrushMask = { rows: masks.rows, mask };
       me.maskMemo = null;
@@ -2516,18 +2531,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return { r: parsed.r, g: parsed.g, b: parsed.b };
   }
 
-  /**
-   * Frames are drafts while a brush or an axis is dragged over more than
-   * LIGHT_DRAG_ROWS rows: anti-aliasing doubles the fragments of a frame,
-   * and summing densities exactly doubles the bandwidth, either of which
-   * no longer fits the frame budget (see LineFrame.draft). The picture is
-   * final again as soon as the drag ends.
-   */
+  /** Large exact-line drags omit anti-aliasing; accumulation precision never changes. */
   draftFrame(): boolean {
-    return (
-      (this.interacting && this.props.rows_filtered.length > LIGHT_DRAG_ROWS) ||
-      this.lowPerformanceFrame()
-    );
+    return this.interacting && this.props.rows_filtered.length > LIGHT_DRAG_ROWS;
   }
 
   /** Whether a frame is drawn during a gesture: a brush or axis drag, or a scroll. */
@@ -2535,10 +2541,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return this.interacting || performance.now() < this.scrollingUntil;
   }
 
-  /** A frame of a gesture drawn in low-performance mode (see performance.ts). */
-  lowPerformanceFrame(): boolean {
-    return (
-      this.interactiveFrame() && lowPerformance(this.state.renderQuality, this.state.slowFrames)
+  /** Decided before the first frame, including machines without usable WebGL. */
+  binnedMode(): boolean {
+    return binnedRendering(
+      this.state.renderQuality,
+      this.state.slowFrames,
+      this.props.rows_filtered.length,
+      this.webgl?.softwareRendering ?? true,
     );
   }
 
@@ -2574,37 +2583,21 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   /** Curves between axes unless the user chose straight lines, or "auto" meets many rows. */
   curvedLines(): boolean {
+    if (this.binnedMode()) {
+      return false;
+    }
     if (this.state.lineShape === "auto") {
       return this.props.rows_filtered.length <= STRAIGHT_LINES_ABOVE_ROWS;
     }
     return this.state.lineShape === "curved";
   }
 
-  /** Draws every line in one WebGL pass: the selection over the faint deselected rows. */
-  private drawWithWebGL(webgl: WebGLLineRenderer): void {
-    const geometry = this.geometry();
-    const mask = this.selectionMask(geometry);
+  private lineFrame(geometry: LineGeometry, mask: Uint8Array): LineFrame {
     let selectedCount = 0;
     for (let i = 0; i < mask.length; ++i) {
       selectedCount += mask[i];
     }
-    const colors = this.lineColors(geometry);
-    webgl.setRows(geometry.rows.length, geometry.order);
-    webgl.setDrawOrder(
-      webgl.densityRendering
-        ? geometry.order
-        : geometry.colorOrder(colors.bins, colors.colorMapBins, this.props.color_mode),
-    );
-    webgl.setColors(colors);
-    webgl.setSelection(mask);
-    const draft = this.draftFrame();
-    const low = this.lowPerformanceFrame();
-    const drawnRows = low
-      ? Math.min(geometry.rows.length, LOW_PERFORMANCE_ROWS)
-      : geometry.rows.length;
-    // A sample of the rows draws a matching share of the densities.
-    const drawnShare = drawnRows / Math.max(1, geometry.rows.length);
-    webgl.draw({
+    return {
       axes: this.state.dimensions.map((dimension) => ({
         x: this.position(dimension) - this.scrollLeft,
         pixels: geometry.pixels(
@@ -2618,16 +2611,66 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       lineWidth: LINE_WIDTH,
       pixelRatio: this.pixelRatio,
       curved: this.curvedLines(),
-      draft,
-      resolution: low ? LOW_PERFORMANCE_RESOLUTION : 1,
-      drawnRows,
-      selectedCount: selectedCount * drawnShare,
-      contextCount: (mask.length - selectedCount) * drawnShare,
+      draft: this.draftFrame(),
+      resolution: 1,
+      drawnRows: geometry.rows.length,
+      selectedCount,
+      contextCount: mask.length - selectedCount,
       contextColor: this.contextColor(),
       contextAlpha: this.props.dark ? CONTEXT_ALPHA_DARK : CONTEXT_ALPHA_LIGHT,
       colorMode: this.props.color_mode,
-    });
+    };
+  }
+
+  /** Draws every original row; used by exact mode and its pixel-equivalence tests. */
+  private drawWithWebGL(webgl: WebGLLineRenderer): void {
+    const geometry = this.geometry();
+    const mask = this.selectionMask(geometry);
+    const colors = this.lineColors(geometry);
+    webgl.setRows(geometry.rows.length, geometry.order);
+    webgl.setDrawOrder(
+      webgl.densityRendering
+        ? geometry.order
+        : geometry.colorOrder(colors.bins, colors.colorMapBins, this.props.color_mode),
+    );
+    webgl.setColors(colors);
+    webgl.setSelection(mask);
+    webgl.draw(this.lineFrame(geometry, mask));
     this.watchFrames(webgl);
+  }
+
+  private drawBinned(): void {
+    if (this.binned === null) {
+      this.binned = new BinnedRenderer((image) => {
+        if (!this.binnedMode()) {
+          return;
+        }
+        this.binnedFrame += 1;
+        this.binnedMetrics = image;
+        if (this.webgl !== null) {
+          this.webgl.present(image.pixels, image.width, image.height);
+          this.watchFrames(this.webgl);
+        } else if (this.foreground !== null) {
+          const source = document.createElement("canvas");
+          source.width = image.width;
+          source.height = image.height;
+          const context = source.getContext("2d");
+          if (context === null) {
+            throw new Error("No density image context");
+          }
+          context.putImageData(
+            new ImageData(new Uint8ClampedArray(image.pixels), image.width, image.height),
+            0,
+            0,
+          );
+          this.foreground.clearRect(0, 0, this.w, this.h);
+          this.foreground.drawImage(source, 0, 0, this.w, this.h);
+        }
+      });
+    }
+    const geometry = this.geometry();
+    const mask = this.selectionMask(geometry);
+    this.binned.draw(this.lineFrame(geometry, mask), this.lineColors(geometry), mask);
   }
 
   /** Every row's color bin, and how many bins sample a numeric color map (see LineColors). */
@@ -2676,17 +2719,17 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.cancelIdleRedraw();
   }
 
-  /** The animation frame that checks whether the GPU is free for a deferred redraw. */
+  /** The animation frame that checks whether rendering is idle for a deferred redraw. */
   private idleRedraw: number | null = null;
 
-  /** Redraws on the first animation frame the GPU is free; later requests join this one. */
+  /** Redraws when the GPU and worker are idle; later requests join this one. */
   private redrawWhenGpuIdle(): void {
     if (this.idleRedraw !== null) {
       return;
     }
     const check = (): void => {
       this.idleRedraw = null;
-      if (this.webgl?.busy) {
+      if (this.webgl?.busy || this.binned?.busy) {
         this.idleRedraw = requestAnimationFrame(check);
         return;
       }
@@ -2715,6 +2758,22 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
    */
   /** Redraws the selected lines (all filtered rows before any selection exists). */
   redrawLines(): void {
+    if (this.webgl === null && this.foreground === null) {
+      return;
+    }
+    if (this.binnedMode()) {
+      // Let an issued job present during continuous input, then count the latest state.
+      if (this.interactiveFrame() && (this.binned?.busy || this.webgl?.busy)) {
+        this.redrawWhenGpuIdle();
+        return;
+      }
+      this.drawGeneration += 1;
+      this.cancelDrawing();
+      this.drawBinned();
+      return;
+    }
+    this.binned?.dispose();
+    this.binned = null;
     if (this.webgl !== null) {
       // During a drag, a frame waits for the GPU to finish the last one, so a
       // slow GPU drops frames instead of queueing them behind the pointer.

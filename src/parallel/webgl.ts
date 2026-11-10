@@ -488,6 +488,18 @@ void main() {
 }
 `;
 
+const IMAGE_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+uniform sampler2D u_image;
+uniform vec2 u_viewport;
+out vec4 color;
+void main() {
+  vec2 at = gl_FragCoord.xy / u_viewport;
+  vec4 image = texture(u_image, vec2(at.x, 1.0 - at.y));
+  color = vec4(image.rgb * image.a, image.a);
+}
+`;
+
 const COMPOSITE_VERTEX_SHADER = `#version 300 es
 void main() {
   vec2 corner = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
@@ -706,11 +718,15 @@ interface DensityTargets {
  */
 export class WebGLLineRenderer {
   private readonly gl: WebGL2RenderingContext;
+  /** Unknown diagnostics use the software threshold rather than risk a minute-long first frame. */
+  readonly softwareRendering: boolean;
   /** Density accumulation then tone mapping, when float render targets exist. */
   private readonly densityPrograms: { lines: Program; composite: Program } | null;
   /** Alpha-blended lines, the fallback without float render targets. */
   private readonly directProgram: Program;
   private density: DensityTargets | null = null;
+  private imageProgram: Program | null = null;
+  private imageTexture: WebGLTexture | null = null;
   private readonly textures: Record<SamplerName, WebGLTexture>;
   private readonly vertexArray: WebGLVertexArrayObject;
   private readonly maxTextureSize: number;
@@ -746,6 +762,12 @@ export class WebGLLineRenderer {
 
   private constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
+    const rendererInfo = gl.getExtension("WEBGL_debug_renderer_info");
+    this.softwareRendering =
+      rendererInfo === null ||
+      /swiftshader|llvmpipe|softpipe|software|basic render/i.test(
+        String(gl.getParameter(rendererInfo.UNMASKED_RENDERER_WEBGL)),
+      );
     this.directProgram = new Program(gl, VERTEX_SHADER, DIRECT_FRAGMENT_SHADER);
     // Single-float sums (see DensityPrecision) need both renderable float
     // targets and blending on them.
@@ -1111,6 +1133,44 @@ export class WebGLLineRenderer {
     this.submittedAt = performance.now();
     this.inFlightFullQuality = !frame.draft && frame.resolution === 1;
     this.drawFrame(frame);
+    if (this.inFlight !== null) {
+      gl.deleteSync(this.inFlight);
+    }
+    this.inFlight = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    gl.flush();
+  }
+
+  /** Presents a worker's top-down ImageData without per-row GPU work. */
+  present(pixels: Uint8ClampedArray, width: number, height: number): void {
+    const gl = this.gl;
+    this.submittedAt = performance.now();
+    this.inFlightFullQuality = false;
+    this.imageProgram ??= new Program(gl, COMPOSITE_VERTEX_SHADER, IMAGE_FRAGMENT_SHADER);
+    this.imageTexture ??= gl.createTexture();
+    if (this.imageTexture === null) {
+      throw new Error("Could not create a density image texture");
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.disable(gl.BLEND);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    // biome-ignore lint/correctness/useHookAtTopLevel: WebGL useProgram, not a React hook.
+    gl.useProgram(this.imageProgram.program);
+    gl.uniform1i(this.imageProgram.uniform("u_image"), 0);
+    gl.uniform2f(
+      this.imageProgram.uniform("u_viewport"),
+      gl.drawingBufferWidth,
+      gl.drawingBufferHeight,
+    );
+    gl.bindVertexArray(this.vertexArray);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindVertexArray(null);
     if (this.inFlight !== null) {
       gl.deleteSync(this.inFlight);
     }

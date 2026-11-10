@@ -36,12 +36,30 @@ All of these interactions feed into HiPlot's shared filtered/selected state, whi
 
 ## Rendering model
 
-The parallel plot uses:
+SVG draws the axes, labels and brushes; canvas layers draw density and exact
+highlighted rows. The **Exact lines / Binned density** control selects:
 
-- Canvas layers for fast polyline drawing
-- SVG for axes, labels, and brushes
+- **Automatic**: use binned density above 6,000 filtered rows on software or
+  unidentified renderers, above 250,000 on identified hardware, or after exact
+  frames measure slower than 20 frames per second. This decision happens before
+  a large dataset's first draw, while retaining fast hardware's exact path on
+  moderate datasets.
+- **Binned density**: a dedicated worker counts every row into adjacent-axis
+  histograms, with 32 bins per axis, then draws weighted straight segments.
+  Selected and context counts and color statistics are retained without row
+  sampling. Individual geometry is approximate: endpoints in a cell are replaced
+  by their mean, curves become straight segments and antialiasing differs.
+  Hover and highlights still use the original, unquantized row coordinates.
+- **Exact lines**: render every original row with WebGL density accumulation,
+  or Canvas 2D where WebGL2 is unavailable. This can be very slow on large data.
 
-This allows large-row rendering without losing axis/interaction fidelity.
+Binned density stays active after a gesture; it does not replace the picture
+with a potentially minute-long exact draw on release. The line-shape controls
+are disabled while it is active, and their previous choice is retained for
+exact mode. The rendering choice is saved in the URL. Older saved `"low"`
+quality settings now select binned density; `"full"` selects exact lines.
+
+See `PERFORMANCE.md` for completed-frame measurements and visual tolerances.
 
 ## Display configuration
 

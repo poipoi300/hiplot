@@ -57,3 +57,44 @@ test("the benchmark measures real brush, axis and settled scroll draws", async (
     6,
   );
 });
+
+test("the binned benchmark waits for worker images and completed GPU frames", async ({ page }) => {
+  const load = await loadParallelBenchmark(
+    page,
+    { rows: 300, columns: 10, discrete: false, seed: 20261109 },
+    "low",
+  );
+  expect(load.renderMode).toBe("binned");
+  const loaded = await page.evaluate(() => {
+    const win = window as unknown as {
+      __parallelProbe: {
+        instance: {
+          parallelPlot: () => {
+            binnedFrame: number;
+            binned: { busy: boolean };
+            webgl: { busy: boolean };
+          };
+        };
+      };
+    };
+    const pp = win.__parallelProbe.instance.parallelPlot();
+    return { frames: pp.binnedFrame, workerBusy: pp.binned.busy, gpuBusy: pp.webgl.busy };
+  });
+  expect(loaded.frames).toBeGreaterThan(0);
+  expect(loaded.workerBusy).toBe(false);
+  expect(loaded.gpuBusy).toBe(false);
+  const samples = await measureParallelBenchmark(page, 2);
+  for (const phase of [samples.full, samples.brush, samples.axis, samples.scroll]) {
+    for (const stage of [
+      "worker",
+      "histogram",
+      "raster",
+      "workerLatency",
+      "completedFrame",
+      "fence",
+    ]) {
+      expect(phase.some((sample) => sample.stage === stage)).toBe(true);
+    }
+  }
+  expect(samples.brush.filter((sample) => sample.stage === "brushCpu")).toHaveLength(2);
+});

@@ -735,6 +735,28 @@ Use Float64 CPU sums, selected/context counts, numeric mean/missing share or
 categorical RGB sums and numeric extrema. Recompute selected histograms for a
 new mask, including extrema, rather than attempting unsafe MAX subtraction.
 
+### Implemented tradeoff
+
+The full colored/antialiased CPU kernel costs more than the initial DDA prototype.
+A Node/V8 run at 1M × 10 and 1000 × 500 measured 133.4 ms counting plus
+96.0 ms raster initially; a cached scroll raster takes 84.7–86.4 ms with
+less than 0.1 ms recount. At 64 bins, counting is 136.4 ms and the warmed
+raster 245.1–249.6 ms. Therefore the shipped default is **32 bins**, with
+64 as the internal upper bound, not pixel-height bins. Per-cell selected and
+context endpoint means reduce bias, but any individual endpoint can move by
+almost a **whole bin** (15.625 CSS pixels at 500px height), not just a half bin.
+
+Rasterization uses area-conserving major-axis box coverage rather than the
+exact path's strip integration and peak normalization. An angle/distance LUT
+experiment took 117 ms versus 104 ms for exact 32-bin box filtering and was
+removed. The chosen approximate coverage takes about 85 ms in the warmed
+kernel measurement. Histograms keep Float64 counts/statistics without sampling;
+curves, sub-bin geometry, joins and antialiasing differ. The RGBA8 image is
+computed at CSS resolution and nearest-upscaled on high-DPI canvases. These
+are explicitly accepted approximations, not unchanged-picture optimizations.
+New-mask counting still scales with source rows; worker execution protects the
+main thread but does not by itself establish ten completed frames per second.
+
 Cache pairs by column identities and selection/color revisions, not axis order
 or screen position: reordering builds new pairs only; scrolling rasterizes the
 cached counts. Copy/transfer worker-owned columns once per geometry change;
@@ -750,9 +772,138 @@ sampling/half-resolution, rather than layering a second approximation over it.
 The benchmark must explicitly choose mode and await worker completion as well
 as the GPU fence, since its current forced-full path cannot measure this work.
 
+A universal 6,000-row auto threshold would regress the workstation's already-fast
+50k exact path (7 ms in the recorded benchmark) into the roughly row-independent
+85 ms CPU raster. Therefore auto uses 6,000 rows on software/unknown renderers,
+250,000 on identified hardware, or the existing measured-slow verdict on either.
+The hardware limit sits above the measured 100k final frame (~36 ms) and below
+the 1M frame (~228 ms); it is a conservative size heuristic, not a claim that
+all GPUs have that crossover. Backend classification reads the actual unmasked
+renderer (SwiftShader, llvmpipe, softpipe or a basic/software renderer), not
+requested browser flags. Missing diagnostic information takes the conservative
+software threshold. Explicit exact/binned overrides always win. A follow-up
+50k-row `--quality auto` run on the actual RTX 5090 retained exact mode for
+both data variants: completed full frames 26.0/31.7 ms and live brush frames
+12.1/14.7 ms (one load, three steps). Those corrected-precision measurements
+are not the older 7 ms half-float frame.
+
 Validation will include count conservation, brushed-vs-fresh histograms,
 missing colors/values and extrema; browser tests for mode switching, exact
 highlight geometry and moderate straight-picture agreement with a stated
 spatial tolerance. Hardware 1M and software 100k/1M runs will compare completed
-frames to the recorded baseline. A hardware 10M attempt will identify whether
-the existing object-model memory, rather than the raster, becomes the limit.
+frames to the recorded baseline. A hardware 10M attempt probes the existing
+object-model/loading limit as well as raster capacity; a loading failure alone
+cannot establish which stage or resource is responsible.
+
+### Completed browser measurements
+
+Measured 2026-11-10, same seeded experiment, viewport and actual backends as
+above. Corrected exact hardware runs use one load and three gesture steps;
+100k/1M binned runs use **three loads and three steps**, with the median of the
+per-load p50s shown. The 10M integer capacity follow-up uses one load and three
+steps. These are exploratory workstation measurements, not laptop
+frame-rate guarantees. The old software figures above are reused rather than
+repeating the roughly 50-minute million-row exact run.
+
+`--quality full` chooses exact lines; `--quality low` chooses binned density.
+The harness now awaits the latest accepted worker image **and** its GPU fence.
+"Completed" starts at renderer request/submission, not the earlier input handler;
+brush CPU remains separate. Binned completion includes copying/queueing, worker
+counting/rasterization, image upload and observed fence completion. Its GPU-only
+fence is about 5–6 ms, which must **not** be presented as total frame latency.
+Nested stage medians need not add up to the parent median.
+
+| Backend / rows / data / mode | Load → first fence ms | Full completed ms | Brush CPU ms | Brush completed ms | Axis completed ms | Scroll completed ms |
+|---|---:|---:|---:|---:|---:|---:|
+| RTX 5090 / 1M / continuous / corrected exact | 8729.9 | 357.9 | 8.9 | 167.3 | 167.7 | 193.7 |
+| RTX 5090 / 1M / integer / corrected exact | 2460.1 | 380.6 | 8.0 | 180.2 | 180.9 | 184.7 |
+| RTX 5090 / 1M / continuous / binned | 8057.6 | 94.5 | 8.4 | 208.7 | 173.9 | 64.2 |
+| RTX 5090 / 1M / integer / binned | 1801.1 | 30.5 | 7.6 | 100.5 | 59.8 | 19.1 |
+| SwiftShader / 100k / continuous / binned | 718.0 | 79.9 | 1.6 | 121.7 | 120.5 | 62.2 |
+| SwiftShader / 100k / integer / binned | 299.2 | 30.5 | 1.7 | 40.1 | 35.4 | 16.8 |
+| SwiftShader / 1M / continuous / binned | 7457.6 | 86.7 | 7.1 | 201.6 | 148.3 | 63.2 |
+| SwiftShader / 1M / integer / binned | 1683.1 | 29.3 | 7.5 | 97.4 | 55.2 | 16.8 |
+| RTX 5090 / 10M / integer / binned | 18405.2 | 46.7 | 73.2 | 744.9 | 263.8 | 33.3 |
+
+Reading the measurements honestly:
+
+- Fixing half-float saturation costs bandwidth: exact hardware full frames rose
+  from the prior 228.3/241.4 ms to 357.9/380.6 ms, and drafts from 54.4/73.8 ms
+  to 167.3/180.2 ms. The earlier faster frames used incorrect half-float sums.
+- Binned full hardware frames take 94.5/30.5 ms instead of the corrected exact
+  357.9/380.6 ms. **Continuous hardware brushing regresses** from 167.3 to
+  208.7 ms and axis completion from 167.7 to 173.9 ms; bounded CPU reduction is
+  not always faster than this GPU. The user can force exact lines. Moderate
+  hardware datasets retain exact mode automatically.
+- Software full frames at 100k fall from the prior 10,328/10,174 ms to
+  79.9/30.5 ms; at 1M, from 100,798/100,618 ms to 86.7/29.3 ms. New 1M brush
+  completion is 201.6/97.4 ms rather than 102,652/100,787 ms, with 7.1/7.5 ms
+  main-thread brush CPU. That is responsive input with roughly 5/10 Hz density
+  updates for these gestures, **not** a claim of 60 Hz million-row pictures.
+- At 1M, worker brush recount/raster medians are 88.0/123.3 ms on hardware
+  continuous and 81.1/115.5 ms on software continuous; integer data is
+  68.7/26.3 and 66.3/25.0 ms. The near-constant raster cost between 100k and
+  1M is the intended bound; recount and the application's initial inference
+  still scale with rows. Initial continuous software loading remains 7.46 s.
+
+Reproduce, after building the benchmark as above:
+
+```bash
+node node_modules/.cache/parallel-bench.mjs --quality low --backend hardware --rows 1000000 --reps 3 --steps 3 --out <hardware-binned.json>
+node node_modules/.cache/parallel-bench.mjs --quality low --rows 100000 --reps 3 --steps 3 --out <software-100k-binned.json>
+node node_modules/.cache/parallel-bench.mjs --quality low --rows 1000000 --reps 3 --steps 3 --out <software-1m-binned.json>
+```
+
+### Capacity and continuous-input checks
+
+The initial hardware **10M-row continuous-data attempt did not complete
+loading**. After more than 17 minutes without a first frame or a returned load
+result, it was stopped. The initial benchmark `page.evaluate` (payload
+generation/render setup) has no deadline, unlike its subsequent 240-second
+frame wait, exposing a harness limitation. There was no captured out-of-memory
+diagnosis; a memory limit or renderer-capacity failure cannot be inferred.
+
+A separate **10M-row integer follow-up succeeded**, using the same exported
+benchmark loader and gesture measurement with a 180-second whole-attempt
+deadline and stage/crash diagnostics. Ten axes with eight values each generated
+in 1.27 s and reached their first completed image in 18.41 s after generation.
+Full cached rendering took 46.7 ms, brush completion 744.9 ms, new-axis-pair
+completion 263.8 ms and scrolling 33.3 ms (one load, three steps). Brush CPU
+was 73.2 ms; worker recount/raster were 709.0/28.6 ms. This establishes 10M
+integer-row capacity, **not fluid 10M brushing or continuous-data capacity**.
+The bounded raster remains cheap while row-dependent loading and recounting
+now dominate. Both the unsuccessful continuous attempt and the successful
+integer result are retained rather than generalizing from either one.
+
+Settled-step benchmarks do not test continuous input. A separate real-brush
+regression delays actual worker submissions by 80 ms while moving the brush
+every animation frame for at least 1.5 seconds and five worker jobs (with a
+10-second safety deadline under full-suite contention). All job-count, input
+and accepted-image assertions remain required. Initially, a 1.5-second run with
+90 movements and ten worker jobs produced **zero images before release**: latest-only result rejection
+starved presentation. During a gesture, the main driver now waits for the
+active worker/GPU frame to finish before requesting the latest state, using
+the existing idle-redraw queue. The issued image can therefore present without
+an unbounded request backlog. The regression now requires at least two
+accepted images while the gesture is still active and passes; finite bursts
+outside gestures still retain latest-only result rejection.
+
+### Picture and interaction contract
+
+`tests/binned.spec.ts` compares a seeded 300-row, four-axis straight dataset.
+It premultiplies RGBA before comparing, blurs vertically by one full endpoint
+bin (15 CSS pixels at 465px height), and excludes ten-pixel axis joins. The
+limits are relative L1 error **≤20%**, absolute channel MAE **≤4/255**, and
+integrated-alpha ratio **0.9–1.1**. The measured errors are **8.2943%**,
+**2.48715/255**, and **0.91884**, respectively. Nonblank mass assertions keep
+empty pictures from passing. This is a spatial density tolerance, not a claim
+that individual pixels or rows retain their geometry.
+
+The hover test matches actual path commands to original double-precision row
+scales exactly and independently redraws the reference on the same canvas,
+requiring **zero different channels**. Separate canvas surfaces can differ by
+one antialiasing level, so that would not be an exact geometry test. Other browser
+tests cover latest-only worker coalescing, preserved source buffers, offline
+worker startup, mode switching/persistence, and Canvas-only image presentation
+with zero live object-selection materializations and one on publication. The
+existing exact-renderer pixel-equivalence tests remain unchanged in purpose.

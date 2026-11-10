@@ -1,10 +1,6 @@
-/*
- * Low-performance mode. Without a GPU, browsers draw WebGL in software, where
- * a frame costs what its pixels cost: line shape and anti-aliasing barely
- * change it, the number of pixels and lines drawn does. When full-quality
- * frames are slow, frames during a drag or a scroll are drawn at a fraction
- * of the resolution over a sample of the rows; the picture after the gesture
- * is drawn at full quality, and those frames keep measuring the machine.
+/* Bounded density rendering replaces gesture-only resolution/row sampling.
+ * Auto engages before expensive initial frames, or after measured slow frames.
+ * The persisted "low" value remains compatible with older saved pages.
  */
 
 /** How frames during a gesture are drawn: decided from measured frames, or forced. */
@@ -22,10 +18,10 @@ export const SLOW_FRAME_MS = 50;
 export const FAST_FRAME_MS = 25;
 /** Full-quality frames a verdict is based on; odd, so they have a middle one. */
 export const MEASURED_FRAMES = 5;
-/** Device resolution of low-performance frames, per axis: a quarter of the pixels. */
-export const LOW_PERFORMANCE_RESOLUTION = 0.5;
-/** Rows drawn by a low-performance frame, sampled from the shuffled draw order. */
-export const LOW_PERFORMANCE_ROWS = 10_000;
+/** Engage before the first software frame can stall the page. */
+export const BINNED_ABOVE_ROWS = 6_000;
+/** Keep already-fast hardware plots on their original GPU path. */
+export const HARDWARE_BINNED_ABOVE_ROWS = 250_000;
 
 /** The middle value of an odd number of values. */
 function median(values: ReadonlyArray<number>): number {
@@ -62,7 +58,13 @@ export class FramePerformance {
   }
 }
 
-/** Whether frames during a gesture are drawn in low-performance mode, for a quality setting. */
-export function lowPerformance(quality: RenderQuality, slow: boolean): boolean {
-  return quality === "low" || (quality === "auto" && slow);
+/** Exact rendering remains an explicit override, regardless of size or timing. */
+export function binnedRendering(
+  quality: RenderQuality,
+  slow: boolean,
+  rows: number,
+  software = true,
+): boolean {
+  const threshold = software ? BINNED_ABOVE_ROWS : HARDWARE_BINNED_ABOVE_ROWS;
+  return quality === "low" || (quality === "auto" && (slow || rows > threshold));
 }

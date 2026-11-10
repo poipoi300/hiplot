@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
+  BINNED_ABOVE_ROWS,
+  binnedRendering,
   FAST_FRAME_MS,
   FramePerformance,
+  HARDWARE_BINNED_ABOVE_ROWS,
   isRenderQuality,
-  lowPerformance,
   MEASURED_FRAMES,
   SLOW_FRAME_MS,
 } from "./performance";
@@ -50,10 +52,20 @@ describe("detecting slow frames", () => {
 
 describe("render quality settings", () => {
   test("auto follows the measurement; low and full force it", () => {
-    expect(lowPerformance("auto", true)).toBe(true);
-    expect(lowPerformance("auto", false)).toBe(false);
-    expect(lowPerformance("low", false)).toBe(true);
-    expect(lowPerformance("full", true)).toBe(false);
+    expect(binnedRendering("auto", true, 100)).toBe(true);
+    expect(binnedRendering("auto", false, BINNED_ABOVE_ROWS)).toBe(false);
+    expect(binnedRendering("auto", false, BINNED_ABOVE_ROWS + 1)).toBe(true);
+    expect(binnedRendering("low", false, 100)).toBe(true);
+    expect(binnedRendering("full", true, 1_000_000)).toBe(false);
+  });
+
+  test("fast hardware keeps moderate datasets exact without delaying software startup", () => {
+    expect(binnedRendering("auto", false, 50_000, false)).toBe(false);
+    expect(binnedRendering("auto", false, 50_000, true)).toBe(true);
+    expect(binnedRendering("auto", false, HARDWARE_BINNED_ABOVE_ROWS, false)).toBe(false);
+    expect(binnedRendering("auto", false, HARDWARE_BINNED_ABOVE_ROWS + 1, false)).toBe(true);
+    expect(binnedRendering("auto", true, 100, false)).toBe(true);
+    expect(binnedRendering("full", true, 1_000_000, true)).toBe(false);
   });
 
   test("only the three settings are accepted from saved state", () => {
