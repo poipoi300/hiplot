@@ -124,6 +124,56 @@ const at = (pixels: Uint8ClampedArray, width: number, x: number, y: number): num
   Array.from(pixels.slice((y * width + x) * 4, (y * width + x + 1) * 4));
 
 describe("continuous pixel evaluation", () => {
+  test("production sparse CPU evaluation prunes disjoint cells with the existing tile index", () => {
+    const hist = histogram(256);
+    for (let left = 200; left < 212; ++left) {
+      for (let right = 200; right < 225; ++right) populate(hist, left, right, 1);
+    }
+    const occupied = hist.occupied;
+    let visits = 0;
+    hist.occupied = new Proxy(occupied, {
+      get(target, key) {
+        if (key === Symbol.iterator)
+          return function* () {
+            for (const cell of target) {
+              visits++;
+              yield cell;
+            }
+          };
+        if (typeof key === "string" && /^\d+$/.test(key)) visits++;
+        return Reflect.get(target, key, target);
+      },
+    });
+    const style = frame({ width: 85, height: 255, contextAlpha: 0 });
+    const state = update([], { selectedCount: 300, rows: 300 });
+    let floorCalls = 0;
+    const originalFloor = Math.floor;
+    let image: ReturnType<typeof evaluateContinuousPairCPU>;
+    try {
+      // Each strip examination floors its encoded left endpoint. Count index/bucket overhead too.
+      Math.floor = (value) => {
+        floorCalls++;
+        return originalFloor(value);
+      };
+      image = evaluateContinuousPairCPU(pair(hist, "sparse-cpu", 0, 85), style, state);
+    } finally {
+      Math.floor = originalFloor;
+    }
+    expect(visits).toBeLessThan((85 * 255 * 300) / 16);
+    expect(floorCalls).toBeLessThan((85 * 255 * 300) / 8);
+    expect(image.pixels.some((value, index) => index % 4 === 3 && value > 0)).toBe(true);
+    const reference = { ...hist, occupied };
+    for (let x = 0; x < 85; x += 13) {
+      for (let y = 0; y < 255; y += 17) {
+        const pixel = evaluateContinuousPixel(reference, style, 85, x + 0.5, y + 0.5);
+        const rgba = compositeContinuousPixel(pixel, style, colors, 300, 0);
+        expect(at(image.pixels, 85, x, y)).toEqual(
+          Array.from(Uint8ClampedArray.from(rgba, (value) => value * 255)),
+        );
+      }
+    }
+  });
+
   test("dense endpoint integration retains isolated strands at pixel-height spacing", () => {
     const hist = denseContextHistogram();
     populate(hist, 64, 64, 1);

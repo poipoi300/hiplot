@@ -199,6 +199,9 @@ export function evaluateContinuousPixel(
   x: number,
   y: number,
   sparse = histogram.occupied.length <= SPARSE_DENSITY_CELLS,
+  candidates = histogram.occupied,
+  firstCandidate = 0,
+  lastCandidate = candidates.length,
 ): ContinuousPixel {
   const output = emptyPixel();
   if (gap <= 0 || x < 0 || x >= gap) return output;
@@ -220,7 +223,10 @@ export function evaluateContinuousPixel(
     addCell(output, histogram, cell, coverage, coverage, style.colorMode);
   };
   if (sparse) {
-    for (const cell of histogram.occupied) exact(Math.floor(cell / stride), cell % stride, cell);
+    for (let index = firstCandidate; index < lastCandidate; ++index) {
+      const cell = candidates[index];
+      exact(Math.floor(cell / stride), cell % stride, cell);
+    }
     return output;
   }
   const reverse = w < 0.5;
@@ -382,14 +388,23 @@ export function evaluateContinuousPairCPU(
   const selectedFrame = separateLayers ? { ...frame, contextAlpha: 0 } : frame;
   const contextReference = densityReference(update.contextCount, frame.height);
   const gap = pairGap(pair);
+  const sparse = pair.histogram.occupied.length <= SPARSE_DENSITY_CELLS;
+  const spatial = sparse
+    ? continuousSparseIndex(pair.histogram, frame, gap, columns, height)
+    : null;
   for (let y = 0; y < height; ++y) {
     for (let x = 0; x < columns; ++x) {
+      const bucket = (Math.floor(y / DENSITY_TILE_ROWS) * columns + x) * 2;
       const pixel = evaluateContinuousPixel(
         pair.histogram,
         frame,
         gap,
         ((x + 0.5) * gap) / columns,
         y + 0.5,
+        sparse,
+        spatial?.indices,
+        spatial?.ranges[bucket],
+        spatial?.ranges[bucket + 1],
       );
       const rgba = compositeContinuousPixel(
         pixel,
