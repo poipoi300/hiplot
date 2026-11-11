@@ -2,8 +2,6 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "tests",
-  // Split individual cases across CI shards, including large rendering files.
-  fullyParallel: !!process.env.CI,
   timeout: 60_000,
   expect: {
     timeout: 15_000,
