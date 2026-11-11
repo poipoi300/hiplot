@@ -124,6 +124,8 @@ function sparseDensityLayers(histogram: ContinuousHistogram): SparseDensityLayer
   for (const cell of histogram.occupied) {
     if (histogram.selected[cell] > 0) selectedCount++;
     if (histogram.context[cell] > 0) contextCount++;
+    if (selectedCount > SPARSE_DENSITY_CELLS && contextCount > SPARSE_DENSITY_CELLS)
+      return { selected: false, context: false, cells: new Uint32Array() };
   }
   const selected = selectedCount <= SPARSE_DENSITY_CELLS;
   const context = contextCount <= SPARSE_DENSITY_CELLS;

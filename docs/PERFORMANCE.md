@@ -2478,3 +2478,70 @@ pass. An independent static reviewer found no concrete defect in the two
 changed files; their attempted Git/test commands were unavailable, so executed
 verification is the main session's, not theirs. Raw runs are
 `population-{hardware,software}.json` and `population-{red,green}.log`.
+
+### Per-pair branches and causal ablation
+
+The follow-up `baseline-census-profile-*.json` explicitly times and subtracts
+the profiler's own positive-cell census from the composite/plan residual. The
+30%-selected curved step has nine dense selected/context layers, each evaluated
+at465px height. The integer dataset exercises the sparse branch at the same
+1M source rows and full horizontal width:16/48 positive selected/context cells
+in the first two pairs,64/64 in the remaining seven. These completed draw
+samples include the one-pixel completion probe, not only submission.
+
+| Interior pair | Dense hardware ms | Dense software ms | Software reconstruction draw ms | Sparse hardware / software ms |
+|---|---:|---:|---:|---:|
+| 1:2 | 0.8 | 28.7 | 3.7 | 0.2 / 2.2 |
+| 2:3 | 0.7 | 29.4 | 3.8 | 0.3 / 2.3 |
+| 3:4 | 0.9 | 28.8 | — | 0.2 / 2.2 |
+| 4:5 | 0.9 | 30.5 | — | 0.3 / 2.3 |
+| 5:6 | 1.0 | 29.6 | 2.3 | 0.2 / 2.1 |
+| 6:7 | 0.7 | 26.7 | 3.5 | 0.2 / 2.1 |
+| 7:8 | 0.9 | 26.1 | — | 0.2 / 2.3 |
+| 8:9 | 0.8 | 23.5 | 3.2 | 0.1 / 2.1 |
+| 9:10 | 0.8 | 28.9 | — | 0.2 / 2.2 |
+
+Dense packing/classification totals44.1/40.9ms, upload API calls4.5/4.0ms,
+original marginal reductions30.3/32.7ms, and final readback1.6/1.3ms. The
+composite/guide-plan residual excluding census is6.6/33.8ms. Sparse equivalents
+are2.6/2.8ms packing,5.1/5.1ms uploads,23.3/24.1ms marginals and4.6/4.6ms
+composite/plans. The two outer pairs evaluate one original-endpoint column
+each on the CPU; they do not execute either histogram shader branch. Upload
+API timing is not isolated device DMA: pending transfer/allocation completion
+is flushed by the pre-draw readback and remains in the raw `preDrawWaitMs`.
+
+A deliberately **incorrect, unshipped causal ablation** restores the former
+two-point endpoint sampling and factor placement while retaining current curves,
+layer selection and all other code. Dense completed draws change7.5→4.3ms
+hardware and252.2→158.2ms software on the same curved30% step; software full
+curved draws change3555.5→2378.7ms. It demonstrates why removing footprint
+integration is tempting, not an acceptable optimization: the isolated-strand
+regression already proves that point sampling can return zero instead of0.5.
+The ablation is saved as `point-hook.js` / `point-ablation-profile-*.json`,
+never compiled into production. Timing variability and separate runs prevent
+assigning every millisecond of the historical regression to one fix.
+
+### Stop classifying layers once both are dense
+
+Positive-cell counts only increase during a census. Once **both** exceed512,
+neither layer can use sparse strips, so the remaining census and sparse-cell
+collection are unnecessary. A sparse opposite layer still forces the complete
+classification and exact candidate collection; the512 boundary is unchanged.
+No texture, shader calculation, integration sample or pixel changes.
+
+| 1M continuous stage | Prior commit→classification, hardware ms | Prior commit→classification, software ms |
+|---|---:|---:|
+| Brush input→fence | 192.1→134.4 | 446.8→368.5 |
+| Histogram | 94.7→69.3 | 93.7→72.3 |
+| Raster/composite | 89.4→62.3 | 339.1→288.8 |
+| Full recompute | 80.1→71.7 | 3567.8→2720.7 |
+
+The unchanged histogram stage also varies substantially between runs; the
+whole latency reduction must not all be attributed to a classification-only
+change. Integer latency changes87.1→77.3ms /112.2→93.1ms although its sparse
+path cannot early-exit. The deterministic work-bound test is the causal proof:
+a dense128×128 fixture previously read33,532 count entries per pixel and now
+requires fewer than4,096, with exactly equal CPU output. All59 focused
+density/marginal/reconstruction units pass. Static review confirms the inclusive
+threshold and independent-layer conditions. Raw runs are
+`classification-{hardware,software}.json`.

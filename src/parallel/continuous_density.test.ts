@@ -124,6 +124,29 @@ const at = (pixels: Uint8ClampedArray, width: number, x: number, y: number): num
   Array.from(pixels.slice((y * width + x) * 4, (y * width + x + 1) * 4));
 
 describe("continuous pixel evaluation", () => {
+  test("independently dense layers stop classification once both exceed the sparse limit", () => {
+    const hist = histogram(128);
+    hist.selected.fill(1);
+    hist.context.fill(1);
+    hist.occupied = Uint32Array.from(
+      { length: 128 * 128 },
+      (_, index) => Math.floor(index / 128) * 129 + (index % 128),
+    );
+    const style = frame({ height: 127 });
+    const expected = evaluateContinuousPixel(hist, style, 85, 42.5, 63.5);
+    let reads = 0;
+    for (const name of ["selected", "context"] as const) {
+      hist[name] = new Proxy(hist[name], {
+        get(target, property) {
+          if (typeof property === "string" && /^\d+$/.test(property)) reads++;
+          return Reflect.get(target, property, target);
+        },
+      });
+    }
+    expect(evaluateContinuousPixel(hist, style, 85, 42.5, 63.5)).toEqual(expected);
+    expect(reads).toBeLessThan(4096);
+  });
+
   test("production sparse CPU evaluation prunes disjoint cells with the existing tile index", () => {
     const hist = histogram(256);
     for (let left = 200; left < 212; ++left) {
