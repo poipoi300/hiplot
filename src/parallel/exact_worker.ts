@@ -1,5 +1,6 @@
 import type { ExactReply, ExactRequest } from "./exact_types";
 import type { FinishedFrame, LineColors, LineFrame } from "./webgl";
+import { WorkerFrameCache } from "./worker_payload";
 
 interface PendingFrame {
   id: number;
@@ -21,10 +22,7 @@ export class ExactRenderer {
   private pending: PendingFrame | null = null;
   private activeId = 0;
   private nextId = 0;
-  private readonly columnIds = new WeakMap<Float32Array, number>();
-  private nextColumnId = 0;
-  private sentColumns = new Set<number>();
-  private colors: LineColors | null = null;
+  private readonly frameCache = new WorkerFrameCache();
   private order: Uint32Array | null = null;
   private drawOrder: Uint32Array | null = null;
 
@@ -130,35 +128,12 @@ export class ExactRenderer {
     this.pending = null;
     const { id, frame, colors, selection, order, fallbackOrder } = pending;
     const transfer: Transferable[] = [selection.buffer];
-    const columns: ExactRequest["columns"][number][] = [];
-    const activeColumns = new Set<number>();
-    const axes = frame.axes.map((axis) => {
-      let column = this.columnIds.get(axis.pixels);
-      if (column === undefined) {
-        column = ++this.nextColumnId;
-        this.columnIds.set(axis.pixels, column);
-      }
-      if (!activeColumns.has(column) && !this.sentColumns.has(column)) {
-        const pixels = axis.pixels.slice();
-        columns.push({ id: column, pixels });
-        transfer.push(pixels.buffer);
-      }
-      activeColumns.add(column);
-      return { x: axis.x, column };
-    });
-    this.sentColumns = activeColumns;
-    const request: ExactRequest = { ...frame, id, axes, columns, selection };
-    if (
-      this.colors === null ||
-      this.colors.bins !== colors.bins ||
-      this.colors.palette !== colors.palette ||
-      this.colors.colorMapBins !== colors.colorMapBins
-    ) {
-      const bins = colors.bins.slice();
-      request.colors = { ...colors, bins };
-      transfer.push(bins.buffer);
-      this.colors = colors;
-    }
+    const request: ExactRequest = {
+      ...frame,
+      id,
+      ...this.frameCache.encode(frame.axes, colors, transfer),
+      selection,
+    };
     const drawOrder = this.density ? order : fallbackOrder();
     if (this.order !== order) {
       request.order = order.slice();
@@ -197,10 +172,9 @@ export class ExactRenderer {
     this.running = false;
     this.starting = false;
     this.pending = null;
-    this.colors = null;
+    this.frameCache.clear();
     this.order = null;
     this.drawOrder = null;
-    this.sentColumns.clear();
     this.worker?.terminate();
     this.worker = null;
   }
