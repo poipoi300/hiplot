@@ -2545,3 +2545,102 @@ requires fewer than4,096, with exactly equal CPU output. All59 focused
 density/marginal/reconstruction units pass. Static review confirms the inclusive
 threshold and independent-layer conditions. Raw runs are
 `classification-{hardware,software}.json`.
+
+### Rejected exact-count and geometry-table experiments
+
+The following measured candidates were removed rather than committed:
+
+| Candidate, relative to classification commit | Hardware brush/count ms | Software brush/count ms | Hardware raster/recompute ms | Software raster/recompute ms |
+|---|---:|---:|---:|---:|
+| Accepted reference | 134.4 / 69.3 | 368.5 / 72.3 | 62.3 / 71.7 | 288.8 / 2720.7 |
+| Cache-local addition batching | 136.3 / 75.2 | 454.3 / 105.0 | 59.7 / 66.6 | 333.0 / 3623.3 |
+| Dense geometry lookup texture | 154.8 / 71.1 | 471.6 / 86.7 | 68.4 / 79.3 | 380.6 / 4295.0 |
+| Retained original-endpoint marginal, full peak scans | 152.6 / 72.5 | 434.1 / 87.2 | 72.1 / 83.2 | 341.1 / 3695.7 |
+| Same marginal, coverage-ordered peak repairs | 144.5 / 80.8 | 414.9 / 81.0 | 47.8 / 78.2 | 318.1 / 3405.0 |
+| Direct addition-only kernel loop | 166.1 / 84.9 | 454.4 / 106.0 | 66.3 / 80.6 | 334.7 / 3480.8 |
+
+The addition experiment accumulated eight exact statistics per cell in shared
+Float64 scratch, then flushed each occupied cell once. Its regression reduced
+10,000 repeated count stores to one, and all44 grid tests passed, but scratch
+traffic and the full occupied-cell flush lost in the real workload. Independent
+review also identified O(all occupied cells) work for even a one-row addition.
+The source diff and `addition-{hardware,software}.json` are retained outside the
+repo; the accepted exact direct-delta path was restored.
+
+The geometry experiment retained every integrated tent sample and sum order,
+precomputing only the Jacobian factor, tangent length and normalized square
+spans by horizontal column and endpoint difference. It used an additional
+RGBA32F texture only for software dense evaluation; hardware kept the original
+arithmetic. All35 focused units and20 real GPU/CPU cases passed unchanged
+pixel tolerances, and static review found no concrete defect. Despite avoiding
+repeated square roots, the table/upload/lookup version lost substantially,
+including software full recompute2720.7→4295.0ms and integer brush93.1→113.6ms.
+No isolated GPU profile was collected for this losing implementation, so these
+whole-run numbers do not prove which part of the new texture path caused the
+loss. Subsequent steep-slope-only test extensions were not run because the
+candidate was rejected. `rejected-geometry.diff`, helper source/tests and
+`geometry-{hardware,software}.json` preserve the experiment; no geometry-cache
+code or test changes remain in production.
+
+The marginal cache retained exact Float64 two-pixel coverage, CSR memberships,
+raw sums and peak/winner repairs after complete mask batches, with the original
+uncached reducer/compositor preserved as reference and wide-line fallback. It
+was bounded to the two most recently used endpoint arrays (at most53.4MiB for
+2M endpoints), and cleared on disposal. The first version's expanding-brush
+profile spent40.3/45.8ms in margins, versus the original30.3/32.7ms diagnostic
+case. Ordering CSR members by coverage reduced a tied-peak regression from8,193
+mask reads to fewer than4,160, avoiding complete surviving-peak scans without
+approximating coverage. Hardware raster improved62.3→47.8ms, but whole-frame
+latency still lost on both backends; hardware count timing also changed despite
+unchanged kernel code. The added cache architecture was therefore not retained.
+All83 focused units and all48 existing continuous browser regressions passed,
+including immutable pictures, actual GPU/CPU comparisons, context loss and
+preemption. Independent static reviews found no concrete defect but did not run
+tests. `marginal*` JSON/profiles, integration diff and both versions of the
+experimental module/tests are retained outside the repo; none of this marginal
+cache code or its new tests is shipped.
+
+A smaller addition-only experiment proved a batch contains no removals when
+its selected-population increase equals its changed-row count. It then applied
+the original exact count/color/extrema updates directly, with no scratch-cell
+accumulation or full occupied-cell scan. New numeric/categorical regressions
+reduced direction reads15→0, all43 grid tests passed, and static review found
+no defect. Nevertheless the production run did not improve throughput; the
+otherwise unchanged raster/recompute stages also drifted. Its diff/results are
+saved as `direct-addition*`; the code and new tests were removed. This drift
+motivated interleaved accepted/candidate worker measurements for the next
+composite experiment, rather than assigning whole-run variation to one branch.
+
+### Calculate horizontal composite weights once per column
+
+Horizontal source indices and interpolation fractions do not depend on output
+y. Compute them once per visible column, retaining Float64 fractions and
+row-major pixel traversal. Premultiplied blending, clipping, pair order and
+byte conversion are unchanged; no image/model approximation is introduced.
+The work-bound regression fails at21,675 floors before the change and now uses
+85, with equal cached bytes. An independent fractional/clipped/transparent
+image oracle also requires exact bytes. All42 density/marginal units, types and
+plain build pass; independent static review finds no defect and did not run
+commands.
+
+A separate diagnostic benchmark alternates accepted and candidate **pure,
+uninstrumented Bun worker snapshots**, three loads per variant per backend,
+using the original benchmark gestures and main bundle. This controls process
+conditions better than widely separated runs, but is not interchangeable with
+the ordinary Vite-worker production baseline:
+
+| 1M continuous stage | Accepted→lookup, hardware ms | Accepted→lookup, software ms |
+|---|---:|---:|
+| Brush input→fence | 191.7→160.9 | 348.8→345.9 |
+| Histogram (unchanged code) | 90.7→74.9 | 70.8→68.7 |
+| Raster/composite | 84.3→71.2 | 266.1→265.5 |
+| Full recompute | 78.3→82.2 | 2792.4→2770.3 |
+
+The unchanged histogram's variation cannot be credited to the lookup. Integer
+brush loses78.8→84.0ms on hardware and improves94.0→88.0ms on software; hardware
+full recompute also loses. No sub100ms claim follows from these results. Raw
+paired and split reference/candidate files retain every run. The first paired
+harness attempt failed before running because Windows ESM preload needs a file
+URL. The next timed out twice at180s: directly bundling the exported entry left
+ESM exports in a classic worker. A side-effect-only entry fixed that harness;
+failed attempts are preserved separately and excluded from timing summaries.

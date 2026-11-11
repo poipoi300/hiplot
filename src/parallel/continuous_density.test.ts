@@ -423,6 +423,110 @@ describe("continuous pixel evaluation", () => {
 });
 
 describe("continuous pair image cache", () => {
+  test("cached composites calculate horizontal weights once per column", () => {
+    const hist = histogram();
+    populate(hist, 4, 4, 1);
+    const source = pair(hist, "x-weights", 0.125, 85.25);
+    const style = frame({ width: 100, height: 255 });
+    const state = update([source]);
+    const evaluator = new ContinuousDensityEvaluator({ gl: null });
+    const first = evaluator.render(style, state);
+    const originalFloor = Math.floor;
+    let floorCalls = 0;
+    try {
+      Math.floor = (value) => {
+        floorCalls++;
+        return originalFloor(value);
+      };
+      const cached = evaluator.render(style, state);
+      expect(cached.evaluatedPairs).toBe(0);
+      expect(cached.pixels).toEqual(first.pixels);
+    } finally {
+      Math.floor = originalFloor;
+      evaluator.dispose();
+    }
+    expect(floorCalls).toBeLessThan(100);
+  });
+
+  test("fractional clipped composites preserve premultiplied interpolation bytes", () => {
+    const image = {
+      width: 4,
+      height: 2,
+      pixels: Uint8ClampedArray.of(
+        250,
+        3,
+        40,
+        0,
+        10,
+        100,
+        220,
+        63,
+        30,
+        80,
+        220,
+        255,
+        90,
+        30,
+        50,
+        128,
+        40,
+        80,
+        10,
+        64,
+        210,
+        10,
+        90,
+        180,
+        30,
+        70,
+        50,
+        0,
+        10,
+        200,
+        160,
+        255,
+      ),
+    };
+    const evaluator = new ContinuousDensityEvaluator({ gl: null });
+    Reflect.set(evaluator, "evaluatePair", () => image);
+    const gap = 3.75;
+    const style = frame({ width: 9, height: 2 });
+    const hist = histogram();
+    for (const origin of [-0.375, 0.875, 12.125]) {
+      const actual = evaluator.render(
+        style,
+        update([pair(hist, "premultiplied", origin, origin + gap)]),
+      );
+      const expected = new Uint8ClampedArray(style.width * style.height * 4);
+      for (let y = 0; y < style.height; ++y) {
+        for (let x = 0; x < style.width; ++x) {
+          if (x + 0.5 < origin || x + 0.5 >= origin + gap) continue;
+          const position = Math.max(
+            0,
+            Math.min(image.width - 1, ((x + 0.5 - origin) / gap) * image.width - 0.5),
+          );
+          const below = Math.floor(position);
+          const fraction = position - below;
+          const left = (y * image.width + below) * 4;
+          const right = (y * image.width + Math.min(below + 1, image.width - 1)) * 4;
+          const alpha =
+            image.pixels[left + 3] * (1 - fraction) + image.pixels[right + 3] * fraction;
+          if (alpha <= 0) continue;
+          const offset = (y * style.width + x) * 4;
+          for (let channel = 0; channel < 3; ++channel) {
+            expected[offset + channel] =
+              (image.pixels[left + channel] * image.pixels[left + 3] * (1 - fraction) +
+                image.pixels[right + channel] * image.pixels[right + 3] * fraction) /
+              alpha;
+          }
+          expected[offset + 3] = alpha;
+        }
+      }
+      expect(actual.pixels).toEqual(expected);
+    }
+    evaluator.dispose();
+  });
+
   test("scroll only composites cached pairs, including pairs initially offscreen", () => {
     const hist = histogram();
     populate(hist, 2, 2, 2);

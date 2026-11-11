@@ -1206,17 +1206,26 @@ function compositePairImage(
 ): void {
   const start = Math.max(0, Math.ceil(origin - 0.5));
   const end = Math.min(width, Math.ceil(origin + gap - 0.5));
+  if (end <= start) return;
+  const leftOffsets = new Uint32Array(end - start);
+  const rightOffsets = new Uint32Array(end - start);
+  const fractions = new Float64Array(end - start);
+  for (let x = start; x < end; ++x) {
+    const source = Math.max(
+      0,
+      Math.min(image.width - 1, ((x + 0.5 - origin) / gap) * image.width - 0.5),
+    );
+    const below = Math.floor(source);
+    leftOffsets[x - start] = below * 4;
+    rightOffsets[x - start] = Math.min(below + 1, image.width - 1) * 4;
+    fractions[x - start] = source - below;
+  }
   for (let y = 0; y < height; ++y) {
+    const row = y * image.width * 4;
     for (let x = start; x < end; ++x) {
-      const source = Math.max(
-        0,
-        Math.min(image.width - 1, ((x + 0.5 - origin) / gap) * image.width - 0.5),
-      );
-      const below = Math.floor(source);
-      const above = Math.min(below + 1, image.width - 1);
-      const fraction = source - below;
-      const left = (y * image.width + below) * 4;
-      const right = (y * image.width + above) * 4;
+      const fraction = fractions[x - start];
+      const left = row + leftOffsets[x - start];
+      const right = row + rightOffsets[x - start];
       const alpha = image.pixels[left + 3] * (1 - fraction) + image.pixels[right + 3] * fraction;
       const offset = (y * width + x) * 4;
       if (alpha <= 0) continue;
