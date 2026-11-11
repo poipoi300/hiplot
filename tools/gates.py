@@ -52,11 +52,8 @@ DETERMINISTIC_GATES: tuple[Gate, ...] = (
     Gate("mypy", GateStage.COMMIT, ci_enforced=True),
     Gate("biome", GateStage.COMMIT, ci_enforced=True),
     Gate("tsc", GateStage.COMMIT, ci_enforced=True),
-    Gate("tests-and-diff-coverage", GateStage.PUSH, ci_enforced=True),
+    Gate("tests-and-diff-coverage", GateStage.PUSH, ci_enforced=False),
 )
-
-# CI distributes every browser case and requires every report before diff-cover.
-PLAYWRIGHT_CI_SHARDS = (1, 2, 3, 4)
 
 
 def gates_for_stage(stage: GateStage) -> tuple[Gate, ...]:

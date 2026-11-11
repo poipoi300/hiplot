@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Run the Playwright suite against an istanbul-instrumented web bundle and
 # write the TypeScript line coverage it produced to coverage/e2e/lcov.info.
-# Used by tools/stack_coverage_gate.sh locally and by the CI Playwright job,
-# whose report the CI coverage job then reuses.
+# Used locally by tools/stack_coverage_gate.sh and for standalone browser runs.
 set -euo pipefail
 
 rm -rf .nyc_output coverage/e2e

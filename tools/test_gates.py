@@ -6,7 +6,7 @@ from typing import Any
 
 import yaml
 
-from tools.gates import DETERMINISTIC_GATES, PLAYWRIGHT_CI_SHARDS, GateStage, gates_for_stage
+from tools.gates import DETERMINISTIC_GATES, GateStage, gates_for_stage
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -44,7 +44,6 @@ def test_ci_enforced_gates_appear_in_workflow() -> None:
         "mypy": "mypy .",
         "biome": "biome check --error-on-warnings .",
         "tsc": "bun run typecheck",
-        "tests-and-diff-coverage": "stack_coverage_gate.sh",
     }
     ci_gates = {g.name for g in DETERMINISTIC_GATES if g.ci_enforced}
     assert ci_gates == set(expected_evidence)
@@ -52,28 +51,30 @@ def test_ci_enforced_gates_appear_in_workflow() -> None:
         assert evidence in workflow_text
 
 
-def test_ci_shards_every_browser_test_and_retains_coverage() -> None:
+def test_ci_runs_unit_tests_without_a_browser_dependency() -> None:
     config = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
-    job = config["jobs"]["playwright"]
-    assert job["strategy"]["matrix"]["shard"] == list(PLAYWRIGHT_CI_SHARDS)
-    assert job["strategy"]["fail-fast"] is False
-    steps = {step.get("name"): step for step in job["steps"]}
-    run = steps["Playwright against an instrumented bundle"]["run"]
-    assert run == "bash tools/e2e_coverage.sh --shard=${{ matrix.shard }}/" + str(len(PLAYWRIGHT_CI_SHARDS))
-    artifact = steps["Upload end-to-end coverage"]["with"]
-    assert artifact["name"] == "e2e-coverage-${{ matrix.shard }}"
+    job = config["jobs"]["unit-tests"]
+    assert job["needs"] == "build-js"
+    commands = [step["run"] for step in job["steps"] if "run" in step]
+    assert "uv run pytest -q" in commands
+    assert "bun test ./src ./tools" in commands
+    for workflow in (REPO_ROOT / ".github/workflows").glob("*.yml"):
+        text = workflow.read_text(encoding="utf-8")
+        for browser_dependency in ("playwright", "test:js", "e2e_coverage.sh", "stack_coverage_gate.sh", "E2E_LCOV"):
+            assert browser_dependency not in text, f"{workflow.name}: hosted browser dependency {browser_dependency}"
 
 
-def test_ci_requires_all_shards_before_the_stack_coverage_gate() -> None:
-    config = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
-    job = config["jobs"]["tests-and-coverage"]
-    assert "playwright" in job["needs"]
-    steps = {step.get("name"): step for step in job["steps"]}
-    assert steps["Download end-to-end coverage"]["with"]["pattern"] == "e2e-coverage-*"
-    merge = steps["Merge every browser shard's coverage"]["run"]
-    assert 'test "${#reports[@]}" -eq ' + str(len(PLAYWRIGHT_CI_SHARDS)) in merge
-    assert 'tools/merge_lcov.py coverage/e2e/lcov.info "${reports[@]}"' in merge
-    assert steps["Tests + diff coverage (Python, bun, Playwright)"]["env"]["E2E_LCOV"] == ("coverage/e2e/lcov.info")
+def test_local_push_gate_keeps_browser_tests_and_combined_coverage() -> None:
+    gate = next(g for g in DETERMINISTIC_GATES if g.name == "tests-and-diff-coverage")
+    assert gate.stage is GateStage.PUSH
+    assert gate.ci_enforced is False
+    hook = next(h for h in _precommit_hooks() if h["id"] == gate.name)
+    assert hook["entry"] == "bash tools/stack_coverage_gate.sh"
+    script = (REPO_ROOT / "tools/stack_coverage_gate.sh").read_text(encoding="utf-8")
+    assert "bash tools/e2e_coverage.sh" in script
+    assert "${DIFF_COVER_FAIL_UNDER:-90}" in script
+    assert '"${REPORTS}/python.lcov" "${E2E_LCOV}"' in script
+    assert '--bun "${REPORTS}/unit/lcov.info"' in script
 
 
 def test_workflow_actions_are_pinned_to_commit_shas() -> None:

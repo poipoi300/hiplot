@@ -121,9 +121,11 @@ Fast gates block commits: hygiene, `ruff format`, `ruff check`,
 `mypy --strict`, Biome, `tsc` (strict). Slow gates block pushes: pytest,
 `bun test` and the Playwright suite against an instrumented bundle, merged
 into one LCOV report, plus diff-cover requiring **≥90% coverage on changed
-lines** across Python and TypeScript. CI re-runs everything on push/PR, so
-bypassing hooks locally never lands unchecked code. Write code that passes on
-the first run instead of iterating against the gates.
+lines** across Python and TypeScript. Playwright and combined diff coverage
+run locally and before pushes only. Hosted CI runs lint, types, Python and Bun
+unit tests, builds, compatibility checks, package installs and docs; it does
+not install or run browsers. Write code that passes on the first run instead
+of iterating against the gates.
 
 ## Where code lives
 

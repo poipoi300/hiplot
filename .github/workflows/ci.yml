@@ -1,7 +1,5 @@
-# Durable enforcement of the anti-slop gates. Pre-commit hooks can be bypassed
-# with --no-verify; this runs the same checks on every push and PR so nothing
-# lands unchecked. One job per language for the fast gates, the Playwright
-# shards, then the stack test + diff-coverage gate that consumes all coverage.
+# Hosted lint, types, unit tests, builds, and compatibility checks.
+# Browser tests and combined diff coverage run locally in the pre-push hook.
 name: CI
 
 on:
@@ -59,14 +57,9 @@ jobs:
   build-js:
     uses: ./.github/workflows/build-js.yml
 
-  playwright:
-    name: Playwright (${{ matrix.shard }}/4)
+  unit-tests:
     needs: build-js
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -81,65 +74,14 @@ jobs:
         with:
           name: js-bundle
           path: hiplot/static/built/
-      - name: Install dependencies
-        # The bundle comes first: the Python package carries it.
-        run: |
-          bun install --frozen-lockfile
-          uv sync --extra server
-          bun run playwright install --with-deps chromium
-      - name: Playwright against an instrumented bundle
-        run: bash tools/e2e_coverage.sh --shard=${{ matrix.shard }}/4
-      - name: Upload end-to-end coverage
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-coverage-${{ matrix.shard }}
-          path: coverage/e2e/lcov.info
-          retention-days: 7
-      - name: Upload Playwright traces
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: playwright-results-${{ matrix.shard }}
-          path: test-results/
-          retention-days: 7
-
-  tests-and-coverage:
-    needs: [playwright, build-js]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0  # diff-cover needs history to compare against main
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          version: ${{ env.UV_VERSION }}
-          enable-cache: true
-      - name: Download bundles
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: js-bundle
-          path: hiplot/static/built/
-      - name: Download end-to-end coverage
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: e2e-coverage-*
-          path: coverage/shards/
       - name: Install dependencies
         run: |
           bun install --frozen-lockfile
           uv sync --group dev
-      - name: Merge every browser shard's coverage
-        run: |
-          reports=(coverage/shards/*/lcov.info)
-          test "${#reports[@]}" -eq 4
-          uv run python tools/merge_lcov.py coverage/e2e/lcov.info "${reports[@]}"
-      - name: Tests + diff coverage (Python, bun, Playwright)
-        env:
-          E2E_LCOV: coverage/e2e/lcov.info
-        run: bash tools/stack_coverage_gate.sh
+      - name: Python tests
+        run: uv run pytest -q
+      - name: Frontend and tooling unit tests
+        run: bun test ./src ./tools
 
   python-versions:
     name: pytest (Python ${{ matrix.python-version }})

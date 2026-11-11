@@ -7,8 +7,8 @@
 #
 # Python tool versions are pinned in [dependency-groups] dev in pyproject.toml
 # (uv.lock) and frontend tool versions in package.json (bun.lock), so `uv run`
-# and `bun run` here use exactly what CI uses. Bypass in a genuine emergency
-# with `git commit --no-verify` — CI still enforces the same gates on push.
+# and `bun run` here use exactly what CI uses. Browser tests and combined
+# diff coverage are enforced locally before pushes; hosted CI runs unit tests.
 
 default_install_hook_types: [pre-commit, pre-push]
 exclude: '^(\.venv|node_modules|npm-dist|hiplot/static/built)/'
