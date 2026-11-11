@@ -2434,8 +2434,8 @@ The initial completion-separated curved 30%-selected brush sample attributes
 that expanding step. Metadata packing/classification costs **42.2/22.1ms**,
 original-endpoint marginal reduction **28.8/22.8ms**, and completed dense draws
 **7.8/230.6ms**, hardware/software respectively. Software uses six columns per
-interior pair; hardware uses 85–86. Software reconstruction draws add17.7ms
-across five transported pairs. Full-image readback after completion adds3.0/1.4ms.
+interior pair; hardware uses 85–86. In this initial completion-separated profile,
+software reconstruction draws add17.7ms across five transported pairs. Full-image readback after completion adds3.0/1.4ms.
 These are individual instrumented samples, not summed production medians.
 
 The fixes added distinct work: exact marginals introduce the measured O(rows)
@@ -2618,7 +2618,7 @@ y. Compute them once per visible column, retaining Float64 fractions and
 row-major pixel traversal. Premultiplied blending, clipping, pair order and
 byte conversion are unchanged; no image/model approximation is introduced.
 The work-bound regression fails at21,675 floors before the change and now uses
-85, with equal cached bytes. An independent fractional/clipped/transparent
+fewer than100, with equal cached bytes. An independent fractional/clipped/transparent
 image oracle also requires exact bytes. All42 density/marginal units, types and
 plain build pass; independent static review finds no defect and did not run
 commands.
@@ -2627,7 +2627,8 @@ A separate diagnostic benchmark alternates accepted and candidate **pure,
 uninstrumented Bun worker snapshots**, three loads per variant per backend,
 using the original benchmark gestures and main bundle. This controls process
 conditions better than widely separated runs, but is not interchangeable with
-the ordinary Vite-worker production baseline:
+the ordinary Vite-worker production baseline. In particular, its accepted-reference
+hardware brush is191.7ms, not the earlier ordinary classification sample's134.4ms:
 
 | 1M continuous stage | Accepted→lookup, hardware ms | Accepted→lookup, software ms |
 |---|---:|---:|
@@ -2644,3 +2645,119 @@ harness attempt failed before running because Windows ESM preload needs a file
 URL. The next timed out twice at180s: directly bundling the exported entry left
 ESM exports in a classic worker. A side-effect-only entry fixed that harness;
 failed attempts are preserved separately and excluded from timing summaries.
+
+### Evaluate integrated tents without CDF branches
+
+The GPU tent CDF candidate uses two clamped coordinates:
+`r = clamp(p + 1, 0, 1)`, `f = clamp(p, 0, 1)`, and
+`F(p) = 0.5*r*r + f*(1 - 0.5*f)`. This is the same analytic piecewise
+integral: zero below−1, `0.5*(p+1)^2` on(−1,0),
+`1 - 0.5*(1-p)^2` on(0,1), and one above1. It retains every finite-footprint
+integration sample and its accumulation order. The CPU reference, curves,
+sparse-layer behavior, peak/extrema rules and tone mapping are unchanged.
+Float32 reassociation is not a bitwise-equivalence claim or a new density
+approximation. All20 actual GPU/CPU cases pass the existing maximum2/255 and
+mean0.25/255 premultiplied-error bounds; the18 original cases keep their inputs
+and tolerances, with two additional fractional-height cases at widths0.25 and2.5
+(numeric-highest and RGB). Independent static review confirms the analytic
+identity and did not run tests. The resumed run independently reviewed the
+candidate and passed the mandatory full gate after repairing the pixel-test
+transport bottleneck described below.
+
+Ordinary production runs, with the Vite worker and the same3-load ×3-step
+method, follow the interleaved diagnostic above:
+
+| 1M continuous stage | Composite→analytic CDF, hardware ms | Composite→analytic CDF, software ms |
+|---|---:|---:|
+| Initial completed image | 10712.0→8631.7 | 12852.1→11760.6 |
+| Brush input→fence | 181.5→152.6 | 490.7→396.6 |
+| Histogram (unchanged code) | 101.4→75.5 | 110.4→86.5 |
+| Raster/composite | 66.9→59.1 | 351.3→308.8 |
+| Full recompute | 78.4→74.9 | 3429.3→3301.7 |
+| Release | 23.9→25.3 | 3240.7→3355.0 |
+| Median per-load brush maximum | 762.3→627.6 | 1230.4→1102.5 |
+
+Do not attribute all of these deltas to shader arithmetic: the untouched
+histogram and integer paths vary too. Integer brush changes89.4→76.1ms /
+99.8→97.9ms despite not using dense tent integration. The ordinary composite
+follow-up also loses against the earlier classification sample on both
+backends, unlike the interleaved Bun-worker diagnostic; worker compilation and
+run-to-run conditions limit cross-run attribution. All runs remain recorded.
+
+The completion-separated expanding-step profiles provide more specific GPU
+evidence: nine dense draws change6.9→6.6ms on hardware and213.8→193.1ms on
+SwiftShader. Software reconstruction draws vary18.3→15.2ms without changing
+reconstruction code. Marginals change29.4→28.3ms /26.6→27.6ms, packing8.8→25.9ms /
+25.6→26.2ms, upload1.7→5.2ms /4.4→4.4ms, and final readback1.8→2.0ms /1.7→1.3ms.
+These individual profiles also show count74.0→59.5ms /68.1→93.9ms; software count
+moves in the opposite direction from its production median. Hardware packing
+increases almost threefold despite unchanged packing code. The cause of that
+variation is not isolated, so neither change is attributed to the CDF.
+The census-excluded composite/guide-plan residual is4.0→5.2ms /40.1→31.2ms; it is
+not an isolated composite timer. Per-pair populations, columns, density and
+reconstruction times remain in `final-profile-summary.json` and raw
+`{composite,branchless}-profile-{hardware,swiftshader}.json`. Production
+`{composite,branchless}-{hardware,software}.json` files are separate from those
+instrumented profiles. Artifacts are under
+`C:/Users/Administrator/AppData/Local/Temp/hb/gpt-perf/`.
+
+### Final measured working-tree outcome
+
+| 1M continuous measure | Starting245b51e→final candidate, hardware ms | Starting245b51e→final candidate, software ms |
+|---|---:|---:|
+| Brush input→fence | 269.8→152.6 | 536.8→396.6 |
+| Histogram | 157.3→75.5 | 153.8→86.5 |
+| Raster/composite | 91.7→59.1 | 371.3→308.8 |
+| Full recompute | 78.8→74.9 | 3220.8→3301.7 |
+| Release | 24.6→25.3 | 3056.7→3355.0 |
+
+Final measured working-tree brush latency improves43.4% on hardware and26.1% on
+software. **The hardware sub100ms target is not reached.** Earlier
+classification-only runs measured134.4/368.5ms, but those best samples are not
+substituted for the final152.6/396.6ms result. Software full recompute and release
+remain worse than the starting baseline, and cold-step maxima remain far
+above100ms. There is no claim of monotonic or universal improvement. Exact count
+updates, metadata conversion and original-endpoint marginals remain the main
+hardware budget; discarded caches did not recover enough end-to-end throughput.
+No regression test, pixel tolerance or quality gate was weakened.
+
+### Verification and resumed full gate
+
+The exact `uv run pre-commit run --hook-stage pre-push --all-files` command ran
+from Git Bash. Fifteen fast hooks passed. Python passed118 tests and Bun
+passed559 tests (39,585 assertions). Playwright passed220 of221 tests using the
+unchanged16 workers; `benchmark instrumentation leaves every rendered pixel
+unchanged` in `tests/parallel-equivalence.spec.ts:8` exceeded its60000ms timeout.
+No pixel mismatch was reported, but that is a failed gate, not a passing check.
+Coverage merging and diff-cover were not reached. The error snapshot showed the
+300-row exact-lines page, not the dense CDF path; the timeout's root cause has
+not been established. The gate log and trace path are preserved in
+`final-gate-gitbash.log`.
+
+The failing gate prevented its chained full build from running. A separate
+`bun run build` and scoped `bun run test:js tests/parallel-equivalence.spec.ts`
+then exited successfully without changing the tests, workers or timeouts. That
+scoped rerun does not replace the required full passing gate. The shader
+candidate, its two tests and these final documentation updates therefore remain
+uncommitted at that deadline; accepted commits ended at`ac51dd0`. No push occurred.
+
+The follow-up reproduced the same full-suite failure before doing new renderer
+work. Its archived Playwright trace isolates **46.1s and21.8s** in the two
+`page.evaluate` calls returning full-frame `Array.from` pixel buffers; the final
+exact equality assertion took1.3s. Transporting millions of numeric JSON values,
+not executing this dense shader, exhausted the unchanged60s test deadline.
+The regression now retains both independent typed buffers as browser handles,
+compares **every byte in the browser**, and explicitly checks dimensions and
+buffer lengths as well as nonblank output. No sampling, hash, tolerance, timeout,
+worker-count or gate change replaces the original exact pixel contract.
+Independent review found no actionable defect in either shader or test repair.
+
+The exact Git Bash command
+`uv run pre-commit run --hook-stage pre-push --all-files` subsequently **passed
+all16 hooks**, including all118 Python,559 Bun and221 instrumented browser cases
+and the unchanged≥90% merged diff-cover gate. The source/test state was held
+unchanged throughout. Evidence is in
+[the resumed artifacts](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-perf2/>):
+`inherited-gate.log`, `inherited-pixel-timeout.zip`, `pixel-timeout-trace.txt` and
+`inherited-repaired-gate.log`. The previously incomplete shader candidate is
+therefore accepted, with its measured gains and regressions above unchanged.

@@ -18,6 +18,8 @@ for (const {
   paletteSize = 3,
   draft = false,
   gap = 32,
+  height = 24,
+  lineWidth = 1,
   sparseLayer,
 } of [
   { dense: false, curved: false, mode: "mean", numeric: true },
@@ -38,6 +40,24 @@ for (const {
   { dense: true, curved: false, mode: "highest", numeric: true, sparseLayer: "context" },
   { dense: true, curved: true, mode: "mean", numeric: false, sparseLayer: "context" },
   { dense: true, curved: false, mode: "mean", numeric: true, sparseLayer: "both" },
+  {
+    dense: true,
+    curved: true,
+    mode: "highest",
+    numeric: true,
+    gap: 85,
+    height: 96.25,
+    lineWidth: 0.25,
+  },
+  {
+    dense: true,
+    curved: false,
+    mode: "mean",
+    numeric: false,
+    gap: 83,
+    height: 96.25,
+    lineWidth: 2.5,
+  },
 ] as readonly {
   dense: boolean;
   curved: boolean;
@@ -46,6 +66,8 @@ for (const {
   paletteSize?: number;
   draft?: boolean;
   gap?: number;
+  height?: number;
+  lineWidth?: number;
   sparseLayer?: "selected" | "context" | "both";
 }[]) {
   test(`histogram shader agrees with CPU for ${draft ? "draft" : "idle"} ${dense ? "dense" : "sparse"} ${curved ? "eased" : "straight"} ${numeric ? mode : "RGB"} gap${gap}${sparseLayer ? ` sparse-${sparseLayer}` : ""}`, async ({
@@ -94,8 +116,8 @@ for (const {
     if (paletteSize > 3) colors.bins[1] = paletteSize - 1;
     const frame: Omit<LineFrame, "axes"> = {
       width: gap,
-      height: 24,
-      lineWidth: 1,
+      height,
+      lineWidth,
       pixelRatio: 1,
       curved,
       draft,

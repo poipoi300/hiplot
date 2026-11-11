@@ -641,10 +641,9 @@ float stripCoverage(float distanceY, float slope) {
     squareBelow(across - halfWidth, narrow, wide)) / centerCoverage(slope) * min(u_lineWidth, 1.0));
 }
 float endpointTentIntegral(float position) {
-  if (position <= -1.0) return 0.0;
-  if (position >= 1.0) return 1.0;
-  return position < 0.0 ? 0.5 * (position + 1.0) * (position + 1.0) :
-    1.0 - 0.5 * (1.0 - position) * (1.0 - position);
+  float rising = clamp(position + 1.0, 0.0, 1.0);
+  float falling = clamp(position, 0.0, 1.0);
+  return 0.5 * rising * rising + falling * (1.0 - 0.5 * falling);
 }
 void addCell(ivec2 endpoint, float weight, float covered, bool sparsePhase) {
   if (weight <= 0.0) return;
