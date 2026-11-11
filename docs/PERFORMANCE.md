@@ -1477,8 +1477,10 @@ remain raw integers and require `rows * (colorMapBins - 1) <= 2^53 - 1`.
 The worker retains these exact integers across additions/removals; Float32
 texture uploads and RGBA8 presentation are rounded views, never the state used
 for subsequent subtraction. Missing-color mass is separate from valid ranks
-and cannot win highest/lowest. Removing a cell extremum rescans that cell's
-retained members, rather than pretending MIN/MAX has a subtractive inverse.
+and cannot win highest/lowest. Selected numeric extrema retain multiplicities:
+only loss of the last occurrence after the complete changed-row batch rescans
+that cell's members. A tied removal does not pretend MIN/MAX has a subtractive
+inverse, nor does it pay for a redundant scan.
 
 Only actual changed rows alter pair statistics. Reusable typed touched-cell
 scratch replaces transient per-cell objects/Maps, retaining about 8.5 MiB at
@@ -1486,7 +1488,7 @@ scratch replaces transient per-cell objects/Maps, retaining about 8.5 MiB at
 image revisions. Inactive source-column IDs are evicted before resize work;
 restoring a hidden column reuploads it through the driver's active-ID protocol.
 The grids and row-membership lists are not constant-memory with respect to row
-count: at 465 bins, eleven pairs' histogram fields alone occupy about 100 MB,
+count: at 465 bins, eleven pairs' histogram fields including extrema multiplicities occupy about 115 MB,
 plus roughly 98 MB for million-row membership lists/heads and 60 MB for ten
 retained pixel/quantized columns. These are calculated buffer sizes, not measured
 whole-browser heap usage.
@@ -1504,8 +1506,9 @@ selection. The density channel also snapshots queued flags. Mask copying,
 comparison, selected-count calculation and worker transfer still have O(rows)
 parts; a microsecond index update is not microsecond end-to-end brushing.
 
-The worker's WebGL2 fragment integrates the reconstructed dense histogram by
-solving the opposite endpoint and choosing the conditioned direction. It keeps
+The worker's WebGL2 fragment integrates the reconstructed dense histogram over
+the finite vertical pixel footprint, using the endpoint-tent primitive rather
+than a point sample, and chooses the conditioned opposite-endpoint direction. It keeps
 the exact path's normalized square/strip footprint, peak-aware logarithmic tone
 map and selected-over-context composition. Per-cell sums supply numeric mean,
 missing-color share or categorical RGB; actual integer extrema supply numeric
@@ -1513,33 +1516,43 @@ highest/lowest. Categorical palettes need no lookup texture, so cardinality is
 not incorrectly limited to one GPU texture row. Both-missing rows count but do
 not draw; finite endpoints retain 15px horizontal stubs.
 
-For at most 512 occupied cells, a fragment instead queries every geometrically
-intersecting occupied strip. A conservative 16-row CSR pixel-tile index skips
-only disjoint footprints, including curved tangents and missing stubs. There is
+For at most 512 positive occupied cells in each independent selected/context
+layer, a fragment instead queries every geometrically intersecting strip in
+that layer. Dense context cannot force a sparse selected crossing through the
+field approximation. A conservative 16-row CSR pixel-tile index, reused by the
+CPU fallback, skips only disjoint footprints, including curved tangents and
+missing stubs. There is
 no occupied-cell budget or row sampling. Independent CPU-reference and tile-edge
 regressions require every positive footprint to remain queryable. Dense stubs
 visit only bins inside the pixel's horizontal-strip support. Analytical center
 coverage and an equivalent trapezoid CDF remove repeated branch work without
 changing that coverage model.
 
-Curved density uses pair-local `smoothstep(t)` and its derivative, **not** the
-original neighbor-dependent spline. The original highlighted row still follows
-its original unquantized spline/straight geometry. Each pair image is cached by
+Curved density inverts the exact zero-tangent, half-gap-handle cubic's nonlinear
+x coordinate, then evaluates its y weight and screen-space derivative. It still
+cannot recover the original neighbor-dependent spline from a two-axis histogram.
+The original highlighted row follows its unquantized spline/straight geometry.
+Outer strips use original-endpoint one-dimensional marginals, not quantized
+bin centers; they preserve finite support and normal selected/context opacity.
+Each pair image is cached by
 histogram identity/revision, local gap/height, curve/line width, color mode,
 palette and density/context style. A fixed 1/65536px local-gap representation
 prevents cancellation noise on fractional translations from invalidating the
 cache. Interpolation is premultiplied and clamped inside each pair. Horizontal
 scroll only composites retained images, including initially offscreen pairs.
 
-A single all-row worker retains one active job and one latest pending frame.
-Gesture pacing allows issued images to present; finite bursts still discard
-obsolete results. Software dense gestures evaluate **1/16 of the columns**
+A single all-row worker paces active drafts and retains the latest pending
+frame. Idle refinement yields between pairs through real worker tasks; a new
+gesture immediately supersedes it. Every request still applies its retained
+state deltas; obsolete generations cannot publish or resume shared evaluation.
+Software dense gestures evaluate **1/16 of the columns**
 (six in an 85px gap) and interpolate, refining full width on release. Sparse
 pairs and hardware retain full columns. This applies below the exact renderer's
 20k draft-row threshold too: pixel-integration cost follows occupied bins, not
 source rows. All rows and endpoint bins remain unchanged during the gesture.
-An unavailable OffscreenCanvas WebGL2 context uses the CPU reference; its
-interactive performance is not established. A Canvas presentation surface does
+An unavailable or actually lost worker WebGL2 context uses the CPU reference,
+retaining kernel state and restarting evaluation under the software column
+policy. Its interactive performance is not established. A Canvas presentation surface does
 not itself imply CPU evaluation: an inline worker can still have WebGL2.
 
 ### Fidelity and regression evidence
@@ -1755,6 +1768,10 @@ files are not part of the source commits. No push, remote, packaging or release
 configuration changes were made.
 
 ## Reduced-column reconstruction and aliasing
+
+This section records the earlier smoothing pass. Its measurements and diagnostic
+images are historical; the review corrections and current timings are recorded
+in **Review corrections and exact visual alignment** below.
 
 This follow-up was measured on 2026-11-10 against the retained continuous
 renderer, not the historical sampled/binned preview above. Evidence lives in
@@ -2155,3 +2172,226 @@ actual measurement and gate reports, and verified all 17 local evidence links.
 No push, remote, packaging/release configuration or gate changes were made.
 The existing untracked `million.html` and `.impeccable/` remain outside the
 commits and were left alone.
+
+## Review corrections and exact visual alignment
+
+This 2026-11-10 fix pass starts at `57f6e45`. Its fresh before/after files are
+in [the fix-pass artifacts](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-fix2/>),
+not the preceding smoothing run. All nine independent findings were confirmed;
+none was rejected or silently skipped. Each fix has its own regression and
+commit. Earlier timings and diagnostic figures above remain historical.
+
+### Correctness and scheduling changes
+
+- Short layouts previously produced drawable height **-35px**, poisoning the
+  retained worker. The resize handle now reserves the plot margins, scrollbar
+  and 100px drawable area. Transient zero-area layouts suspend rendering and
+  recover after expansion; invalid standalone kernel requests still fail.
+- Dense evaluation integrates endpoint tents over the finite vertical pixel
+  footprint. The original isolated horizontal midpoint returned density **0**
+  against an independent strip reference **0.5**; the corrected result is0.5.
+- Selected/context positive cells are classified independently against512.
+  Sparse layers use exact finite strips even inside a dense opposite layer;
+  shared cells are counted only in their own layer's phase. Both layers can
+  be sparse even when their union exceeds512. Genuine dense shader fixtures
+  explicitly retain more than512 positive cells in **both** layers.
+- Reduced-column crossing footprints that contract below both boundary spans
+  require full horizontal evaluation rather than stretching unresolved source
+  coverage into a false band. Thin monotone envelopes retain reduced columns.
+  Missing-only destination/source supports are transparent, never fallback
+  samples from an adjacent supported column. Both15px stub edges have positive
+  inside-support and zero outside-support controls.
+- Idle refinement yields between pairs through real MessageChannel tasks.
+  A new gesture preempts it immediately; active drafts still pace presentation.
+  Every request applies source/mask/color deltas synchronously before any
+  cancellable evaluation. Generation checks prevent obsolete continuations,
+  images and errors from altering the current result. This is **pair-boundary**
+  cancellation, not interruption of one synchronous GPU pair/readback or kernel
+  update. Worker publication remains busy until presentation ownership transfers.
+- Actual `WEBGL_lose_context` loss switches the retained evaluator to CPU,
+  clears backend-dependent images and restarts with software draft budgets.
+  Histograms and original rows survive. There is no context-restoration retry
+  or new claim of interactive CPU-fallback performance.
+- Numeric extrema retain selected minimum/maximum multiplicities. Removing one
+  of10,000 tied values now performs **0 membership reads**, versus10,000 before.
+  Losing the last extreme can still rescan a cell. The two Uint32 fields cost
+  `8 * (bins + 1)^2` bytes/pair:1,737,248 bytes at465 bins,19,109,728 bytes
+  across11 pairs (18.2MiB), with no extra per-row storage.
+- CPU sparse evaluation reuses the conservative16-row CSR index rather than
+  testing every occupied strip at every pixel. The regression bounds both
+  index construction and actual candidate examinations, and compares pixels
+  against an explicitly unpruned reference.
+- The original crossing regression passed a deliberate all-zero-image mutation.
+  It now requires positive coverage on both strands **and the true crossing**
+  in idle/draft units and the actual worker. That stronger control exposed a
+  second sparse-layer hole at pixel(39,127), not an excuse to move the probe
+  to a nearby easier pixel. Independent sparse-layer evaluation fixes it.
+
+### Exact curve and outer margins
+
+With zero endpoint slopes, exact uses control points
+`(0,0), (0.5,0), (0.5,1), (1,1)`. For Bezier parameter`s`,
+`x(s)=1.5*s*(1-s)+s^3`, `w(s)=3*s^2-2*s^3` and
+`dw/dx=6*s*(1-s)/(1.5-3*s*(1-s))`. Five conditioned Newton steps invert x;
+the derivative at the midpoint is2, not smoothstep's1.5. CPU, GLSL, CSR
+footprints, support guides and refinement radii use this same screen profile.
+Independent forward-parametric samples and a separately bisected guide oracle
+pin the result. This fixes the zero-slope lens, **not** the information loss
+from unavailable outside-neighbor associations. Exact's sampled chords and
+neighbor-conditioned tangents can still differ on multi-axis plots.
+
+Exact draws flat horizontal strips **15 CSS pixels** before the first axis
+and after the last. Quantizing original endpoint positions into coincident
+bin-center lines loses their true peak coverage, so boosting alpha or assuming
+uniform within-bin positions is not a correct repair. The worker now reduces
+its retained original endpoints into independent selected/context1D marginals,
+including color sums, missing-color shares and numeric extrema, then repeats
+one evaluated column across each physical15px span. It uses the normal shared
+peak-aware logarithmic tone map, not an opacity multiplier. At line width1,
+each finite row intersects at most two vertical pixels.
+
+Marginal cache revisions track original mask/color/geometry changes separately
+from integer histogram revisions: exchanging selected rows within the same bin
+can preserve all cell statistics while changing the visible subpixel strip.
+Original arrays are worker-owned snapshots shared by reference, not copied per
+pair. Scroll reuses them; curve-only changes do not invalidate flat margins.
+A changed marginal reduction is O(rows), so its cost is included in the fresh
+measurements below. Full benchmark images now evaluate771 columns (769 interior
+plus two1D marginals); ordinary reduced dense drafts evaluate56, unless a
+crossing requires full refinement. No row or endpoint bin is dropped.
+
+### Picture and regression evidence
+
+The new actual exact/worker picture fixture uses8,192 seeded uniform rows,
+**two axes** (zero end tangents), fixed2px vertical premultiplied blur and
+nonblank checks. Its immutable curve relative-L1 bound is6.5%, alpha-mass error
+at most4%; margin/inside-axis bounds are8% and6%. It separately requires a
+flat15-column plateau, positive mass and five completely blank outer columns.
+Selected and mixed4,096/4,096 selected/context palettes are tested. Before the
+fix, the right lens error was9.1623%; selected margins were13.9270%/13.8748%
+with alpha ratios0.86155/0.86341. All30 focused browser cases pass, including
+the three pictures and27 shader/reconstruction/support cases. No timeout or
+picture tolerance was raised.
+
+The new curve units independently sample1,001 parametric points;65 focused
+curve/density/reconstruction/GL-lifecycle units pass. Eleven marginal units
+cover subpixel coverage, cancelling selections, categorical and numeric
+mean/lowest/highest/missing colors at line widths0.5/1/2.5. The18 actual
+shader comparisons retain maximum premultiplied error2/255 and mean0.25/255,
+including genuine dense layers and all sparse/dense layer combinations.
+
+Fresh1M uniform curved **exact and continuous** before/after PNGs and nonblank
+RGBA foreground buffers are saved under the artifact link above:
+[before continuous](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-fix2/before-continuous-1m-uniform-curved.png>) /
+[after continuous](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-fix2/after-continuous-1m-uniform-curved.png>) /
+[exact reference](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-fix2/after-exact-1m-uniform-curved.png>).
+These actual app images were opened and visually checked: pointier lenses and
+normal-opacity flat outer strips replace the rounder/dimmer baseline. The
+remaining multi-axis ridge differences are visible, not claimed away.
+
+The1M capture comparison uses the same fixed2px premultiplied blur and excludes
+±10px around axes for the interior. It is a measurement, not a relaxed picture
+gate. Interior relative L1 falls **3.5043%→1.8371%**; alpha ratio changes
+0.98756→0.99166. Left/right margin errors fall **22.4178%/22.5835%** to
+**0.1343%/0.1485%**, and margin alpha ratios change0.77577/0.77580 to
+1.00021/1.00004. The exact before/after foregrounds have **zero changed bytes**.
+`capture-comparisons.json` and `compare-captures.mjs` retain the method/results.
+
+### Fresh completed-frame measurements
+
+Plain production bundles; actual RTX5090/ANGLE D3D11 and SwiftShader/Vulkan;
+1M×10, seed20261109, viewport1000×700 and465px plot height. Each backend/data
+combination has three fresh loads×three settled brush steps, run serially with
+no concurrent browser suite or GPU benchmark. Source-data generation is outside
+load→image. Values below are medians of **per-load p50s**, not pooled samples.
+Recompute changes both actual shape choices and restores the original choice;
+brush timing includes filtering, worker counting/evaluation/transfer and final
+GPU completion. Cached redraw is not a full recompute. The1M tests use numeric
+mean coloring; extrema/RGB correctness does not imply identical latency.
+
+| Backend / data | Brush input→fence ms, before→after | Histogram ms | Worker raster/composite ms | Brush CPU ms | Input p95 ms |
+|---|---:|---:|---:|---:|---:|
+| RTX5090 / continuous | 181.3→285.3 | 131.0→179.0 | 32.7→91.6 | 12.1→11.7 | 862.4→880.7 |
+| RTX5090 / integer | 56.8→77.5 | 26.7→22.8 | 22.3→46.0 | 3.3→3.4 | 297.1→203.6 |
+| SwiftShader / continuous | 328.1→534.6 | 120.9→168.7 | 198.4→350.5 | 10.8→10.7 | 1089.8→1500.1 |
+| SwiftShader / integer | 87.0→115.8 | 33.9→30.6 | 43.9→73.2 | 4.5→4.1 | 381.5→220.9 |
+
+| Backend / data | Load→image ms | Cached redraw ms | Full recompute ms | Release ms | Axis ms | Scroll ms |
+|---|---:|---:|---:|---:|---:|---:|
+| RTX5090 / continuous | 8950.0→10286.1 | 17.6→19.9 | 55.6→86.1 | 25.3→24.0 | 106.6→139.0 | 12.0→12.1 |
+| RTX5090 / integer | 1887.1→2023.8 | 11.3→12.3 | 41.7→38.9 | 17.2→24.5 | 58.0→72.9 | 11.2→12.0 |
+| SwiftShader / continuous | 10874.7→13642.4 | 12.7→14.6 | 2261.4→3666.7 | 1862.3→3470.7 | 278.5→442.3 | 7.9→8.9 |
+| SwiftShader / integer | 2035.1→2121.9 | 11.2→12.3 | 55.6→55.6 | 14.0→13.8 | 66.4→77.3 | 8.0→8.5 |
+
+**The correctness improvements have a substantial measured performance
+regression, not a negligible cost.** Continuous brush latency grows57.4% on
+hardware and62.9% on SwiftShader; integer grows36.4%/33.1%. Software full
+recompute grows62.1% and release86.4%. Tied-extremum worst-case work improves,
+but normal changed histograms and raster work do not improve overall. Marginal
+recounts, additional exact footprint integration, layer classification and
+extrema bookkeeping are new work; these whole-run phase totals do **not**
+isolate their individual causal costs. Pair cancellation improves admission of
+a new gesture, not the settled benchmark's compute throughput. This pass is
+not performance-neutral, not60fps, and does not establish a new10M capacity
+claim. The regression remains a limitation requiring further optimization,
+rather than being hidden behind passing correctness tests.
+
+Each three-step p95 is that load's slowest sample; its aggregate is the median
+of three maxima, not a stable tail estimate. Raw per-load stage summaries are
+`before-{hardware,software}.json` and `after-{hardware,software}.json` in the
+fix-pass artifacts; `aggregate.py` produces `performance-comparison.json`.
+
+```bash
+bun run build
+bun build bench/parallel.ts --target=node --packages=external --outfile=./node_modules/.cache/parallel-bench.mjs
+node node_modules/.cache/parallel-bench.mjs --quality low --backend hardware --rows 1000000 --reps 3 --steps 3 --label fix2-after --out <after-hardware.json>
+node node_modules/.cache/parallel-bench.mjs --quality low --backend swiftshader --rows 1000000 --reps 3 --steps 3 --label fix2-after --out <after-software.json>
+```
+
+### Full-gate validation for this pass
+
+The first mandatory run passed118 Python and547 Bun tests, plus218 of219
+browser cases; only the existing whole-attempt deadline wall-time assertion
+failed (**7879.7ms**, unchanged bound **<5000ms**). Its trace shows the actual
+CPU-bound evaluation stopped after117ms, but the abort awaited whole-browser
+shutdown and temporary-profile cleanup before returning the deadline error.
+The trace does not separately time process exit and filesystem removal.
+
+Attaching CDP only after the deadline was rejected:32/32 stress repetitions
+waited behind the10-second V8 loop. The corrected path attaches **before** the
+operation, sends `Runtime.terminateExecution`, then awaits the owned context's
+closure while retaining the reusable browser. Pending attachment, interruption
+or context closure escalates after1s to Playwright's awaited owned-browser-tree
+termination; setup and shutdown errors remain visible. Final outer cleanup
+still awaits browser/profile disposal. This is not fire-and-forget shutdown.
+
+Eleven deadline units pass, including RED-first rejected/pending protocol and
+context operations. The actual10-second-loop regression passes **32/32** at
+**16 workers**, with the original100ms deadline, immediate closed-page check
+and<5000ms bound unchanged, plus an additional browser-reuse assertion. No
+skip, retry, timeout increase, worker reduction or gate configuration change
+was used. Successful performance samples above predate this abort-only repair.
+
+The mandatory command subsequently **passed all16 hooks**, including pytest,
+Bun units, instrumented Playwright and the unchanged merged diff-cover gate:
+
+```bash
+uv run pre-commit run --hook-stage pre-push --all-files
+```
+
+This successful run used Git Bash and Windows CPython3.13.5, with tracked files
+held unchanged throughout. An intervening PowerShell launch resolved `bash`
+to WSL, selected Linux Python against the Windows environment, and failed
+before tests; it is not counted as a passing run. Git Bash restored/verified
+the native environment without changing gate or dependency configuration.
+`final-gate-gitbash.log` retains the16 passing hook results.
+
+A fresh report against `origin/main` gives **92%** as printed by diff-cover:
+**6,656/7,160 mapped branch lines**,504 uncovered. This is the branch-wide
+merged metric, not a claim that each file reaches90%. After the gate restored
+the plain web bundle, final `bun run build` **passed** for normal web, test,
+Streamlit and library outputs (`final-plain-build.log`). No instrumented bundle
+was left as the production output. Independent final code/documentation
+reviews found no remaining verified findings in their scopes; the measured
+performance regression above remains an unresolved defect. No push, remote,
+packaging/release or gate-configuration changes were made.
