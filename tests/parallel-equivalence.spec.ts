@@ -14,7 +14,7 @@ test("benchmark instrumentation leaves every rendered pixel unchanged", async ({
   });
   expect(load.firstFrameMs).toBeGreaterThan(0);
   const readPixels = () =>
-    page.evaluate(() => {
+    page.evaluateHandle(() => {
       interface Plot {
         redrawLines: () => void;
         foreground_ref: { current: HTMLCanvasElement };
@@ -33,12 +33,34 @@ test("benchmark instrumentation leaves every rendered pixel unchanged", async ({
         throw new Error("No pixel readback context");
       }
       context.drawImage(canvas, 0, 0);
-      return Array.from(context.getImageData(0, 0, copy.width, copy.height).data);
+      return {
+        width: copy.width,
+        height: copy.height,
+        pixels: context.getImageData(0, 0, copy.width, copy.height).data,
+      };
     });
   const before = await readPixels();
-  expect(before.some((channel) => channel !== 0)).toBe(true);
+  expect(await before.evaluate(({ pixels }) => pixels.some((channel) => channel !== 0))).toBe(true);
   await instrumentParallelBenchmark(page);
-  expect(await readPixels()).toEqual(before);
+  const after = await readPixels();
+  // Keep full-frame buffers in the browser: serializing millions of numbers can exceed the test deadline.
+  const comparison = await page.evaluate(
+    ({ before, after }) => {
+      let changedBytes = 0;
+      for (let index = 0; index < before.pixels.length; ++index) {
+        if (before.pixels[index] !== after.pixels[index]) changedBytes++;
+      }
+      return {
+        sameDimensions: before.width === after.width && before.height === after.height,
+        sameLength: before.pixels.length === after.pixels.length,
+        changedBytes,
+      };
+    },
+    { before, after },
+  );
+  expect(comparison).toEqual({ sameDimensions: true, sameLength: true, changedBytes: 0 });
+  await before.dispose();
+  await after.dispose();
 });
 
 test("the benchmark measures real brush, axis and settled scroll draws", async ({ page }) => {
