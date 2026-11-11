@@ -190,6 +190,7 @@ export class ContinuousKernel {
   private selectedCount = 0;
   private height = Number.NaN;
   private revision = 0;
+  private marginalRevision = 0;
   private maskScratch: MaskScratch | null = null;
 
   update(request: ContinuousRequest): ContinuousUpdate {
@@ -284,6 +285,14 @@ export class ContinuousKernel {
     this.colors = currentColors;
     if (request.colors !== undefined) this.palette = fixedPalette(currentColors);
 
+    if (
+      resetRows ||
+      resized ||
+      replacements.size > 0 ||
+      changedRows > 0 ||
+      request.colors !== undefined
+    )
+      this.marginalRevision++;
     const drawnPairs: ContinuousPair[] = [];
     const activePairs = new Set<string>();
     for (let index = 0; request.axes.length > 0 && index <= request.axes.length; ++index) {
@@ -311,7 +320,21 @@ export class ContinuousKernel {
         }
       }
       activePairs.add(key);
-      drawnPairs.push({ key, left, right, histogram: pair.histogram });
+      const endpoint = this.columns.get(left.column === -1 ? right.column : left.column);
+      drawnPairs.push({
+        key,
+        left,
+        right,
+        histogram: pair.histogram,
+        marginal:
+          (left.column === -1 || right.column === -1) && endpoint !== undefined
+            ? {
+                pixels: endpoint.pixels,
+                selection: currentSelection,
+                revision: this.marginalRevision,
+              }
+            : undefined,
+      });
     }
     for (const key of this.pairs.keys()) {
       if (!activePairs.has(key)) this.pairs.delete(key);

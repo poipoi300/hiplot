@@ -135,7 +135,8 @@ for (const curved of [false, true]) {
       contentType: "application/json",
     });
     expect(draft.rows).toBe(65_536);
-    expect(draft.columns).toBe(36);
+    // Six interior samples and one exact 1D marginal per outer axis.
+    expect(draft.columns).toBe(8);
     expect(error.columns).toBe(85);
     expect(error.relative).toBeLessThan(0.012);
     expect(error.maximumBoundaryShift).toBeLessThanOrEqual(2);
@@ -312,7 +313,7 @@ test("draft reconstruction retains the device maximum pair width", async ({ page
     width: request.width,
     height: 4,
     rows: 600,
-    columns: Math.ceil(request.width / 16) + 30,
+    columns: Math.ceil(request.width / 16) + 2,
     nonblank: true,
   });
 });

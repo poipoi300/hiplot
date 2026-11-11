@@ -261,3 +261,31 @@ test("continuous lenses match exact half-gap Beziers with zero end tangents", as
     expect.soft(Math.abs(region.alphaRatio - 1)).toBeLessThanOrEqual(0.04);
   }
 });
+
+for (const mixed of [false, true]) {
+  test(`continuous outer margins retain flat 15px support and ${mixed ? "selected/context" : "selected"} colors`, async ({
+    page,
+  }) => {
+    await capturePair(page, mixed);
+    const result = await comparePictures(page);
+    await test.info().attach("margin-metrics", {
+      body: JSON.stringify(result, null, 2),
+      contentType: "application/json",
+    });
+    expect(result.selected).toBe(mixed ? 4096 : 8192);
+    expect(result.context).toBe(mixed ? 4096 : 0);
+    for (const region of [...result.margins, ...result.inside]) {
+      expectNonblank(region);
+      expect.soft(region.relativeError).toBeLessThanOrEqual(0.08);
+      expect.soft(Math.abs(region.alphaRatio - 1)).toBeLessThanOrEqual(0.06);
+    }
+    for (const renderer of [result.support.exact, result.support.continuous]) {
+      for (const masses of renderer) {
+        expect.soft(masses.slice(15)).toEqual([0, 0, 0, 0, 0]);
+        const plateau = masses.slice(0, 15);
+        expect.soft(Math.min(...masses.slice(0, 15))).toBeGreaterThan(result.height * 40);
+        expect.soft(Math.min(...plateau) / Math.max(...plateau)).toBeGreaterThanOrEqual(0.98);
+      }
+    }
+  });
+}

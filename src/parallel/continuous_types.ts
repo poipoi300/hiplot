@@ -38,11 +38,19 @@ export interface ContinuousHistogram {
   revision: number;
 }
 
+/** Worker-owned endpoint and mask snapshots for exact outer-axis marginals. */
+export interface ContinuousMarginal {
+  pixels: Float32Array;
+  selection: Uint8Array;
+  revision: number;
+}
+
 export interface ContinuousPair {
   key: string;
   left: ContinuousAxis;
   right: ContinuousAxis;
   histogram: ContinuousHistogram;
+  marginal?: ContinuousMarginal;
 }
 
 export interface ContinuousUpdate {

@@ -11,6 +11,7 @@ import {
   COLOR_CHANNEL_SCALE,
   type ContinuousHistogram,
   type ContinuousImage,
+  type ContinuousMarginal,
   type ContinuousPair,
   type ContinuousRequest,
   type ContinuousUpdate,
@@ -424,6 +425,100 @@ function pairGap(pair: ContinuousPair): number {
   return Math.round((pair.right.x - pair.left.x) * 65536) / 65536;
 }
 
+/** Reduce original endpoints once, preserving the exact flat outer-strip footprint. */
+function evaluateContinuousMarginal(
+  marginal: ContinuousMarginal,
+  frame: ContinuousRequest,
+  update: ContinuousUpdate,
+  columns: number,
+  separateLayers: boolean,
+): ContinuousPairImage {
+  const height = Math.max(1, Math.ceil(frame.height));
+  const rows = Array.from({ length: height }, emptyPixel);
+  const { colors } = update;
+  const palette =
+    colors.colorMapBins === 0
+      ? colors.palette.map(({ r, g, b }) =>
+          [r, g, b].map((channel) => Math.round((channel / 255) * COLOR_CHANNEL_SCALE)),
+        )
+      : [];
+  const halfWidth = Math.max(frame.lineWidth / 2, 0.5);
+  const lineScale = Math.min(frame.lineWidth, 1);
+  for (let row = 0; row < marginal.pixels.length; ++row) {
+    const endpoint = marginal.pixels[row];
+    if (!Number.isFinite(endpoint)) continue;
+    const rank = colors.bins[row];
+    const selected = marginal.selection[row] !== 0;
+    const first = Math.max(0, Math.ceil(endpoint - halfWidth - 1));
+    const last = Math.min(height - 1, Math.floor(endpoint + halfWidth));
+    for (let y = first; y <= last; ++y) {
+      // The square/strip intersection for a horizontal tangent has a unit central plateau.
+      const coverage =
+        Math.min(1, Math.max(0, halfWidth + 0.5 - Math.abs(y + 0.5 - endpoint))) * lineScale;
+      if (coverage <= 0) continue;
+      const pixel = rows[y];
+      if (!selected) {
+        pixel.context += coverage;
+        pixel.contextPeak = Math.max(pixel.contextPeak, coverage);
+        continue;
+      }
+      pixel.selected += coverage;
+      pixel.selectedPeak = Math.max(pixel.selectedPeak, coverage);
+      if (colors.colorMapBins === 0) {
+        pixel.color0 += palette[rank][0] * coverage;
+        pixel.color1 += palette[rank][1] * coverage;
+        pixel.color2 += palette[rank][2] * coverage;
+      } else if (rank === colors.colorMapBins) {
+        pixel.color1 += coverage;
+      } else {
+        pixel.color0 += rank * coverage;
+        if (frame.colorMode !== "mean") {
+          if (
+            pixel.winner === EMPTY_COLOR_KEY ||
+            (frame.colorMode === "lowest" ? rank < pixel.winner : rank > pixel.winner)
+          ) {
+            pixel.winner = rank;
+            pixel.winnerCoverage = coverage;
+          } else if (rank === pixel.winner)
+            pixel.winnerCoverage = Math.max(pixel.winnerCoverage, coverage);
+        }
+      }
+    }
+  }
+  const pixels = new Uint8ClampedArray(columns * height * 4);
+  const contextPixels = separateLayers ? new Uint8ClampedArray(pixels.length) : undefined;
+  const selectedFrame = separateLayers ? { ...frame, contextAlpha: 0 } : frame;
+  const contextReference = densityReference(update.contextCount, frame.height);
+  for (let y = 0; y < height; ++y) {
+    const pixel = rows[y];
+    const rgba = compositeContinuousPixel(
+      pixel,
+      selectedFrame,
+      colors,
+      update.selectedCount,
+      update.contextCount,
+    );
+    for (let x = 0; x < columns; ++x) {
+      const offset = (y * columns + x) * 4;
+      for (let channel = 0; channel < 4; ++channel) pixels[offset + channel] = rgba[channel] * 255;
+      if (contextPixels !== undefined) {
+        contextPixels.set(
+          [
+            frame.contextColor.r,
+            frame.contextColor.g,
+            frame.contextColor.b,
+            255 *
+              frame.contextAlpha *
+              toneMapped(pixel.context, pixel.contextPeak, contextReference),
+          ],
+          offset,
+        );
+      }
+    }
+  }
+  return { pixels, width: columns, height, contextPixels };
+}
+
 /** Evaluate all pixels without a GL context; also serves as the browser GPU reference. */
 export function evaluateContinuousPairCPU(
   pair: ContinuousPair,
@@ -432,6 +527,8 @@ export function evaluateContinuousPairCPU(
   columns = Math.max(1, Math.ceil(pairGap(pair))),
   separateLayers = false,
 ): ContinuousPairImage {
+  if (pair.marginal !== undefined)
+    return evaluateContinuousMarginal(pair.marginal, frame, update, columns, separateLayers);
   const height = Math.max(1, Math.ceil(frame.height));
   const pixels = new Uint8ClampedArray(columns * height * 4);
   const contextPixels = separateLayers ? new Uint8ClampedArray(pixels.length) : undefined;
@@ -735,6 +832,8 @@ export class ContinuousWebGLEvaluator {
   ): ContinuousPairImage {
     const { gl } = this;
     if (gl.isContextLost()) throw new Error("Continuous density WebGL context lost");
+    if (pair.marginal !== undefined)
+      return evaluateContinuousMarginal(pair.marginal, frame, update, columns, reconstruct);
     const height = Math.max(1, Math.ceil(frame.height));
     const histogram = pair.histogram;
     const stride = histogram.bins + 1;
@@ -1024,16 +1123,18 @@ export class ContinuousDensityEvaluator {
       const gap = pairGap(pair);
       if (gap <= 0) continue;
       const dense = pair.histogram.occupied.length > SPARSE_DENSITY_CELLS;
-      const fraction = this.software && frame.draft && dense ? 1 / 16 : 1;
-      let columns = Math.max(1, Math.ceil(gap * fraction));
+      const fraction =
+        this.software && frame.draft && dense && pair.marginal === undefined ? 1 / 16 : 1;
+      let columns = pair.marginal === undefined ? Math.max(1, Math.ceil(gap * fraction)) : 1;
       const signature = JSON.stringify([
         pair.histogram.revision,
+        pair.marginal?.revision,
         pair.histogram.bins,
         gap,
         frame.height,
         columns,
         frame.lineWidth,
-        frame.curved,
+        pair.marginal === undefined && frame.curved,
         frame.colorMode,
         frame.contextColor,
         frame.contextAlpha,
