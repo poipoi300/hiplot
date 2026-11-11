@@ -99,12 +99,14 @@ test.describe("XY plot", () => {
       .evaluateAll((ticks) => ticks.map((tick) => tick.textContent));
   /** The X tick labels once two reads a quarter second apart agree. */
   const settledXTicks = async (page: Page): Promise<(string | null)[]> => {
-    let previous = await xTicks(page);
+    let previous: (string | null)[] = [];
+    let sampled = false;
     await expect
       .poll(
         async () => {
           const current = await xTicks(page);
-          const settled = JSON.stringify(current) === JSON.stringify(previous);
+          const settled = sampled && JSON.stringify(current) === JSON.stringify(previous);
+          sampled = true;
           previous = current;
           return settled;
         },
