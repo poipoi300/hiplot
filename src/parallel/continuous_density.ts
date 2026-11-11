@@ -1,4 +1,5 @@
 import type { RGB } from "../lib/colors";
+import { linkProgram } from "../lib/webgl";
 import { CONTINUOUS_CURVE_GLSL, continuousCurve } from "./continuous_curve";
 import {
   type ContinuousReconstructionPlan,
@@ -767,30 +768,7 @@ export class ContinuousWebGLEvaluator {
   readonly software: boolean;
 
   constructor(private readonly gl: WebGL2RenderingContext) {
-    const compile = (type: number, source: string): WebGLShader => {
-      const shader = gl.createShader(type);
-      if (shader === null) throw new Error("Cannot allocate continuous density shader");
-      gl.shaderSource(shader, source);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        const message = gl.getShaderInfoLog(shader);
-        gl.deleteShader(shader);
-        throw new Error(`Continuous density shader: ${message}`);
-      }
-      return shader;
-    };
-    const vertex = compile(gl.VERTEX_SHADER, VERTEX);
-    const fragment = compile(gl.FRAGMENT_SHADER, FRAGMENT);
-    const program = gl.createProgram();
-    if (program === null) throw new Error("Cannot allocate continuous density program");
-    gl.attachShader(program, vertex);
-    gl.attachShader(program, fragment);
-    gl.linkProgram(program);
-    gl.deleteShader(vertex);
-    gl.deleteShader(fragment);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS))
-      throw new Error(`Continuous density link: ${gl.getProgramInfoLog(program)}`);
-    this.program = program;
+    this.program = linkProgram(gl, VERTEX, FRAGMENT, "Continuous density");
     const texture = (): WebGLTexture => {
       const result = gl.createTexture();
       if (result === null) throw new Error("Cannot allocate continuous density texture");

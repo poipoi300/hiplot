@@ -16,7 +16,7 @@ type Upload = {
 type Failure = {
   program?: boolean;
   shader?: number;
-  compile?: boolean;
+  compile?: boolean | number;
   link?: boolean;
   texture?: number;
   framebuffer?: boolean;
@@ -77,7 +77,10 @@ function mockGL(failure: Failure = {}) {
     }),
     shaderSource: mock((_shader: WebGLShader, _source: string) => {}),
     compileShader: mock((_shader: WebGLShader) => {}),
-    getShaderParameter: mock((_shader: WebGLShader, _parameter: number) => !failure.compile),
+    getShaderParameter: mock(
+      (shader: WebGLShader, _parameter: number) =>
+        failure.compile !== true && failure.compile !== shaders.indexOf(shader) + 1,
+    ),
     getShaderInfoLog: mock((_shader: WebGLShader) => "compile diagnostic"),
     attachShader: mock((_program: WebGLProgram, _shader: WebGLShader) => {}),
     linkProgram: mock((_program: WebGLProgram) => {}),
@@ -475,6 +478,7 @@ describe("continuous reconstruction GL binding and lifecycle", () => {
     ["first shader", { shader: 1 }, "Cannot allocate continuous reconstruction shader"],
     ["second shader", { shader: 2 }, "Cannot allocate continuous reconstruction shader"],
     ["compile", { compile: true }, "Continuous reconstruction shader: compile diagnostic"],
+    ["fragment compile", { compile: 2 }, "Continuous reconstruction shader: compile diagnostic"],
     ["link", { link: true }, "Continuous reconstruction link: link diagnostic"],
     ["first texture", { texture: 1 }, "Cannot allocate continuous reconstruction texture"],
     ["second texture", { texture: 2 }, "Cannot allocate continuous reconstruction texture"],

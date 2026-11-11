@@ -6,6 +6,7 @@
  */
 
 import type { ColorMode, RGB } from "../lib/colors";
+import { linkProgram } from "../lib/webgl";
 import { SPLINE_HANDLE } from "./spline";
 import {
   encodePixelColumn,
@@ -674,19 +675,6 @@ export function densityReference(lineCount: number, plotHeight: number): number 
   return Math.max(2, (12 * lineCount) / Math.max(1, plotHeight));
 }
 
-function compile(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
-  const shader = gl.createShader(type);
-  if (shader === null) {
-    throw new Error("Could not create a WebGL shader");
-  }
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    throw new Error(`WebGL shader failed to compile: ${gl.getShaderInfoLog(shader)}`);
-  }
-  return shader;
-}
-
 /** A linked program and its uniform locations, looked up by name once. */
 class Program {
   readonly program: WebGLProgram;
@@ -697,17 +685,7 @@ class Program {
     vertexSource: string,
     fragmentSource: string,
   ) {
-    const program = gl.createProgram();
-    if (program === null) {
-      throw new Error("Could not create a WebGL program");
-    }
-    gl.attachShader(program, compile(gl, gl.VERTEX_SHADER, vertexSource));
-    gl.attachShader(program, compile(gl, gl.FRAGMENT_SHADER, fragmentSource));
-    gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      throw new Error(`WebGL program failed to link: ${gl.getProgramInfoLog(program)}`);
-    }
-    this.program = program;
+    this.program = linkProgram(gl, vertexSource, fragmentSource, "WebGL");
   }
 
   uniform(name: string): WebGLUniformLocation | null {
