@@ -69,6 +69,7 @@ import {
 import { categoryTagTexts, placeBrushTags, type TagTexts } from "./brushtags";
 import type { ContinuousImage } from "./continuous_types";
 import { ContinuousRenderer } from "./continuous_worker";
+import { ExactRenderer } from "./exact_worker";
 import { categoryIndices, countByCategory, type FlowAxis, flowAxes } from "./flow";
 import { LineGeometry } from "./geometry";
 import { defaultHiddenColumns } from "./hidden";
@@ -83,7 +84,7 @@ import {
 } from "./performance";
 import { type AxisSelection, BrushMasks } from "./selection";
 import { monotoneSlope, SPLINE_HANDLE, splineParameter, splineY } from "./spline";
-import { type LineColors, type LineFrame, WebGLLineRenderer } from "./webgl";
+import { type FinishedFrame, type LineColors, type LineFrame, WebGLLineRenderer } from "./webgl";
 
 interface ParallelPlotState {
   height: number;
@@ -525,6 +526,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** Line renderer on the GPU; null when WebGL2 is unavailable and Canvas 2D draws. */
   webgl: WebGLLineRenderer | null = null;
   continuous: ContinuousRenderer | null = null;
+  exact: ExactRenderer | null = null;
+  private exactUnavailable = false;
+  private exactImageContext: ImageBitmapRenderingContext | null = null;
   continuousFrame = 0;
   continuousMetrics: ContinuousImage | null = null;
   /** The selection flags last computed, reused while the selection is unchanged. */
@@ -570,6 +574,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** Width of all the axes, in plot coordinates. */
   contentW = 0;
   foreground_ref = React.createRef<HTMLCanvasElement>();
+  exact_image_ref = React.createRef<HTMLCanvasElement>();
   foreground: CanvasRenderingContext2D | null = null;
   highlighted_ref = React.createRef<HTMLCanvasElement>();
   highlighted: CanvasRenderingContext2D | null = null;
@@ -717,6 +722,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.cancelDrawing();
     this.continuous?.dispose();
     this.continuous = null;
+    this.exact?.dispose();
+    this.exact = null;
     this.masks?.dispose();
     this.masks = null;
     this.webgl?.dispose();
@@ -816,9 +823,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       const highlighted = this.highlighted;
       highlighted.clearRect(0, 0, this.w, this.h);
       if (this.props.rows_highlighted.length === 0) {
-        d3.select(this.foreground_ref.current).style("opacity", null);
+        this.lineCanvases().style("opacity", null);
       } else {
-        d3.select(this.foreground_ref.current).style("opacity", "0.45");
+        this.lineCanvases().style("opacity", "0.45");
         const halo = getComputedStyle(mounted(this.root_ref)).getPropertyValue("--hip-halo");
         highlighted.lineJoin = "round";
         highlighted.lineCap = "round";
@@ -1143,7 +1150,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.continuousMode() &&
       this.draftFrame() &&
       (!this.continuous?.busy || this.continuous.refining) &&
-      !this.webgl?.busy
+      !this.linesBusy
     ) {
       this.cancelBrushMove();
       this.pplot?.brush(false);
@@ -1155,7 +1162,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.brushMoveFrame = requestAnimationFrame(() => {
       this.brushMoveFrame = null;
       if (
-        this.webgl?.busy ||
+        this.linesBusy ||
         (this.continuous?.busy && !(this.interacting && this.continuous.refining))
       ) {
         this.scheduleBrushFrame();
@@ -1269,6 +1276,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
           >
             <div ref={this.plot_ref} className={pstyle.plot}>
               <canvas ref={this.foreground_ref}></canvas>
+              <canvas ref={this.exact_image_ref} style={{ visibility: "hidden" }}></canvas>
               <canvas ref={this.highlighted_ref}></canvas>
               <svg
                 ref={this.svg_ref}
@@ -1605,7 +1613,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
                 dragging: false,
               },
             });
-            d3.select(me.foreground_ref.current).style("opacity", "0.35");
+            me.lineCanvases().style("opacity", "0.35");
           })
           .on("drag", function (this: SVGElement, event: { dx: number }, d: string) {
             const eventdx = event.dx;
@@ -1647,7 +1655,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
           .on("end", function (this: SVGElement, _event, d: string) {
             me.interacting = false;
             if (!me.state.dragging) {
-              d3.select(me.foreground_ref.current).style("opacity", null);
+              me.lineCanvases().style("opacity", null);
               return;
             }
             if (!me.state.dragging.dragging) {
@@ -1671,7 +1679,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             }
 
             // rerender
-            d3.select(me.foreground_ref.current).style("opacity", null);
+            me.lineCanvases().style("opacity", null);
             me.setState({ dragging: null });
           });
       }
@@ -2469,8 +2477,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.pixelRatio = window.devicePixelRatio;
     div
       .selectAll("canvas")
+      .filter((_, index, nodes) => nodes[index] !== this.exact_image_ref.current)
       .attr("width", Math.round(this.w * this.pixelRatio))
-      .attr("height", Math.round(this.h * this.pixelRatio))
+      .attr("height", Math.round(this.h * this.pixelRatio));
+    div
+      .selectAll("canvas")
       .style("width", `${this.w}px`)
       .style("height", `${this.h}px`)
       .style("padding", `${this.m.join("px ")}px`);
@@ -2594,17 +2605,71 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       // Reading `busy` records the frame in flight once it has finished.
       const busy = webgl.busy;
       const finished = webgl.finishedFrame();
-      if (
-        finished?.fullQuality === true &&
-        this.framePerformance.recordFullFrame(finished.milliseconds)
-      ) {
-        this.setState({ slowFrames: this.framePerformance.slow });
-      }
+      if (finished !== null) this.recordFrame(finished);
       if (busy) {
         this.frameWatch = requestAnimationFrame(check);
       }
     };
     this.frameWatch = requestAnimationFrame(check);
+  }
+
+  private recordFrame(finished: FinishedFrame): void {
+    if (finished.fullQuality && this.framePerformance.recordFullFrame(finished.milliseconds)) {
+      this.setState({ slowFrames: this.framePerformance.slow });
+    }
+  }
+
+  get linesBusy(): boolean {
+    return Boolean(this.exact?.busy || this.webgl?.busy);
+  }
+
+  private lineCanvases() {
+    return d3.selectAll([mounted(this.foreground_ref), mounted(this.exact_image_ref)]);
+  }
+
+  private showDirectLines(): void {
+    mounted(this.exact_image_ref).style.visibility = "hidden";
+    mounted(this.foreground_ref).style.visibility = "visible";
+  }
+
+  private drawExactWorker(
+    frame: LineFrame,
+    geometry: LineGeometry,
+    colors: LineColors,
+    mask: Uint8Array,
+  ): boolean {
+    if (
+      this.exactUnavailable ||
+      typeof Worker === "undefined" ||
+      typeof OffscreenCanvas === "undefined" ||
+      typeof OffscreenCanvas.prototype.transferToImageBitmap !== "function"
+    )
+      return false;
+    this.exactImageContext ??= mounted(this.exact_image_ref).getContext("bitmaprenderer");
+    if (this.exactImageContext === null) {
+      this.exactUnavailable = true;
+      return false;
+    }
+    this.exact ??= new ExactRenderer(
+      (bitmap, finished) => {
+        const canvas = mounted(this.exact_image_ref);
+        if (canvas.width !== bitmap.width) canvas.width = bitmap.width;
+        if (canvas.height !== bitmap.height) canvas.height = bitmap.height;
+        this.exactImageContext?.transferFromImageBitmap(bitmap);
+        canvas.style.visibility = "visible";
+        mounted(this.foreground_ref).style.visibility = "hidden";
+        this.recordFrame(finished);
+      },
+      () => {
+        this.exact = null;
+        this.exactUnavailable = true;
+        this.redrawLines();
+      },
+    );
+    this.exact.draw(frame, colors, mask, geometry.order, () =>
+      geometry.colorOrder(colors.bins, colors.colorMapBins, frame.colorMode),
+    );
+    return true;
   }
 
   /** Curves between axes unless the user chose straight lines, or "auto" meets many rows. */
@@ -2650,6 +2715,15 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     const geometry = this.geometry();
     const mask = this.selectionMask(geometry);
     const colors = this.lineColors(geometry);
+    const frame = this.lineFrame(geometry, mask);
+    if (
+      geometry.rows.length > LIGHT_DRAG_ROWS &&
+      this.drawExactWorker(frame, geometry, colors, mask)
+    )
+      return;
+    this.exact?.dispose();
+    this.exact = null;
+    this.showDirectLines();
     webgl.setRows(geometry.rows.length, geometry.order);
     webgl.setDrawOrder(
       webgl.densityRendering
@@ -2658,7 +2732,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     );
     webgl.setColors(colors);
     webgl.setSelection(mask);
-    webgl.draw(this.lineFrame(geometry, mask));
+    webgl.draw(frame);
     this.watchFrames(webgl);
   }
 
@@ -2758,7 +2832,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     const check = (): void => {
       this.idleRedraw = null;
       if (
-        this.webgl?.busy ||
+        this.linesBusy ||
         (this.continuous?.busy && !(this.interacting && this.continuous.refining))
       ) {
         this.idleRedraw = requestAnimationFrame(check);
@@ -2795,11 +2869,14 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       return;
     }
     if (this.continuousMode()) {
+      this.exact?.dispose();
+      this.exact = null;
+      this.showDirectLines();
       // Pace active drafts, but let a new gesture interrupt full-width refinement.
       if (
         this.interactiveFrame() &&
         ((this.continuous?.busy && !(this.interacting && this.continuous.refining)) ||
-          this.webgl?.busy)
+          this.linesBusy)
       ) {
         this.redrawWhenGpuIdle();
         return;
@@ -2814,7 +2891,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (this.webgl !== null) {
       // During a drag, a frame waits for the GPU to finish the last one, so a
       // slow GPU drops frames instead of queueing them behind the pointer.
-      if (this.interactiveFrame() && this.webgl.busy) {
+      if (this.interactiveFrame() && this.linesBusy) {
         this.redrawWhenGpuIdle();
         return;
       }

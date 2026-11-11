@@ -148,6 +148,7 @@ uniform usampler2D u_selected;
 uniform usampler2D u_bins;
 uniform sampler2D u_palette;
 uniform int u_axisCount;
+uniform int u_rowOffset;
 uniform int u_textureWidth;
 uniform int u_rowsPerColumn;
 uniform int u_colorMapBins;
@@ -286,7 +287,7 @@ void main() {
   int segments = u_axisCount + 1;
   int line = gl_InstanceID / segments;
   int segment = gl_InstanceID - line * segments;
-  int row = int(texelFetch(u_order, at(line), 0).r);
+  int row = int(texelFetch(u_order, at(line + u_rowOffset), 0).r);
   bool selected = texelFetch(u_selected, at(row), 0).r > 0u;
   bool kept = u_keep == ${DRAW_ALL} || (u_keep == ${DRAW_SELECTED}) == selected;
 
@@ -770,7 +771,7 @@ export class WebGLLineRenderer {
   private finished: FinishedFrame | null = null;
 
   /** A renderer on `canvas`, or null when WebGL2 is unavailable. */
-  static create(canvas: HTMLCanvasElement): WebGLLineRenderer | null {
+  static create(canvas: HTMLCanvasElement | OffscreenCanvas): WebGLLineRenderer | null {
     const gl = canvas.getContext("webgl2", {
       alpha: true,
       premultipliedAlpha: true,
@@ -1142,16 +1143,73 @@ export class WebGLLineRenderer {
     return samples;
   }
 
-  private drawLines(frame: LineFrame, samples: number): void {
+  private *drawLines(
+    program: Program,
+    frame: LineFrame,
+    samples: number,
+    batchRows: () => number,
+  ): Generator<void> {
     const gl = this.gl;
-    gl.bindVertexArray(this.vertexArray);
-    gl.drawArraysInstanced(
-      frame.draft ? gl.LINE_STRIP : gl.TRIANGLE_STRIP,
-      0,
-      frame.draft ? samples : 2 * samples,
-      Math.min(frame.drawnRows, this.rowCount) * segmentsPerLine(frame.axes.length),
-    );
-    gl.bindVertexArray(null);
+    const rows = Math.min(frame.drawnRows, this.rowCount);
+    for (let offset = 0; offset < rows; ) {
+      const count = Math.min(batchRows(), rows - offset);
+      gl.uniform1i(program.uniform("u_rowOffset"), offset);
+      gl.bindVertexArray(this.vertexArray);
+      gl.drawArraysInstanced(
+        frame.draft ? gl.LINE_STRIP : gl.TRIANGLE_STRIP,
+        0,
+        frame.draft ? samples : 2 * samples,
+        count * segmentsPerLine(frame.axes.length),
+      );
+      gl.bindVertexArray(null);
+      offset += count;
+      yield;
+    }
+  }
+
+  /** Worker-only batches leave the compositor time to present input between GPU submissions. */
+  async drawCooperative(frame: LineFrame): Promise<void> {
+    const gl = this.gl;
+    this.submittedAt = performance.now();
+    this.inFlightFullQuality = !frame.draft && frame.resolution === 1;
+    let batchRows = 128;
+    let started = performance.now();
+    for (const _ of this.drawFrame(frame, () => batchRows)) {
+      const fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+      if (fence === null) throw new Error("Could not fence an exact line batch");
+      gl.flush();
+      let lastWait = 0;
+      try {
+        do {
+          // Always yield, including on software GPUs which may finish during flush.
+          const waitingAt = performance.now();
+          await new Promise<void>((resolve) => {
+            // Software rasterization shares CPU time with this polling worker.
+            if (this.softwareRendering) {
+              setTimeout(resolve, 0);
+              return;
+            }
+            const channel = new MessageChannel();
+            channel.port1.onmessage = () => {
+              channel.port1.close();
+              channel.port2.close();
+              resolve();
+            };
+            channel.port2.postMessage(null);
+          });
+          lastWait = performance.now() - waitingAt;
+          if (gl.isContextLost()) throw new Error("Exact line worker lost its WebGL context");
+        } while (gl.getSyncParameter(fence, gl.SYNC_STATUS) !== gl.SIGNALED);
+      } finally {
+        gl.deleteSync(fence);
+      }
+      // Host task delays are not GPU work. Charge only time known to precede completion.
+      const elapsed = Math.max(1, performance.now() - started - lastWait);
+      batchRows = Math.max(1, Math.min(32768, Math.floor(batchRows * Math.min(2, 6 / elapsed))));
+      started = performance.now();
+    }
+    this.inFlight = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    gl.flush();
   }
 
   /** Draws a frame and marks it in flight until the GPU has finished it (see `busy`). */
@@ -1159,7 +1217,9 @@ export class WebGLLineRenderer {
     const gl = this.gl;
     this.submittedAt = performance.now();
     this.inFlightFullQuality = !frame.draft && frame.resolution === 1;
-    this.drawFrame(frame);
+    for (const _ of this.drawFrame(frame)) {
+      // The synchronous path submits one complete pass without waiting between rows.
+    }
     if (this.inFlight !== null) {
       gl.deleteSync(this.inFlight);
     }
@@ -1205,7 +1265,10 @@ export class WebGLLineRenderer {
     gl.flush();
   }
 
-  private drawFrame(frame: LineFrame): void {
+  private *drawFrame(
+    frame: LineFrame,
+    batchRows: () => number = () => Math.max(1, this.rowCount),
+  ): Generator<void> {
     const gl = this.gl;
     const slots = this.slotsFor(frame.axes.map((axis) => axis.pixels));
     const axesTexels = new Float32Array(Math.max(1, frame.axes.length) * 4);
@@ -1257,9 +1320,9 @@ export class WebGLLineRenderer {
         frame.contextAlpha * Math.min(1 / Math.max(1, frame.contextCount) ** 0.3, 1),
       );
       gl.uniform1i(program.uniform("u_keep"), DRAW_CONTEXT);
-      this.drawLines(frame, samples);
+      yield* this.drawLines(program, frame, samples, batchRows);
       gl.uniform1i(program.uniform("u_keep"), DRAW_SELECTED);
-      this.drawLines(frame, samples);
+      yield* this.drawLines(program, frame, samples, batchRows);
       return;
     }
 
@@ -1296,7 +1359,7 @@ export class WebGLLineRenderer {
     gl.uniform1i(lines.uniform("u_valueColors"), valueColors ? 1 : 0);
     gl.uniform1i(lines.uniform("u_colorMode"), colorMode);
     gl.uniform1f(lines.uniform("u_onTopLevels"), onTopLevels);
-    this.drawLines(frame, samples);
+    yield* this.drawLines(lines, frame, samples, batchRows);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, width, height);

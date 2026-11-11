@@ -12,7 +12,7 @@
  *
  * Instrumentation is installed from outside the bundle, so every version of
  * HiPlot is measured the same way: Canvas2D `stroke`/`fill` and WebGL `draw*`
- * calls count as line draws; `JSON.parse`/`eval` calls on strings over 1 MB
+ * calls and completed bitmap publications count as line draws; `JSON.parse`/`eval` calls on strings over 1 MB
  * count as payload decoding; a mutation observer on the table container
  * timestamps table updates.
  *
@@ -127,6 +127,7 @@ function installProbe(): void {
       wrapDraw(ctor?.prototype, name);
     }
   }
+  wrapDraw(window.ImageBitmapRenderingContext?.prototype, "transferFromImageBitmap");
 
   const DECODE_MIN_CHARS = 1_000_000;
   const originalParse = JSON.parse;

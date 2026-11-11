@@ -6,6 +6,18 @@ export default defineConfig({
   expect: {
     timeout: 15_000,
   },
+  projects: [
+    {
+      name: "deadline",
+      testMatch: /parallel-(deadline|responsiveness)\.spec\.ts/,
+      workers: 1,
+    },
+    {
+      name: "browser",
+      testIgnore: /parallel-(deadline|responsiveness)\.spec\.ts/,
+      dependencies: ["deadline"],
+    },
+  ],
   use: {
     baseURL: "http://127.0.0.1:8765",
     // Without these, a machine with no usable GPU (CI runners, headless

@@ -6,7 +6,8 @@ import { parseArgs } from "node:util";
 import { chromium, type Page } from "@playwright/test";
 import type { HiPlot } from "../src/component";
 import type { HiPlotRenderOptions } from "../src/hiplot_web";
-import type { LineFrame, WebGLLineRenderer } from "../src/parallel/webgl";
+import type { ExactRenderer } from "../src/parallel/exact_worker";
+import type { FinishedFrame, LineFrame, WebGLLineRenderer } from "../src/parallel/webgl";
 import type { HiPlotExperiment } from "../src/types";
 import { createBenchmarkAbort, withDeadline } from "./deadline";
 import { type ParallelBenchmarkConfig, parallelExperiment, quantile } from "./parallel_data";
@@ -21,6 +22,11 @@ interface ProbeRenderer extends Pick<WebGLLineRenderer, "draw" | "setSelection" 
   present: (pixels: Uint8ClampedArray, width: number, height: number) => void;
 }
 interface ContinuousProbe {
+  exact:
+    | (Pick<ExactRenderer, "busy" | "draw"> & {
+        onImage: (bitmap: ImageBitmap, finished: FinishedFrame) => void;
+      })
+    | null;
   continuous: {
     busy: boolean;
     draw: (...args: unknown[]) => void;
@@ -124,6 +130,7 @@ export async function loadParallelBenchmark(
       const continuous = pp as unknown as ContinuousProbe;
       return (
         !pp.webgl.busy &&
+        !continuous.exact?.busy &&
         (!continuous.continuousMode() ||
           (continuous.continuousFrame > 0 && !continuous.continuous?.busy))
       );
@@ -241,6 +248,37 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
       fenceFrame(start);
     };
     const continuous = pp as unknown as ContinuousProbe;
+    if (continuous.exact !== null) {
+      const exact = continuous.exact;
+      let requestedAt = performance.now();
+      let inputAt: number | null = null;
+      const request = exact.draw.bind(exact);
+      exact.draw = (frame, ...args) => {
+        requestedAt = performance.now();
+        inputAt = probe.brushInputAt;
+        probe.lastFrame = frame;
+        request(frame, ...args);
+        probe.samples.push({ stage: "submit", milliseconds: performance.now() - requestedAt });
+      };
+      const publish = exact.onImage.bind(exact);
+      exact.onImage = (bitmap, finished) => {
+        const requested = requestedAt;
+        const input = inputAt;
+        probe.samples.push({ stage: "gpu", milliseconds: finished.milliseconds });
+        publish(bitmap, finished);
+        probe.draws++;
+        probe.pending++;
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            const now = performance.now();
+            probe.pending--;
+            probe.samples.push({ stage: "completedFrame", milliseconds: now - requested });
+            if (input !== null)
+              probe.samples.push({ stage: "inputToVisible", milliseconds: now - input });
+          }),
+        );
+      };
+    }
     if (continuous.continuous !== null) {
       let requestedAt = performance.now();
       let requestedInputAt: number | null = null;
@@ -298,6 +336,7 @@ async function settle(page: Page): Promise<void> {
     return (
       probe.pending === 0 &&
       !pp.webgl.busy &&
+      !continuous.exact?.busy &&
       !continuous.continuous?.busy &&
       (!continuous.continuousMode() || continuous.continuousFrame > 0) &&
       callbacks.scrollSettle === null &&
@@ -434,7 +473,7 @@ export async function measureParallelBenchmark(page: Page, steps: number) {
     await settle(page);
   }
   const axis = await takeSamples(page);
-  if (!axis.some((sample) => sample.stage === "fence")) {
+  if (!axis.some((sample) => sample.stage === "completedFrame")) {
     throw new Error("Axis benchmark did not redraw lines");
   }
   await page.evaluate(() => {

@@ -2825,3 +2825,130 @@ one-second whole-browser shutdown fallback. The isolated unchanged deadline
 test passes in 557 ms. Scheduling isolation has been proposed to the maintainer;
 this remains a failed full gate until a complete run passes. Raw output is
 `gpt-perf3/pacing-full-gate.log`.
+
+### Follow-up experiments retained outside production
+
+All following candidates live only in `gpt-perf3/`; the shipped renderer remains
+unchanged apart from brush scheduling. Comparisons use the six fine steps from
+single-load, seeded 1M-row/ten-axis profiles. They are diagnostic measurements,
+not substitutes for the three-load production benchmark.
+
+Batching straight exact-mode drafts by row with `GL.LINES`, preserving the
+segment geometry and primitive order, changes hardware input-to-fence median
+166.8 to 165.5 ms: no useful gain, so no source change was retained. A native
+SwiftShader exact-mode probe took 200,191 ms for the first image and 91,791 ms
+for its first brush step. That owned browser process tree was stopped rather
+than spending another quarter hour on the remaining steps; it did not produce
+a completed multi-step result.
+
+Two continuous texture-packing candidates also failed. A planar layout used
+typed-array conversions and four scalar shader gathers in place of interleaved
+CPU writes; its two fine-step medians were 72.8 and 74.6 ms. Reusing cleared
+count/extra scratch buffers measured 71.8 ms. The unchanged reference's first
+run measured 76.8 ms, but subsequent reference runs measured 62.0 ms, including
+a control cloned through the same external-module build as the candidates.
+The initial apparent gain therefore does not establish an improvement. Neither
+candidate was integrated.
+
+A GPU outer-strip reduction prototype initially measured 51.9–53.6 ms against
+reference runs of 62.0–65.1 ms. Its ordinary RGB/numeric pixel matrix passed the
+existing maximum 2/255 and mean 0.25/255 premultiplied-error limits, but independent
+review found a valid high-overdraw counterexample: Float32 summation of one
+million constant intermediate numeric ranks can shift the inferred mean by
+nearly one palette entry. A sharply changing palette makes that error visible.
+That implementation is rejected regardless of its speed. Review additionally
+identified missing float-target/blend and texture/point-capacity fallbacks.
+
+Giving each fixed-size row group its own Float32 partial and then reducing
+pairwise fixes the unbounded summation depth, but the large intermediate
+textures regress the fine-step median to 74.3 ms. A further bounded-bank
+prototype caps intermediate width, counts the actual contributors in each
+bank/pixel, and falls back to the original CPU result where its precision
+budget would be exceeded. Its first hardware fine-step median is 49.9 ms
+(35.5 ms raster). Twenty-four ordinary reference cases plus three 1M-row,
+high-overdraw/sharp-palette cases verify the current prototype's images or
+explicit CPU fallback; two wide numeric cases also take that fallback. This is
+promising evidence only: capability guards, cache/resource tests, a fresh
+independent review, repeated hardware/software production measurements and all
+gates are still required before integration. No GPU marginal prototype is in
+the production bundle.
+
+Raw inputs, worker builds and results are retained in `gpt-perf3/`, with
+`candidate-summary.json` indexing the medians and `marginal-validation.json`
+recording pixel errors and fallback decisions. Fine-move counting is already
+small relative to rasterization; no Rust/WASM kernel was added to address a
+nonexistent per-pair full-mask scan. The 33 ms completed-line target remains
+unmet in both production modes.
+
+### Exact brush presentation follow-up
+
+Opening `million-pacing.html` exposed a gap in the earlier pacing proof: changing
+SVG attributes promptly did not make the browser present them promptly. On the
+RTX 5090, a real million-row exact draw repeatedly delayed browser frames by
+roughly 180–205 ms despite short JavaScript calls. Moving the same draw to a
+worker alone retained those pauses. A worker using fenced GPU batches removed
+them in the prototype (150 brush frames, maximum 10.7 ms, no intervals over
+40 ms). This identifies long GPU submissions, rather than selection scheduling
+alone, as the presentation bottleneck.
+
+Large exact plots now draw every row in an inline OffscreenCanvas worker. GPU
+batches adapt to observed completion and yield between submissions. The page
+keeps the previous completed bitmap until the current image finishes; gestures
+still update their SVG independently. Pending requests coalesce, obsolete
+bitmaps close, and workers terminate on mode changes and unmount. Unsupported
+worker canvases retain the direct renderer. The visible bitmap shares the
+existing hover and axis-drag dimming behavior. No sampling or density precision
+change is involved.
+
+The final regenerated standalone million-row production check ran three
+consecutive 150-frame gestures in one load. Each measured p50 8.3 ms and p95
+8.5 ms; maxima were 38.7, 10.0 and 10.0 ms, with no interval above 40 ms.
+These are consecutive gestures, not three independent loads. The first
+8192-row-cap check had measured a 48.4 ms maximum. Raising the adaptive cap to
+32768 reduced the separate seeded fine-move completed-image median from
+613.2 to 334.5 ms. Replacing hardware timer waits with task boundaries reduced
+it further to 243.9 ms. Software keeps timer waits because rapid polling
+competes with CPU rasterization. Queueing batches without waiting for their
+fences reintroduced 171 ms brush pauses and is rejected.
+
+The completed-image diagnostic measured 243.9 ms against the old unbatched
+166.8 ms. Background machine activity was not controlled, so these runs do not
+establish a true throughput regression. They also do not meet the 33 ms
+completed-image target. On 2026-11-11 the maintainer approved landing the
+responsiveness change regardless of this potential throughput tradeoff. Raw traces are
+`gpt-perf3/responsive*-full-hardware.json`; the standalone frame intervals are
+in `gpt-brush1/production-brush.json`.
+
+After the final plain rebuild, a fresh-file smoke check confirms one million
+rows, the exact worker and full quality. It measures p95 8.5 ms and maximum
+46.1 ms, including two cold intervals above 40 ms (`gpt-brush1/final-smoke.json`).
+Cold frame gaps therefore remain; the brush does not have a universal 33 ms bound.
+
+The documented standalone benchmark also completes after its external probe
+was extended to count bitmap publication. Three 50k-by-ten-column loads on the
+RTX 5090 measure median initial draw 530 ms, full redraw 184 ms, drag-frame
+p50/p95/max 8/8/9 ms with zero stalls above 50 ms, and brush release to lines
+105 ms. These use the benchmark's mixed data and normal quality policy, not
+the million-row exact fine-move diagnostic. Output is
+`gpt-brush1/standard-benchmark.json`.
+
+The real-load regression failed before integration with a 4941 ms maximum
+browser-frame gap on SwiftShader. It now requires gaps below 100 ms while
+brushing 50,000 rows across ten axes, verifies all rows are requested, and waits
+for an actual completed image. Twelve numeric/categorical, mean/extreme,
+straight-draft/curved image comparisons retain the existing maximum 2-byte and
+mean 0.25-byte premultiplied-error limits. Worker unit tests cover transferred
+snapshots, capability-based ordering, retained columns, latest-only publication,
+disposal, errors and cooperative fences.
+
+The maintainer approved running timing independently. The unchanged five-second
+deadline assertion and the new frame-gap regression run in a one-worker project
+before the main browser project; the main project's worker count is unchanged.
+The complete pre-push gate passes, including all fast checks, Python, Bun,
+Playwright and the unchanged 90% diff-coverage requirement. The merged changed-
+line report measures 92% coverage. The successful run is recorded in
+`gpt-brush1/final-gate-recheck.log`. An earlier run reached 228/229 browser
+passes but its remaining page failed to download the bundle with
+`net::ERR_NO_BUFFER_SPACE`; the complete unchanged rerun passed. No test retry,
+timeout increase, assertion reduction or main-suite worker reduction was used.
+The maintainer accepted the measured behavior and authorized publication.

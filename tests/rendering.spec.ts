@@ -7,6 +7,8 @@ interface ParallelPlotHandle {
   foreground: unknown;
   redrawLines: () => void;
   foreground_ref: { current: HTMLCanvasElement | null };
+  exact_image_ref: { current: HTMLCanvasElement | null };
+  exact: { busy: boolean } | null;
 }
 interface HiPlotWindow {
   hiplot_last_instance?: { parallelPlot: () => ParallelPlotHandle | null };
@@ -425,15 +427,17 @@ async function fanOpacities(page: Page, from: number, to: number): Promise<numbe
   const fan = Array.from({ length: 30000 }, (_, i) => [0, i / 29999, i / 29999]);
   await uploadRows(page, ["a", "b", "c"], [...fan, [1, 1, 1]], "c");
   return page.evaluate(
-    ({ from, to }) => {
+    async ({ from, to }) => {
       const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
         | (ParallelPlotHandle & CoverageProbe)
         | null;
-      const canvas = pp?.foreground_ref.current;
-      if (!pp || !canvas) {
+      if (!pp) {
         throw new Error("No parallel plot");
       }
       pp.redrawLines();
+      while (pp.exact?.busy) await new Promise(requestAnimationFrame);
+      const canvas = pp.exact === null ? pp.foreground_ref.current : pp.exact_image_ref.current;
+      if (!canvas) throw new Error("No parallel line surface");
       const copy = document.createElement("canvas");
       copy.width = canvas.width;
       copy.height = canvas.height;
