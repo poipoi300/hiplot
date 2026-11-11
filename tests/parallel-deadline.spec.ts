@@ -1,5 +1,5 @@
 import { chromium } from "@playwright/test";
-import { withDeadline } from "../bench/deadline";
+import { createBenchmarkAbort, withDeadline } from "../bench/deadline";
 import { expect, test } from "./fixtures";
 
 test("the whole-attempt deadline interrupts a CPU-bound initial browser evaluation", async () => {
@@ -9,6 +9,7 @@ test("the whole-attempt deadline interrupts a CPU-bound initial browser evaluati
   const page = await context.newPage();
   const started = performance.now();
   try {
+    const abort = await createBenchmarkAbort(page, () => server.kill());
     await expect(
       withDeadline(
         () =>
@@ -20,13 +21,17 @@ test("the whole-attempt deadline interrupts a CPU-bound initial browser evaluati
           }),
         100,
         () => "Parallel benchmark, last stage: initial evaluation",
-        () => server.close(),
+        abort,
       ),
     ).rejects.toThrow("last stage: initial evaluation exceeded 100 ms");
     // Callers may clean up or start another attempt immediately after rejection.
     expect(page.isClosed()).toBe(true);
     await expect.poll(() => page.isClosed()).toBe(true);
     expect(performance.now() - started).toBeLessThan(5000);
+    expect(browser.isConnected()).toBe(true);
+    const next = await browser.newContext();
+    expect(await (await next.newPage()).evaluate(() => 42)).toBe(42);
+    await next.close();
   } finally {
     await browser.close();
     await server.close();

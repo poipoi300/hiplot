@@ -1,5 +1,78 @@
 import { expect, mock, spyOn, test } from "bun:test";
-import { withDeadline } from "../bench/deadline";
+import type { Page } from "@playwright/test";
+import { createBenchmarkAbort, withDeadline } from "../bench/deadline";
+
+for (const failure of ["none", "attach", "interrupt", "close"] as const) {
+  test(`attempt interruption owns shutdown (${failure})`, async () => {
+    const events: string[] = [];
+    const page = {
+      context: () => ({
+        newCDPSession: async () => {
+          events.push("attach");
+          if (failure === "attach") throw new Error("attach failed");
+          return {
+            send: async (command: string) => {
+              events.push(command);
+              if (failure === "interrupt") throw new Error("interrupt failed");
+            },
+          };
+        },
+        close: async () => {
+          events.push("close");
+          if (failure === "close") throw new Error("close failed");
+        },
+      }),
+    } as unknown as Page;
+    const killBrowser = async () => {
+      await Bun.sleep(1);
+      events.push("kill");
+    };
+    const result = createBenchmarkAbort(page, killBrowser).then(async (abort) => {
+      expect(events).toEqual(["attach"]);
+      await abort();
+    });
+    if (failure === "none") await result;
+    else await expect(result).rejects.toThrow(`${failure} failed`);
+    expect(events).toEqual(
+      failure === "attach"
+        ? ["attach", "kill"]
+        : [
+            "attach",
+            "Runtime.terminateExecution",
+            "close",
+            ...(failure === "none" ? [] : ["kill"]),
+          ],
+    );
+  });
+}
+
+for (const stalled of ["attach", "interrupt", "close"] as const) {
+  test(`a pending ${stalled} escalates to awaited browser termination`, async () => {
+    const pending = () => new Promise<never>(() => {});
+    const killBrowser = mock(async () => {
+      await Bun.sleep(5);
+    });
+    const page = {
+      context: () => ({
+        newCDPSession: async () => {
+          if (stalled === "attach") return pending();
+          return { send: async () => (stalled === "interrupt" ? pending() : undefined) };
+        },
+        close: async () => (stalled === "close" ? pending() : undefined),
+      }),
+    } as unknown as Page;
+    const result = createBenchmarkAbort(page, killBrowser).then((abort) => abort());
+    const outcome = await Promise.race([
+      result.then(
+        () => "resolved",
+        () => "rejected",
+      ),
+      Bun.sleep(1500).then(() => "still pending"),
+    ]);
+    expect(outcome).toBe("rejected");
+    expect(killBrowser).toHaveBeenCalledTimes(1);
+  });
+}
 
 test("completed and failed work clears its deadline without closing the context", async () => {
   const abort = mock(async () => {});

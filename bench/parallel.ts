@@ -8,7 +8,7 @@ import type { HiPlot } from "../src/component";
 import type { HiPlotRenderOptions } from "../src/hiplot_web";
 import type { LineFrame, WebGLLineRenderer } from "../src/parallel/webgl";
 import type { HiPlotExperiment } from "../src/types";
-import { withDeadline } from "./deadline";
+import { createBenchmarkAbort, withDeadline } from "./deadline";
 import { type ParallelBenchmarkConfig, parallelExperiment, quantile } from "./parallel_data";
 
 interface Sample {
@@ -545,6 +545,7 @@ async function main(): Promise<void> {
       for (let rep = 0; rep < reps; ++rep) {
         const context = await browser.newContext({ viewport: { width: 1000, height: 700 } });
         const page = await context.newPage();
+        const abort = await createBenchmarkAbort(page, () => server.kill());
         const attemptStart = performance.now();
         const pageErrors: string[] = [];
         let stage = "starting";
@@ -580,7 +581,7 @@ async function main(): Promise<void> {
             timeoutMs,
             () =>
               `Parallel benchmark (${rows} rows, ${discrete ? "integer" : "continuous"}), last stage: ${stage}`,
-            () => server.close(),
+            abort,
           );
           runs.push(result);
           console.log(JSON.stringify({ ...result, samples: undefined }));

@@ -4,7 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { chromium } from "@playwright/test";
-import { withDeadline } from "./deadline";
+import { createBenchmarkAbort, withDeadline } from "./deadline";
 
 // Load the separately bundled harness: inlining it would also inline its CLI entry guard.
 const harnessUrl = pathToFileURL(path.resolve("node_modules/.cache/parallel-bench.mjs")).href;
@@ -92,6 +92,7 @@ export async function main(): Promise<void> {
   let geometry: { width: number; height: number; gaps: number[] } | undefined;
   let renderer = "unavailable";
   try {
+    const abort = await createBenchmarkAbort(page, () => server.kill());
     await withDeadline(
       async () => {
         const loaded = await loadParallelBenchmark(
@@ -331,7 +332,7 @@ export async function main(): Promise<void> {
       },
       600_000,
       () => `Continuous density probe at ${stage}`,
-      () => server.close(),
+      abort,
     );
   } finally {
     if (values.out)
