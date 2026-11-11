@@ -44,6 +44,19 @@ function ramp(width = 2, height = 16): ContinuousPairImage {
 
 type Bounds = (t: number) => readonly [number, number];
 
+function bezierWeight(x: number): number {
+  let lower = 0;
+  let upper = 1;
+  for (let iteration = 0; iteration < 60; ++iteration) {
+    const s = (lower + upper) / 2;
+    const position = 1.5 * s * (1 - s) + s ** 3;
+    if (position < x) lower = s;
+    else upper = s;
+  }
+  const s = (lower + upper) / 2;
+  return 3 * s ** 2 - 2 * s ** 3;
+}
+
 /** A row ramp exposes the inverse warp directly, independently of image sampling. */
 function expectRampMapping(
   result: ContinuousPairImage,
@@ -68,6 +81,7 @@ function expectRampMapping(
         Math.min(sourceWidth - 1, second + 1),
       ].map((column) => {
         const [sourceLow, sourceHigh] = bounds((column + 0.5) / sourceWidth);
+        if (!Number.isFinite(low) || !Number.isFinite(sourceLow)) return [0, 0];
         const center = y + 0.5;
         let mapped: number;
         if (!Number.isFinite(low) || !Number.isFinite(sourceLow)) mapped = center;
@@ -231,7 +245,7 @@ describe("continuous pair reconstruction", () => {
         8,
       );
       expectRampMapping(result, 2, (t) => {
-        const w = curved ? t * t * (3 - 2 * t) : t;
+        const w = curved ? bezierWeight(t) : t;
         return [2 + 8 * w, 6 + 4 * w];
       });
     });
@@ -247,7 +261,7 @@ describe("continuous pair reconstruction", () => {
         8,
       );
       expectRampMapping(result, 2, (t) => {
-        const w = curved ? t * t * (3 - 2 * t) : t;
+        const w = curved ? bezierWeight(t) : t;
         return [16 * Math.min(w, 1 - w), 16 * Math.max(w, 1 - w)];
       });
     });
@@ -327,25 +341,23 @@ describe("continuous pair reconstruction", () => {
     expect(result.pixels[4 * 4]).toBe(128);
   });
 
-  test("context-only and both-missing cells fall back to centered linear reconstruction", () => {
+  test("absent selected support stays blank while independent context remains visible", () => {
     const image = ramp();
-    for (let y = 0; y < 16; ++y) image.pixels[(y * 2 + 1) * 4] += 40;
-    const result = reconstructContinuousPair(
-      image,
-      histogram([
-        [0, 16, 0],
-        [17, 17],
-      ]),
-      { height: 16, curved: true },
+    const counts = histogram([
+      [0, 16, 0],
+      [17, 17],
+    ]);
+    const frame = { height: 16, curved: true };
+    const result = reconstructContinuousPair(image, counts, frame, 8);
+    expect(result.pixels).toEqual(new Uint8ClampedArray(8 * 16 * 4));
+    const context = reconstructContinuousPair(
+      { ...image, contextPixels: image.pixels },
+      counts,
+      frame,
       8,
     );
-    for (let x = 0; x < 8; ++x) {
-      const fraction = Math.max(0, Math.min(1, ((x + 0.5) * 2) / 8 - 0.5));
-      for (let y = 0; y < 16; ++y)
-        expect(result.pixels[(y * 8 + x) * 4]).toBe(
-          new Uint8ClampedArray([y * 10 + fraction * 40])[0],
-        );
-    }
+    expect(context.pixels.some((value, index) => index % 4 === 3 && value > 0)).toBe(true);
+    expectRampMapping(context, 2, (t) => [16 * bezierWeight(t), 16 * bezierWeight(t)]);
   });
 
   test("collapsed moving support remains finite, including an exact destination anchor", () => {
@@ -406,7 +418,7 @@ describe("continuous pair reconstruction", () => {
     ]);
   });
 
-  test("stub-only columns with no local support use the linear fallback", () => {
+  test("stub-only columns have zero coverage outside local support", () => {
     const result = reconstructContinuousPair(
       ramp(4),
       histogram([

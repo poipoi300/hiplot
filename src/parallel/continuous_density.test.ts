@@ -379,11 +379,12 @@ describe("continuous pixel evaluation", () => {
     }
   });
 
-  test("eased curves change pair-local geometry but not row weights", () => {
+  test("Bezier curves change pair-local geometry but not row weights", () => {
     const hist = histogram();
     populate(hist, 0, 8, 5);
     const linear = evaluateContinuousPixel(hist, frame(), 16, 4, 2);
-    const curved = evaluateContinuousPixel(hist, frame({ curved: true }), 16, 4, 1.25);
+    // Independent parametric sample at s=1/4: x=19/64 and y=5/32.
+    const curved = evaluateContinuousPixel(hist, frame({ curved: true }), 16, 4.75, 1.25);
     expect(linear.selected).toBe(5);
     expect(curved.selected).toBe(5);
   });

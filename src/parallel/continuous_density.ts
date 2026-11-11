@@ -1,4 +1,5 @@
 import type { RGB } from "../lib/colors";
+import { CONTINUOUS_CURVE_GLSL, continuousCurve } from "./continuous_curve";
 import {
   type ContinuousReconstructionPlan,
   continuousReconstructionNeedsRefinement,
@@ -45,8 +46,7 @@ export function continuousSparseIndex(
   for (let x = 0; x < columns; ++x) {
     const position = ((x + 0.5) * gap) / columns;
     const t = position / gap;
-    const weight = style.curved ? t * t * (3 - 2 * t) : t;
-    const derivative = style.curved ? 6 * t * (1 - t) : 1;
+    const [weight, derivative] = style.curved ? continuousCurve(t) : [t, 1];
     for (let index = 0; index < cells.length; ++index) {
       const left = Math.floor(cells[index] / stride);
       const right = cells[index] % stride;
@@ -249,8 +249,7 @@ function evaluatePixelLayers(
   const stride = bins + 1;
   const spacing = style.height / (bins - 1);
   const t = x / gap;
-  const w = style.curved ? t * t * (3 - 2 * t) : t;
-  const derivative = style.curved ? 6 * t * (1 - t) : 1;
+  const [w, derivative] = style.curved ? continuousCurve(t) : [t, 1];
   const exact = (left: number, right: number, cell: number, sparsePhase: boolean): void => {
     if (left === bins && right === bins) return;
     if ((left === bins && x < gap - 15) || (right === bins && x >= 15)) return;
@@ -513,6 +512,7 @@ float color2 = 0.0;
 vec2 peaks = vec2(0.0);
 float winner = -1.0;
 float winnerCoverage = 0.0;
+${CONTINUOUS_CURVE_GLSL}
 float squareBelow(float x, float narrow, float wide) {
   if (narrow == 0.0) return clamp(0.5 + x / wide, 0.0, 1.0);
   float outer = 0.5 * (narrow + wide);
@@ -595,8 +595,9 @@ void main() {
   // The FBO's low row deliberately stores the image's top row, as does the CPU reference.
   float y = gl_FragCoord.y;
   float t = x / u_gap;
-  float w = u_curved ? t * t * (3.0 - 2.0 * t) : t;
-  float derivative = u_curved ? 6.0 * t * (1.0 - t) : 1.0;
+  vec2 profile = u_curved ? continuousCurve(t) : vec2(t, 1.0);
+  float w = profile.x;
+  float derivative = profile.y;
   float spacing = u_height / float(u_bins - 1);
   if (u_sparseSelected || u_sparseContext) {
     uvec2 range = texelFetch(u_ranges,

@@ -340,6 +340,8 @@ describe("continuous reconstruction GL binding and lifecycle", () => {
       expect(bindings.get(0)).toBe(selected);
       expect(bindings.get(1)).toBe(background);
       expect(uploads[2].width).toBe(3);
+      // Independently bisected half-gap Bezier at normalized screen x=1/6.
+      const endpointWeight = 0.04333422273150615;
       expect(Array.from(uploads[2].data ?? [])).toEqual([
         1,
         -1,
@@ -359,12 +361,12 @@ describe("continuous reconstruction GL binding and lifecycle", () => {
         0,
         0,
         0,
-        Math.fround((6.5 * 25) / 27),
-        Math.fround((6.5 * 25) / 27),
+        Math.fround(6.5 * (1 - endpointWeight)),
+        Math.fround(6.5 * (1 - endpointWeight)),
         3.25,
         3.25,
-        Math.fround((6.5 * 2) / 27),
-        Math.fround((6.5 * 2) / 27),
+        Math.fround(6.5 * endpointWeight),
+        Math.fround(6.5 * endpointWeight),
       ]);
       expect(uploads[3]).toMatchObject({ width: 3, height: 7, texture: textures[1] });
       expect(gl.uniform1i.mock.calls.map(([, value]) => value)).toEqual([

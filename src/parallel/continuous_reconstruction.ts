@@ -1,3 +1,4 @@
+import { continuousCurve } from "./continuous_curve";
 import type { ContinuousPairImage } from "./continuous_density";
 import type { ContinuousHistogram, ContinuousRequest } from "./continuous_types";
 
@@ -58,7 +59,7 @@ export function continuousSupport(
     const index = source ? column : column - sourceWidth;
     const t = (index + 0.5) / columns;
     const x = t * gap;
-    const weight = frame.curved ? t * t * (3 - 2 * t) : t;
+    const weight = frame.curved ? continuousCurve(t)[0] : t;
     let low = Infinity;
     let high = -Infinity;
     for (let left = 0; left < bins; ++left) {
@@ -145,7 +146,7 @@ export function continuousReconstructionNeedsRefinement(
     for (let column = 0; column < sourceWidth; ++column) {
       if (!Number.isFinite(support.lower[column])) continue;
       const t = (column + 0.5) / sourceWidth;
-      const derivative = frame.curved ? 6 * t * (1 - t) : 1;
+      const derivative = frame.curved ? continuousCurve(t)[1] : 1;
       const slope = (derivative * maximumDelta) / gap;
       const radius =
         spacing / 2 + Math.max(frame.lineWidth / 2, 0.5) * Math.hypot(1, slope) + (1 + slope) / 2;
