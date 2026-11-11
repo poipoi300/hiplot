@@ -34,9 +34,9 @@ export function continuousSparseIndex(
   gap: number,
   columns: number,
   height: number,
+  cells = histogram.occupied,
 ): SparseDensityIndex {
   const tiles = Math.ceil(height / DENSITY_TILE_ROWS);
-  const cells = histogram.occupied;
   const starts = new Int32Array(columns * cells.length).fill(-1);
   const ends = new Int32Array(starts.length);
   const counts = new Uint32Array(columns * tiles);
@@ -111,6 +111,29 @@ export interface ContinuousPixel {
 
 type DensityStyle = Pick<ContinuousRequest, "height" | "lineWidth" | "curved" | "colorMode">;
 
+interface SparseDensityLayers {
+  selected: boolean;
+  context: boolean;
+  cells: Uint32Array;
+}
+
+function sparseDensityLayers(histogram: ContinuousHistogram): SparseDensityLayers {
+  let selectedCount = 0;
+  let contextCount = 0;
+  for (const cell of histogram.occupied) {
+    if (histogram.selected[cell] > 0) selectedCount++;
+    if (histogram.context[cell] > 0) contextCount++;
+  }
+  const selected = selectedCount <= SPARSE_DENSITY_CELLS;
+  const context = contextCount <= SPARSE_DENSITY_CELLS;
+  const cells: number[] = [];
+  for (const cell of histogram.occupied) {
+    if ((selected && histogram.selected[cell] > 0) || (context && histogram.context[cell] > 0))
+      cells.push(cell);
+  }
+  return { selected, context, cells: Uint32Array.from(cells) };
+}
+
 function squareBelow(position: number, narrow: number, wide: number): number {
   const outer = (narrow + wide) / 2;
   const inner = (wide - narrow) / 2;
@@ -163,15 +186,19 @@ function addCell(
   weight: number,
   coverage: number,
   colorMode: ContinuousRequest["colorMode"],
+  selectedLayer: boolean,
+  contextLayer: boolean,
 ): void {
   if (weight <= 0) return;
-  const selected = histogram.selected[cell];
-  const context = histogram.context[cell];
+  const selected = selectedLayer ? histogram.selected[cell] : 0;
+  const context = contextLayer ? histogram.context[cell] : 0;
   output.selected += selected * weight;
   output.context += context * weight;
-  output.color0 += histogram.color0[cell] * weight;
-  output.color1 += histogram.color1[cell] * weight;
-  output.color2 += histogram.color2[cell] * weight;
+  if (selectedLayer) {
+    output.color0 += histogram.color0[cell] * weight;
+    output.color1 += histogram.color1[cell] * weight;
+    output.color2 += histogram.color2[cell] * weight;
+  }
   if (selected > 0) output.selectedPeak = Math.max(output.selectedPeak, coverage);
   if (context > 0) output.contextPeak = Math.max(output.contextPeak, coverage);
   if (selected === 0 || coverage <= 0 || colorMode === "mean") return;
@@ -198,8 +225,21 @@ export function evaluateContinuousPixel(
   gap: number,
   x: number,
   y: number,
-  sparse = histogram.occupied.length <= SPARSE_DENSITY_CELLS,
-  candidates = histogram.occupied,
+  sparse?: boolean,
+): ContinuousPixel {
+  const layers = sparseDensityLayers(histogram);
+  if (sparse !== undefined) layers.selected = layers.context = sparse;
+  return evaluatePixelLayers(histogram, style, gap, x, y, layers, histogram.occupied);
+}
+
+function evaluatePixelLayers(
+  histogram: ContinuousHistogram,
+  style: DensityStyle,
+  gap: number,
+  x: number,
+  y: number,
+  layers: SparseDensityLayers,
+  candidates: Uint32Array,
   firstCandidate = 0,
   lastCandidate = candidates.length,
 ): ContinuousPixel {
@@ -211,7 +251,7 @@ export function evaluateContinuousPixel(
   const t = x / gap;
   const w = style.curved ? t * t * (3 - 2 * t) : t;
   const derivative = style.curved ? 6 * t * (1 - t) : 1;
-  const exact = (left: number, right: number, cell: number): void => {
+  const exact = (left: number, right: number, cell: number, sparsePhase: boolean): void => {
     if (left === bins && right === bins) return;
     if ((left === bins && x < gap - 15) || (right === bins && x >= 15)) return;
     const missing = left === bins || right === bins;
@@ -220,15 +260,24 @@ export function evaluateContinuousPixel(
       : ((1 - w) * left + w * right) * spacing;
     const slope = missing ? 0 : (derivative * (right - left) * spacing) / gap;
     const coverage = continuousStripCoverage(y - center, slope, style.lineWidth);
-    addCell(output, histogram, cell, coverage, coverage, style.colorMode);
+    addCell(
+      output,
+      histogram,
+      cell,
+      coverage,
+      coverage,
+      style.colorMode,
+      layers.selected === sparsePhase,
+      layers.context === sparsePhase,
+    );
   };
-  if (sparse) {
+  if (layers.selected || layers.context) {
     for (let index = firstCandidate; index < lastCandidate; ++index) {
       const cell = candidates[index];
-      exact(Math.floor(cell / stride), cell % stride, cell);
+      exact(Math.floor(cell / stride), cell % stride, cell, true);
     }
-    return output;
   }
+  if (layers.selected && layers.context) return output;
   const reverse = w < 0.5;
   const weight = reverse ? 1 - w : w;
   for (let a = 0; a < bins; ++a) {
@@ -259,10 +308,12 @@ export function evaluateContinuousPixel(
         interpolation * factor,
         coverage,
         style.colorMode,
+        !layers.selected,
+        !layers.context,
       );
     }
-    exact(a, bins, a * stride + bins);
-    exact(bins, a, bins * stride + a);
+    exact(a, bins, a * stride + bins, false);
+    exact(bins, a, bins * stride + a, false);
   }
   return output;
 }
@@ -388,23 +439,21 @@ export function evaluateContinuousPairCPU(
   const selectedFrame = separateLayers ? { ...frame, contextAlpha: 0 } : frame;
   const contextReference = densityReference(update.contextCount, frame.height);
   const gap = pairGap(pair);
-  const sparse = pair.histogram.occupied.length <= SPARSE_DENSITY_CELLS;
-  const spatial = sparse
-    ? continuousSparseIndex(pair.histogram, frame, gap, columns, height)
-    : null;
+  const layers = sparseDensityLayers(pair.histogram);
+  const spatial = continuousSparseIndex(pair.histogram, frame, gap, columns, height, layers.cells);
   for (let y = 0; y < height; ++y) {
     for (let x = 0; x < columns; ++x) {
       const bucket = (Math.floor(y / DENSITY_TILE_ROWS) * columns + x) * 2;
-      const pixel = evaluateContinuousPixel(
+      const pixel = evaluatePixelLayers(
         pair.histogram,
         frame,
         gap,
         ((x + 0.5) * gap) / columns,
         y + 0.5,
-        sparse,
-        spatial?.indices,
-        spatial?.ranges[bucket],
-        spatial?.ranges[bucket + 1],
+        layers,
+        spatial.indices,
+        spatial.ranges[bucket],
+        spatial.ranges[bucket + 1],
       );
       const rgba = compositeContinuousPixel(
         pixel,
@@ -445,7 +494,8 @@ uniform int u_bins;
 uniform int u_occupiedWidth;
 uniform int u_colorMapBins;
 uniform int u_mode;
-uniform bool u_sparse;
+uniform bool u_sparseSelected;
+uniform bool u_sparseContext;
 uniform bool u_curved;
 uniform bool u_separateLayers;
 uniform float u_height;
@@ -497,11 +547,16 @@ float endpointTentIntegral(float position) {
   return position < 0.0 ? 0.5 * (position + 1.0) * (position + 1.0) :
     1.0 - 0.5 * (1.0 - position) * (1.0 - position);
 }
-void addCell(ivec2 endpoint, float weight, float covered) {
+void addCell(ivec2 endpoint, float weight, float covered, bool sparsePhase) {
   if (weight <= 0.0) return;
   vec4 counts = texelFetch(u_counts, endpoint.yx, 0);
+  bool selectedLayer = u_sparseSelected == sparsePhase;
+  bool contextLayer = u_sparseContext == sparsePhase;
+  if (!selectedLayer) counts.rba = vec3(0.0);
+  if (!contextLayer) counts.g = 0.0;
   vec4 extra = vec4(0.0);
-  if (u_colorMapBins == 0 || u_mode != 0) extra = texelFetch(u_extra, endpoint.yx, 0);
+  if (selectedLayer && (u_colorMapBins == 0 || u_mode != 0))
+    extra = texelFetch(u_extra, endpoint.yx, 0);
   sums += counts * weight;
   color2 += extra.r * weight;
   if (counts.r > 0.0) peaks.r = max(peaks.r, covered);
@@ -514,7 +569,7 @@ void addCell(ivec2 endpoint, float weight, float covered) {
     winnerCoverage = covered;
   } else if (key == winner) winnerCoverage = max(winnerCoverage, covered);
 }
-void exactCell(ivec2 endpoint, float x, float y, float w, float derivative, float spacing) {
+void exactCell(ivec2 endpoint, float x, float y, float w, float derivative, float spacing, bool sparsePhase) {
   if (endpoint.x == u_bins && endpoint.y == u_bins) return;
   if ((endpoint.x == u_bins && x < u_gap - 15.0) || (endpoint.y == u_bins && x >= 15.0)) return;
   bool missing = endpoint.x == u_bins || endpoint.y == u_bins;
@@ -522,7 +577,7 @@ void exactCell(ivec2 endpoint, float x, float y, float w, float derivative, floa
     mix(float(endpoint.x), float(endpoint.y), w) * spacing;
   float slope = missing ? 0.0 : derivative * float(endpoint.y - endpoint.x) * spacing / u_gap;
   float covered = stripCoverage(y - center, slope);
-  addCell(endpoint, covered, covered);
+  addCell(endpoint, covered, covered, sparsePhase);
 }
 float toneMapped(float sum, float peak, float reference) {
   if (sum <= 0.0 || peak <= 0.0) return 0.0;
@@ -543,14 +598,15 @@ void main() {
   float w = u_curved ? t * t * (3.0 - 2.0 * t) : t;
   float derivative = u_curved ? 6.0 * t * (1.0 - t) : 1.0;
   float spacing = u_height / float(u_bins - 1);
-  if (u_sparse) {
+  if (u_sparseSelected || u_sparseContext) {
     uvec2 range = texelFetch(u_ranges,
       ivec2(int(gl_FragCoord.x), int(gl_FragCoord.y) / ${DENSITY_TILE_ROWS}), 0).rg;
     for (int i = int(range.r); i < int(range.g); ++i) {
       uint cell = texelFetch(u_occupied, ivec2(i % u_occupiedWidth, i / u_occupiedWidth), 0).r;
-      exactCell(ivec2(int(cell) / (u_bins + 1), int(cell) % (u_bins + 1)), x, y, w, derivative, spacing);
+      exactCell(ivec2(int(cell) / (u_bins + 1), int(cell) % (u_bins + 1)), x, y, w, derivative, spacing, true);
     }
-  } else {
+  }
+  if (!u_sparseSelected || !u_sparseContext) {
     bool reverse = w < 0.5;
     float weight = reverse ? 1.0 - w : w;
     for (int a = 0; a < u_bins; ++a) {
@@ -567,7 +623,7 @@ void main() {
         float factor = u_lineWidth * sqrt(1.0 + localSlope * localSlope) /
           (weight * spacing * centerCoverage(localSlope));
         float covered = stripCoverage(max(0.0, abs(y - center) - 0.5 * spacing), localSlope);
-        addCell(endpoints, interpolation * factor, covered);
+        addCell(endpoints, interpolation * factor, covered, false);
       }
     }
     // Horizontal missing-value stubs intersect only the bins inside this pixel's footprint.
@@ -575,8 +631,8 @@ void main() {
     int firstStub = max(0, int(ceil((y - radius) / spacing)));
     int lastStub = min(u_bins - 1, int(floor((y + radius) / spacing)));
     for (int a = firstStub; a <= lastStub; ++a) {
-      exactCell(ivec2(a, u_bins), x, y, w, derivative, spacing);
-      exactCell(ivec2(u_bins, a), x, y, w, derivative, spacing);
+      exactCell(ivec2(a, u_bins), x, y, w, derivative, spacing, false);
+      exactCell(ivec2(u_bins, a), x, y, w, derivative, spacing, false);
     }
   }
   float selectedAlpha = toneMapped(sums.r, peaks.r, u_selectedReference);
@@ -703,9 +759,10 @@ export class ContinuousWebGLEvaluator {
           histogram.maximum[cell] === EMPTY_COLOR_KEY ? -1 : histogram.maximum[cell];
       }
     }
-    const sparse = histogram.occupied.length <= SPARSE_DENSITY_CELLS;
+    const layers = sparseDensityLayers(histogram);
+    const sparse = layers.selected || layers.context;
     const spatial = sparse
-      ? continuousSparseIndex(histogram, frame, pairGap(pair), columns, height)
+      ? continuousSparseIndex(histogram, frame, pairGap(pair), columns, height, layers.cells)
       : { indices: new Uint32Array(), ranges: new Uint32Array(2), tiles: 1 };
     const occupiedWidth = Math.max(1, Math.min(maximumTexture, spatial.indices.length));
     const occupiedHeight = Math.max(1, Math.ceil(spatial.indices.length / occupiedWidth));
@@ -764,7 +821,8 @@ export class ContinuousWebGLEvaluator {
       occupiedWidth,
       colorMapBins: update.colors.colorMapBins,
       mode: { mean: 0, lowest: 1, highest: 2 }[frame.colorMode],
-      sparse: Number(sparse),
+      sparseSelected: Number(layers.selected),
+      sparseContext: Number(layers.context),
       curved: Number(frame.curved),
       separateLayers: Number(reconstruct),
     }))

@@ -1,13 +1,25 @@
 import { loadParallelBenchmark } from "../bench/parallel";
 import type { ColorMode } from "../src/lib/colors";
-import { evaluateContinuousPairCPU } from "../src/parallel/continuous_density";
+import {
+  evaluateContinuousPairCPU,
+  SPARSE_DENSITY_CELLS,
+} from "../src/parallel/continuous_density";
 import { ContinuousKernel } from "../src/parallel/continuous_grid";
 import { reconstructContinuousPair } from "../src/parallel/continuous_reconstruction";
 import type { ContinuousImage, ContinuousRequest } from "../src/parallel/continuous_types";
 import type { LineColors, LineFrame } from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
 
-for (const { dense, curved, mode, numeric, paletteSize = 3, draft = false, gap = 32 } of [
+for (const {
+  dense,
+  curved,
+  mode,
+  numeric,
+  paletteSize = 3,
+  draft = false,
+  gap = 32,
+  sparseLayer,
+} of [
   { dense: false, curved: false, mode: "mean", numeric: true },
   { dense: false, curved: true, mode: "highest", numeric: true },
   { dense: true, curved: false, mode: "lowest", numeric: true },
@@ -20,6 +32,12 @@ for (const { dense, curved, mode, numeric, paletteSize = 3, draft = false, gap =
   { dense: true, curved: true, mode: "mean", numeric: true, draft: true, gap: 85 },
   { dense: true, curved: false, mode: "mean", numeric: false, draft: true, gap: 85 },
   { dense: false, curved: true, mode: "mean", numeric: false, paletteSize: 20_000 },
+  { dense: true, curved: false, mode: "highest", numeric: true, sparseLayer: "selected" },
+  { dense: true, curved: true, mode: "lowest", numeric: true, sparseLayer: "selected" },
+  { dense: true, curved: false, mode: "mean", numeric: false, sparseLayer: "selected" },
+  { dense: true, curved: false, mode: "highest", numeric: true, sparseLayer: "context" },
+  { dense: true, curved: true, mode: "mean", numeric: false, sparseLayer: "context" },
+  { dense: true, curved: false, mode: "mean", numeric: true, sparseLayer: "both" },
 ] as readonly {
   dense: boolean;
   curved: boolean;
@@ -28,24 +46,41 @@ for (const { dense, curved, mode, numeric, paletteSize = 3, draft = false, gap =
   paletteSize?: number;
   draft?: boolean;
   gap?: number;
+  sparseLayer?: "selected" | "context" | "both";
 }[]) {
-  test(`histogram shader agrees with CPU for ${draft ? "draft" : "idle"} ${dense ? "dense" : "sparse"} ${curved ? "eased" : "straight"} ${numeric ? mode : "RGB"} gap${gap}`, async ({
+  test(`histogram shader agrees with CPU for ${draft ? "draft" : "idle"} ${dense ? "dense" : "sparse"} ${curved ? "eased" : "straight"} ${numeric ? mode : "RGB"} gap${gap}${sparseLayer ? ` sparse-${sparseLayer}` : ""}`, async ({
     page,
   }) => {
-    const rows = dense ? 600 : 12;
+    const rows = sparseLayer === "both" ? 800 : sparseLayer ? 3200 : dense ? 2400 : 12;
     const left = Float32Array.from({ length: rows }, (_, row) =>
-      dense ? Math.floor(row / 25) + 0.25 : ((row * 7) % 24) + 0.25,
+      dense ? Math.floor((row % 2400) / 50) * 0.5 + 0.25 : ((row * 7) % 24) + 0.25,
     );
     const right = Float32Array.from({ length: rows }, (_, row) =>
-      dense ? (row % 25) * 0.94 : ((row * 11) % 24) + 0.25,
+      dense ? (row % 50) * 0.47 : ((row * 11) % 24) + 0.25,
     );
     left[2] = Number.NaN;
     right[3] = Number.NaN;
     left[4] = Number.NaN;
     right[4] = Number.NaN;
-    const selection = Uint8Array.from({ length: rows }, (_, row) =>
-      Number(draft ? Math.floor(row / 25) >= 6 && Math.floor(row / 25) <= 18 : row % 4 !== 0),
-    );
+    const selection = Uint8Array.from({ length: rows }, (_, row) => {
+      if (sparseLayer === "both") return Number(row < 400);
+      if (sparseLayer) return Number(sparseLayer === "selected" ? row < 2000 : row >= 2000);
+      return Number(
+        draft ? Math.floor(row / 50) >= 6 && Math.floor(row / 50) <= 18 : row % 4 !== 0,
+      );
+    });
+    if (sparseLayer && sparseLayer !== "both") {
+      for (let row = 0; row < 2000; ++row) {
+        left[row] = row % 2 === 0 ? 0 : 24;
+        right[row] = row % 2 === 0 ? 24 : 0;
+      }
+      // Include finite-endpoint stubs and overlapping positive cells in both phases.
+      left[2] = Number.NaN;
+      right[3] = Number.NaN;
+      left[4] = right[4] = Number.NaN;
+      left[2000] = left[0];
+      right[2000] = right[0];
+    }
     const basePalette = [
       { r: 34, g: 100, b: 220 },
       { r: 240, g: 170, b: 30 },
@@ -89,6 +124,16 @@ for (const { dense, curved, mode, numeric, paletteSize = 3, draft = false, gap =
     const update = new ContinuousKernel().update(request);
     const pair = update.pairs.find((pair) => pair.left.column === 1 && pair.right.column === 2);
     if (!pair) throw new Error("No reference pair");
+    if (dense) {
+      expect(pair.histogram.occupied.length).toBeGreaterThan(SPARSE_DENSITY_CELLS);
+      for (const name of ["selected", "context"] as const) {
+        const layer = pair.histogram[name];
+        const positives = Array.from(pair.histogram.occupied).filter((cell) => layer[cell] > 0);
+        if (sparseLayer === "both" || sparseLayer === name)
+          expect(positives.length).toBeLessThanOrEqual(SPARSE_DENSITY_CELLS);
+        else expect(positives.length).toBeGreaterThan(SPARSE_DENSITY_CELLS);
+      }
+    }
     const evaluated = evaluateContinuousPairCPU(
       pair,
       request,

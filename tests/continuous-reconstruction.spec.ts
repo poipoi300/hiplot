@@ -218,17 +218,25 @@ for (const kind of ["crossing", "near-crossing", "stationary-context"] as const)
       expect(rgba.slice(0, 3)).toEqual([0, 255, 0]);
       expect(rgba[3]).toBeGreaterThan(0);
     }
-    if (kind === "near-crossing") {
-      const coverage = await page.evaluate(() => {
+    if (kind !== "stationary-context") {
+      const coverage = await page.evaluate((kind) => {
         const image = (
           window as unknown as ReconstructionProbe
         ).__parallelProbe.instance.parallelPlot().continuousMetrics;
-        return [
-          [1, 12],
-          [1, 83],
-          [8, 67],
-        ].map(([x, y]) => image.pixels[(y * image.width + x) * 4 + 3]);
-      });
+        const locations =
+          kind === "crossing"
+            ? [
+                [16, 52],
+                [16, 202],
+                [39, 127],
+              ]
+            : [
+                [1, 12],
+                [1, 83],
+                [8, 67],
+              ];
+        return locations.map(([x, y]) => image.pixels[(y * image.width + x) * 4 + 3]);
+      }, kind);
       for (const alpha of coverage) expect(alpha).toBeGreaterThan(0);
     }
   });

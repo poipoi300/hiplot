@@ -628,6 +628,14 @@ describe("continuous pair image cache", () => {
     const idle = evaluator.render(style, state);
     expect(at(idle.pixels, 80, 32, 120)[3]).toBe(0);
     expect(at(gesture.pixels, 80, 32, 120)[3]).toBe(0);
+    for (const [x, y] of [
+      [16, 52],
+      [16, 202],
+      [39, 127],
+    ]) {
+      expect(at(idle.pixels, 80, x, y)[3]).toBeGreaterThan(0);
+      expect(at(gesture.pixels, 80, x, y)[3]).toBeGreaterThan(0);
+    }
     evaluator.dispose();
   });
 
