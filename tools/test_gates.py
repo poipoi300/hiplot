@@ -44,12 +44,37 @@ def test_ci_enforced_gates_appear_in_workflow() -> None:
         "mypy": "mypy .",
         "biome": "biome check --error-on-warnings .",
         "tsc": "bun run typecheck",
-        "tests-and-diff-coverage": "stack_coverage_gate.sh",
     }
     ci_gates = {g.name for g in DETERMINISTIC_GATES if g.ci_enforced}
     assert ci_gates == set(expected_evidence)
     for evidence in expected_evidence.values():
         assert evidence in workflow_text
+
+
+def test_ci_runs_unit_tests_without_a_browser_dependency() -> None:
+    config = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    job = config["jobs"]["unit-tests"]
+    assert job["needs"] == "build-js"
+    commands = [step["run"] for step in job["steps"] if "run" in step]
+    assert "uv run pytest -q" in commands
+    assert "bun test ./src ./tools" in commands
+    for workflow in (REPO_ROOT / ".github/workflows").glob("*.yml"):
+        text = workflow.read_text(encoding="utf-8")
+        for browser_dependency in ("playwright", "test:js", "e2e_coverage.sh", "stack_coverage_gate.sh", "E2E_LCOV"):
+            assert browser_dependency not in text, f"{workflow.name}: hosted browser dependency {browser_dependency}"
+
+
+def test_local_push_gate_keeps_browser_tests_and_combined_coverage() -> None:
+    gate = next(g for g in DETERMINISTIC_GATES if g.name == "tests-and-diff-coverage")
+    assert gate.stage is GateStage.PUSH
+    assert gate.ci_enforced is False
+    hook = next(h for h in _precommit_hooks() if h["id"] == gate.name)
+    assert hook["entry"] == "bash tools/stack_coverage_gate.sh"
+    script = (REPO_ROOT / "tools/stack_coverage_gate.sh").read_text(encoding="utf-8")
+    assert "bash tools/e2e_coverage.sh" in script
+    assert "${DIFF_COVER_FAIL_UNDER:-90}" in script
+    assert '"${REPORTS}/python.lcov" "${E2E_LCOV}"' in script
+    assert '--bun "${REPORTS}/unit/lcov.info"' in script
 
 
 def test_workflow_actions_are_pinned_to_commit_shas() -> None:

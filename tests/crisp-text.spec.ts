@@ -1,14 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { pickColumn } from "./plot";
-
-async function loadDemo(page: Page): Promise<void> {
-  await page.goto("/");
-  const input = page.locator('textarea[placeholder="Experiments to load"]');
-  await input.fill("demo");
-  await input.press("Enter");
-  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
-}
+import { loadDemo, pickColumn } from "./plot";
 
 /** Tick labels whose glyphs start or whose baseline sits between device pixels. */
 function ticksOffTheGrid(page: Page, ratio: number) {
@@ -67,11 +59,10 @@ for (const ratio of [1, 2]) {
       const oneAxis = page.getByTestId("scatter-panel").last();
       await pickColumn(oneAxis, "X", "exp_metric");
       await expect(oneAxis.locator(".tick text").first()).toBeAttached();
-      // The one-axis plot's density axis settles at the end of its transition.
-      await page.waitForTimeout(300);
-      const { count, misses } = await ticksOffTheGrid(page, ratio);
+      const { count } = await ticksOffTheGrid(page, ratio);
       expect(count).toBeGreaterThan(40);
-      expect(misses).toEqual([]);
+      // Axis transitions snap their text only when they finish.
+      await expect.poll(async () => (await ticksOffTheGrid(page, ratio)).misses).toEqual([]);
     });
   });
 }

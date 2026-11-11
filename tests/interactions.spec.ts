@@ -1,13 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-
-async function loadDemo(page: Page): Promise<void> {
-  await page.goto("/");
-  const input = page.locator('textarea[placeholder="Experiments to load"]');
-  await input.fill("demo");
-  await input.press("Enter");
-  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
-}
+import { loadDemo } from "./plot";
 
 const countText = (page: Page) => page.getByTestId("selection-count").textContent();
 
@@ -106,12 +99,14 @@ test.describe("XY plot", () => {
       .evaluateAll((ticks) => ticks.map((tick) => tick.textContent));
   /** The X tick labels once two reads a quarter second apart agree. */
   const settledXTicks = async (page: Page): Promise<(string | null)[]> => {
-    let previous = await xTicks(page);
+    let previous: (string | null)[] = [];
+    let sampled = false;
     await expect
       .poll(
         async () => {
           const current = await xTicks(page);
-          const settled = JSON.stringify(current) === JSON.stringify(previous);
+          const settled = sampled && JSON.stringify(current) === JSON.stringify(previous);
+          sampled = true;
           previous = current;
           return settled;
         },

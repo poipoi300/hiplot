@@ -1,3 +1,4 @@
+import { linkProgram } from "../lib/webgl";
 import type { ContinuousPairImage } from "./continuous_density";
 import { type ContinuousReconstructionPlan, continuousSupport } from "./continuous_reconstruction";
 import type { ContinuousHistogram, ContinuousRequest } from "./continuous_types";
@@ -123,36 +124,6 @@ void main() {
     alpha * 255.0)) / 255.0;
 }`;
 
-function createProgram(gl: WebGL2RenderingContext): WebGLProgram {
-  const shaders: WebGLShader[] = [];
-  const program = gl.createProgram();
-  if (program === null) throw new Error("Cannot allocate continuous reconstruction program");
-  try {
-    for (const [type, source] of [
-      [gl.VERTEX_SHADER, VERTEX],
-      [gl.FRAGMENT_SHADER, FRAGMENT],
-    ] as const) {
-      const shader = gl.createShader(type);
-      if (shader === null) throw new Error("Cannot allocate continuous reconstruction shader");
-      shaders.push(shader);
-      gl.shaderSource(shader, source);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
-        throw new Error(`Continuous reconstruction shader: ${gl.getShaderInfoLog(shader)}`);
-      gl.attachShader(program, shader);
-    }
-    gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS))
-      throw new Error(`Continuous reconstruction link: ${gl.getProgramInfoLog(program)}`);
-    return program;
-  } catch (error) {
-    gl.deleteProgram(program);
-    throw error;
-  } finally {
-    for (const shader of shaders) gl.deleteShader(shader);
-  }
-}
-
 /** Reconstruct independent MRT layers and composite with one draw and one final readback. */
 export class ContinuousWebGLReconstruction {
   private readonly program: WebGLProgram;
@@ -162,7 +133,7 @@ export class ContinuousWebGLReconstruction {
   private readonly uniforms = new Map<string, WebGLUniformLocation>();
 
   constructor(private readonly gl: WebGL2RenderingContext) {
-    this.program = createProgram(gl);
+    this.program = linkProgram(gl, VERTEX, FRAGMENT, "Continuous reconstruction");
     const textures: WebGLTexture[] = [];
     let framebuffer: WebGLFramebuffer | null = null;
     const texture = (): WebGLTexture => {

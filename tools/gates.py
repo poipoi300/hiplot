@@ -52,7 +52,7 @@ DETERMINISTIC_GATES: tuple[Gate, ...] = (
     Gate("mypy", GateStage.COMMIT, ci_enforced=True),
     Gate("biome", GateStage.COMMIT, ci_enforced=True),
     Gate("tsc", GateStage.COMMIT, ci_enforced=True),
-    Gate("tests-and-diff-coverage", GateStage.PUSH, ci_enforced=True),
+    Gate("tests-and-diff-coverage", GateStage.PUSH, ci_enforced=False),
 )
 
 

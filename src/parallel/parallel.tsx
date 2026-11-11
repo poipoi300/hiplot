@@ -2785,34 +2785,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     };
   }
 
-  /** Indices of the deselected rows, in draw order. */
-  contextRows(geometry: LineGeometry, selectedRows: Uint32Array): Uint32Array {
-    if (selectedRows === geometry.order) {
-      return new Uint32Array(0);
-    }
-    const isSelected = new Uint8Array(geometry.rows.length);
-    selectedRows.forEach((row) => {
-      isSelected[row] = 1;
-    });
-    return geometry.order.filter((row) => isSelected[row] === 0);
-  }
-
-  /** Indices of the selected rows, in `order`. */
-  drawnRows(
-    geometry: LineGeometry,
-    selected: ReadonlyArray<Datapoint>,
-    order: Uint32Array,
-  ): Uint32Array {
-    if (selected === geometry.rows) {
-      return order;
-    }
-    const isSelected = new Uint8Array(geometry.rows.length);
-    selected.forEach((row) => {
-      isSelected[geometry.indexOf(row)] = 1;
-    });
-    return order.filter((row) => isSelected[row] === 1);
-  }
-
   cancelDrawing(): void {
     if (this.drawingFrame !== null) {
       cancelAnimationFrame(this.drawingFrame);
@@ -2917,8 +2889,16 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     const colorOrder = geometry.colorOrder(colors.bins, colors.colorMapBins, this.props.color_mode);
     // Drawn "destination-over" (see below): the rows to show on top come first.
     const order = colorOrder === geometry.order ? colorOrder : colorOrder.slice().reverse();
-    const selectedRows = this.drawnRows(geometry, selected, order);
-    const contextRows = this.contextRows(geometry, selectedRows);
+    let selectedRows = order;
+    let contextRows = new Uint32Array(0);
+    if (selected !== geometry.rows) {
+      const isSelected = new Uint8Array(geometry.rows.length);
+      selected.forEach((row) => {
+        isSelected[geometry.indexOf(row)] = 1;
+      });
+      selectedRows = order.filter((row) => isSelected[row] === 1);
+      contextRows = geometry.order.filter((row) => isSelected[row] === 0);
+    }
     // Composited "destination-over": the selection is drawn first and stays on top.
     const rows = new Uint32Array(selectedRows.length + contextRows.length);
     rows.set(selectedRows);

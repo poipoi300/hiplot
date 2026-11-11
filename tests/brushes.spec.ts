@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
+import { loadDemo } from "./plot";
 
 // Wide enough for every axis of the demo to be in view without scrolling.
 test.use({ viewport: { width: 1900, height: 1000 } });
@@ -13,14 +14,6 @@ interface Box {
 
 interface HiPlotWindow {
   hiplot_last_instance: { state: { rows_filtered: Record<string, unknown>[] } };
-}
-
-async function loadDemo(page: Page): Promise<void> {
-  await page.goto("/");
-  const input = page.locator('textarea[placeholder="Experiments to load"]');
-  await input.fill("demo");
-  await input.press("Enter");
-  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
 }
 
 const axis = (page: Page, dimension: string): Locator =>

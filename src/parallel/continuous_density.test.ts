@@ -703,8 +703,8 @@ describe("continuous pair image cache", () => {
     evaluator.dispose();
   });
 
-  test("reduced columns never extend missing-coordinate stubs beyond support", () => {
-    for (const missingLeft of [false, true]) {
+  for (const missingLeft of [false, true]) {
+    test(`reduced columns never extend missing-${missingLeft ? "left" : "right"} stubs beyond support`, () => {
       const hist = denseContextHistogram();
       populate(hist, missingLeft ? 256 : 64, missingLeft ? 64 : 256, 1000);
       const pairs = [pair(hist, "missing-stub", 0, 85)];
@@ -718,8 +718,8 @@ describe("continuous pair image cache", () => {
       expect(at(gesture.pixels, 85, unsupportedX, 64)[3]).toBe(0);
       expect(at(gesture.pixels, 85, missingLeft ? 80 : 4, 64)[3]).toBeGreaterThan(0);
       evaluator.dispose();
-    }
-  });
+    });
+  }
 
   test("unresolved crossing footprints refine instead of expanding a false band", () => {
     const hist = denseContextHistogram();
@@ -744,28 +744,27 @@ describe("continuous pair image cache", () => {
     evaluator.dispose();
   });
 
-  test("a crossing source column cannot inflate into a filled selected band", () => {
-    const hist = denseContextHistogram();
-    populate(hist, 0, 255, 1000);
-    populate(hist, 255, 0, 1000);
-    const pairs = [pair(hist, "crossing", 0, 80)];
-    const state = update(pairs, { selectedCount: 2000, contextCount: 3136, rows: 5136 });
-    const style = frame({ width: 80, height: 255, contextAlpha: 0 });
-    const evaluator = new ContinuousDensityEvaluator({ gl: null, software: true });
-    const gesture = evaluator.render({ ...style, draft: true }, state);
-    const idle = evaluator.render(style, state);
-    expect(at(idle.pixels, 80, 32, 120)[3]).toBe(0);
-    expect(at(gesture.pixels, 80, 32, 120)[3]).toBe(0);
-    for (const [x, y] of [
-      [16, 52],
-      [16, 202],
-      [39, 127],
-    ]) {
-      expect(at(idle.pixels, 80, x, y)[3]).toBeGreaterThan(0);
-      expect(at(gesture.pixels, 80, x, y)[3]).toBeGreaterThan(0);
-    }
-    evaluator.dispose();
-  });
+  for (const draft of [false, true]) {
+    test(`a crossing source column cannot inflate into a filled selected band during ${draft ? "a gesture" : "idle rendering"}`, () => {
+      const hist = denseContextHistogram();
+      populate(hist, 0, 255, 1000);
+      populate(hist, 255, 0, 1000);
+      const pairs = [pair(hist, "crossing", 0, 80)];
+      const state = update(pairs, { selectedCount: 2000, contextCount: 3136, rows: 5136 });
+      const style = frame({ width: 80, height: 255, contextAlpha: 0, draft });
+      const evaluator = new ContinuousDensityEvaluator({ gl: null, software: true });
+      const image = evaluator.render(style, state);
+      expect(at(image.pixels, 80, 32, 120)[3]).toBe(0);
+      for (const [x, y] of [
+        [16, 52],
+        [16, 202],
+        [39, 127],
+      ]) {
+        expect(at(image.pixels, 80, x, y)[3]).toBeGreaterThan(0);
+      }
+      evaluator.dispose();
+    });
+  }
 
   test("stationary context remains visible beside a moving selected strand", () => {
     const hist = denseContextHistogram();

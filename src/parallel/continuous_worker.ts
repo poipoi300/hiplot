@@ -1,5 +1,6 @@
 import type { ContinuousImage, ContinuousRequest } from "./continuous_types";
 import type { LineColors, LineFrame } from "./webgl";
+import { WorkerFrameCache } from "./worker_payload";
 
 interface PendingFrame {
   id: number;
@@ -13,9 +14,7 @@ export type ContinuousWorkerFactory = () => Promise<Worker>;
 /** Single all-row worker; drafts preempt refinement but pace behind other drafts. */
 export class ContinuousRenderer {
   private worker: Worker | null = null;
-  private readonly columnIds = new WeakMap<Float32Array, number>();
-  private sentColumns = new Set<number>();
-  private nextColumnId = 0;
+  private readonly frameCache = new WorkerFrameCache();
   private nextFrameId = 0;
   private activeId = 0;
   private running = false;
@@ -23,7 +22,6 @@ export class ContinuousRenderer {
   private pending: PendingFrame | null = null;
   private disposed = false;
   private failure: Error | null = null;
-  private colors: LineColors | null = null;
   private selection: Uint8Array | null = null;
 
   constructor(
@@ -135,36 +133,11 @@ export class ContinuousRenderer {
   private dispatch({ id, frame, colors, selection }: PendingFrame): void {
     if (this.worker === null) throw new Error("Continuous worker has not initialized");
     const transfer: Transferable[] = [];
-    const columns: ContinuousRequest["columns"][number][] = [];
-    const activeColumns = new Set<number>();
-    const axes = frame.axes.map((axis) => {
-      let column = this.columnIds.get(axis.pixels);
-      if (column === undefined) {
-        column = ++this.nextColumnId;
-        this.columnIds.set(axis.pixels, column);
-      }
-      const firstUse = !activeColumns.has(column);
-      activeColumns.add(column);
-      if (firstUse && !this.sentColumns.has(column)) {
-        const pixels = axis.pixels.slice();
-        columns.push({ id: column, pixels });
-        transfer.push(pixels.buffer);
-      }
-      return { column, x: axis.x };
-    });
-    this.sentColumns = activeColumns;
-    const request: ContinuousRequest = { ...frame, id, axes, columns };
-    if (
-      this.colors === null ||
-      this.colors.bins !== colors.bins ||
-      this.colors.palette !== colors.palette ||
-      this.colors.colorMapBins !== colors.colorMapBins
-    ) {
-      const bins = colors.bins.slice();
-      request.colors = { ...colors, bins, palette: colors.palette.map((rgb) => ({ ...rgb })) };
-      transfer.push(bins.buffer);
-      this.colors = colors;
-    }
+    const request: ContinuousRequest = {
+      ...frame,
+      id,
+      ...this.frameCache.encode(frame.axes, colors, transfer),
+    };
     let selectionChanged = this.selection === null || this.selection.length !== selection.length;
     if (!selectionChanged && this.selection !== null) {
       for (let row = 0; row < selection.length; ++row) {
@@ -201,8 +174,7 @@ export class ContinuousRenderer {
     this.running = false;
     this.pending = null;
     this.selection = null;
-    this.colors = null;
-    this.sentColumns.clear();
+    this.frameCache.clear();
     this.worker?.terminate();
     this.worker = null;
   }

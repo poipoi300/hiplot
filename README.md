@@ -121,8 +121,10 @@ uv run --extra server hiplot --port 8765              # dev server (load `demo`)
 
 Commits run the fast gates (hygiene, ruff, mypy --strict, Biome, tsc
 --strict); pushes run pytest, `bun test` and Playwright under coverage and
-require 90% coverage of changed lines. CI runs the same gates plus Python
-3.12 to 3.15, Windows, package installs and the docs build.
+require 90% coverage of changed lines across all suites. Playwright and the
+combined coverage gate run locally and before pushes only. Hosted CI runs
+lint, types, Python and Bun unit tests, builds, Python 3.12 to 3.15, Windows,
+package installs and the docs build.
 
 **Output directories:** `hiplot/static/built/` (bundles shipped in the
 wheel), `dist/` (wheel and sdist), `npm-dist/` (npm package).

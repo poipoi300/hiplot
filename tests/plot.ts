@@ -1,5 +1,13 @@
 import type { Locator, Page } from "@playwright/test";
 
+export async function loadDemo(page: Page, query = ""): Promise<void> {
+  await page.goto(`/${query}`);
+  const input = page.locator('textarea[placeholder="Experiments to load"]');
+  await input.fill("demo");
+  await input.press("Enter");
+  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
+}
+
 /**
  * Scrolls the parallel plot's axes to their right end, where the axes drawn
  * first in the DOM sit. The plot scrolls virtually (it draws what is in view),

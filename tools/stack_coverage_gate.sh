@@ -2,12 +2,12 @@
 # Run every suite under coverage, then require >=90% coverage on the lines this
 # branch changed relative to its merge base with the comparison branch, across
 # Python and TypeScript at once: pytest, the bun unit tests, and the Playwright
-# suite against an instrumented bundle. Used by the pre-push hook and by CI so
-# both enforce the same threshold. Extends tools/coverage_gate.sh (kept
+# suite against an instrumented bundle. Used locally by the pre-push hook;
+# hosted CI runs the Python and Bun unit suites. Extends tools/coverage_gate.sh (kept
 # verbatim from forge) to this stack.
 #
 # Set E2E_LCOV to reuse an end-to-end report produced elsewhere instead of
-# running Playwright here (CI runs the suite in its own job).
+# running Playwright here, for example after running local shards separately.
 set -euo pipefail
 
 COMPARE_BRANCH="${DIFF_COVER_COMPARE_BRANCH:-origin/main}"

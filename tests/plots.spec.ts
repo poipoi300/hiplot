@@ -1,14 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { axisButton, pickColumn } from "./plot";
-
-async function loadDemo(page: Page): Promise<void> {
-  await page.goto("/");
-  const input = page.locator('textarea[placeholder="Experiments to load"]');
-  await input.fill("demo");
-  await input.press("Enter");
-  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
-}
+import { axisButton, loadDemo, pickColumn } from "./plot";
 
 const scatterPanels = (page: Page) => page.getByTestId("scatter-panel");
 const pick = (page: Page, axis: string, column: string | null) =>

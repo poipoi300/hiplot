@@ -6,6 +6,7 @@
  */
 
 import type { RGB } from "../lib/colors";
+import { linkProgram } from "../lib/webgl";
 
 /**
  * Draws the 3D scatter with WebGL2: every row is one round, anti-aliased
@@ -89,33 +90,6 @@ function cubeEdges(): Float32Array {
   return new Float32Array(edges);
 }
 
-function compile(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
-  const shader = gl.createShader(type);
-  if (shader === null) {
-    throw new Error("Could not create a WebGL shader");
-  }
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    throw new Error(`WebGL shader failed to compile: ${gl.getShaderInfoLog(shader)}`);
-  }
-  return shader;
-}
-
-function link(gl: WebGL2RenderingContext, vertex: string, fragment: string): WebGLProgram {
-  const program = gl.createProgram();
-  if (program === null) {
-    throw new Error("Could not create a WebGL program");
-  }
-  gl.attachShader(program, compile(gl, gl.VERTEX_SHADER, vertex));
-  gl.attachShader(program, compile(gl, gl.FRAGMENT_SHADER, fragment));
-  gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    throw new Error(`WebGL program failed to link: ${gl.getProgramInfoLog(program)}`);
-  }
-  return program;
-}
-
 function buffer(gl: WebGL2RenderingContext): WebGLBuffer {
   const created = gl.createBuffer();
   if (created === null) {
@@ -172,8 +146,8 @@ export class PointsRenderer {
 
   private constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
-    this.points = link(gl, POINT_VERTEX_SHADER, POINT_FRAGMENT_SHADER);
-    this.lines = link(gl, LINE_VERTEX_SHADER, LINE_FRAGMENT_SHADER);
+    this.points = linkProgram(gl, POINT_VERTEX_SHADER, POINT_FRAGMENT_SHADER, "WebGL points");
+    this.lines = linkProgram(gl, LINE_VERTEX_SHADER, LINE_FRAGMENT_SHADER, "WebGL edges");
     this.positions = buffer(gl);
     this.colors = buffer(gl);
     this.selection = buffer(gl);
