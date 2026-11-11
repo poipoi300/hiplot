@@ -12,7 +12,7 @@ HIPLOT_COVERAGE=1 bun run vite:build:web
 # The suite's fixture (tests/fixtures.ts) dumps window.__coverage__ into
 # .nyc_output after every test when HIPLOT_COVERAGE is set.
 status=0
-HIPLOT_COVERAGE=1 bun run test:js || status=$?
+HIPLOT_COVERAGE=1 bun run test:js "$@" || status=$?
 
 # Never leave the instrumented bundle where the Python package picks it up.
 bun run vite:build:web

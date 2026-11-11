@@ -55,6 +55,9 @@ DETERMINISTIC_GATES: tuple[Gate, ...] = (
     Gate("tests-and-diff-coverage", GateStage.PUSH, ci_enforced=True),
 )
 
+# CI distributes every browser case and requires every report before diff-cover.
+PLAYWRIGHT_CI_SHARDS = (1, 2, 3, 4)
+
 
 def gates_for_stage(stage: GateStage) -> tuple[Gate, ...]:
     """Return the gates that run at the given hook stage."""
