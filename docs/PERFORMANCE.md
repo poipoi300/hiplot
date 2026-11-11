@@ -2761,3 +2761,67 @@ unchanged throughout. Evidence is in
 `inherited-gate.log`, `inherited-pixel-timeout.zip`, `pixel-timeout-trace.txt` and
 `inherited-repaired-gate.log`. The previously incomplete shader candidate is
 therefore accepted, with its measured gains and regressions above unchanged.
+
+### Keep brush feedback independent of selection work
+
+The follow-up checkout is now `hiplot-plus`; the earlier `hiplot-mm` paths in
+the archived scripts describe its previous location. Artifacts from this pass
+are in `C:/Users/Administrator/AppData/Local/Temp/hb/gpt-perf3/`.
+
+The inherited end-to-end trace verifies the density worker's unmasked renderer
+as NVIDIA GeForce RTX 5090 through ANGLE/D3D11, and separately verifies
+SwiftShader. Neither message transit nor main-thread image presentation explains
+the hardware latency: worker message transit is about 0.1 ms each way and image
+presentation about 0.3 ms. Nine pair readbacks together take about 8.5 ms on
+hardware. On SwiftShader, readback also waits for shader execution, so its
+elapsed time must not be interpreted as an isolated transfer cost.
+
+Large test moves from 0.35 to 0.50 and 0.65 change about 150,000 rows each,
+not a few thousand. Each row updates eleven pairs (including the two outer
+strips): about 1.65 million row/pair updates. Fine moves of 0.001 change
+929–970 rows, or 10,219–10,670 row/pair updates; their addition count kernels
+take 1.6–1.8 ms in the instrumented hardware trace. The worker takes one shared
+1 MB mask snapshot, not one per pair. Removal steps additionally repair exact
+color extrema. The initial shrink removes 850,066 rows and is substantially
+more expensive. These observations do not support replacing an alleged
+full-row scan inside every pair with WASM.
+
+The remaining hardware costs are different in the two modes. Continuous fine
+moves spend about 32 ms reducing the original outer endpoints and 26–28 ms
+packing pair texture data, within roughly 80 ms of raster/composite work.
+Exact fine moves spend about 160 ms waiting for GPU completion after about
+3 ms of main-thread selection/submission work. Exact mode submits eleven
+million segment instances at this dataset size; it is not the same GPU
+workload as a continuous histogram evaluation. Raw instrumented baseline
+traces remain in `gpt-perf2/baseline-*-*.json`.
+
+While either renderer was busy, every brush move still ran selection and badge
+work before `redrawLines` rejected its frame. Brush spans and handles now update
+immediately, while selection waits for the renderer and coalesces intermediate
+positions. A new gesture can still preempt continuous release refinement.
+Release cancels the pending gesture callback and publishes the final selection.
+Axis placement, scrolling and the lasso overlay already update independently
+of line draws; the lasso computes its selection only when released.
+
+The RED-first browser regression observed three redundant selections during
+three busy frames in both modes. It now requires zero, then exactly one
+selection/render at the latest position when rendering resumes. Separate cases
+block only the GPU or only the worker, and pin final-position release and
+refinement interruption. All five scoped pacing/preemption browser tests pass.
+
+Serial, native-worker 1M-row diagnostic runs after this scheduling change
+measure hardware exact fine-step input-to-fence medians of 166.8 ms, hardware
+continuous 75.4 ms, and SwiftShader continuous 315.8 ms. These are single-load
+fine-step profiles, not the earlier three-load large-move benchmark. In
+particular, removing the instrumented replacement worker changes continuous
+timings; these numbers are not attributed to scheduling or compared as a
+shader speedup. **The sub33 ms completed-line target is still unmet.**
+
+All fast gates pass. The first full pre-push gate passed 118 Python and 559 Bun
+tests and 224/225 browser tests; the independent browser deadline test exceeded
+its unchanged five-second shutdown bound (5745 ms) under the sixteen-worker
+suite. Its CDP termination call waited about 4.7 seconds and triggered the
+one-second whole-browser shutdown fallback. The isolated unchanged deadline
+test passes in 557 ms. Scheduling isolation has been proposed to the maintainer;
+this remains a failed full gate until a complete run passes. Raw output is
+`gpt-perf3/pacing-full-gate.log`.

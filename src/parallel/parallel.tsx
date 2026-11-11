@@ -976,6 +976,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       (brush) => brush.id !== gesture.brushId,
     );
     this.brushes.set(gesture.dimension, [...others, { id: gesture.brushId, ...interval }]);
+    this.drawBrushes(gesture.dimension);
     this.scheduleBrushFrame();
   }
 
@@ -1153,6 +1154,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
     this.brushMoveFrame = requestAnimationFrame(() => {
       this.brushMoveFrame = null;
+      if (
+        this.webgl?.busy ||
+        (this.continuous?.busy && !(this.interacting && this.continuous.refining))
+      ) {
+        this.scheduleBrushFrame();
+        return;
+      }
       this.pplot?.brush(false);
     });
   }
