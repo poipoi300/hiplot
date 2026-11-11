@@ -1,13 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-
-async function loadDemo(page: Page, query = ""): Promise<void> {
-  await page.goto(`/${query}`);
-  const input = page.locator('textarea[placeholder="Experiments to load"]');
-  await input.fill("demo");
-  await input.press("Enter");
-  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
-}
+import { loadDemo } from "./plot";
 
 const themeClass = (page: Page) =>
   page.locator("#hiplot_element_id > div").first().getAttribute("class");

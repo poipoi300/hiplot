@@ -1,14 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { pickColumn } from "./plot";
-
-async function loadDemo(page: Page): Promise<void> {
-  await page.goto("/");
-  const input = page.locator('textarea[placeholder="Experiments to load"]');
-  await input.fill("demo");
-  await input.press("Enter");
-  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
-}
+import { loadDemo, pickColumn } from "./plot";
 
 /** Tick labels whose glyphs start or whose baseline sits between device pixels. */
 function ticksOffTheGrid(page: Page, ratio: number) {

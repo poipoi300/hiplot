@@ -1,13 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-
-async function loadDemo(page: Page): Promise<void> {
-  await page.goto("/");
-  const input = page.locator('textarea[placeholder="Experiments to load"]');
-  await input.fill("demo");
-  await input.press("Enter");
-  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
-}
+import { loadDemo } from "./plot";
 
 const countText = (page: Page) => page.getByTestId("selection-count").textContent();
 

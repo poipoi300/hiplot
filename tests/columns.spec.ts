@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { pickColumn } from "./plot";
+import { loadDemo, pickColumn } from "./plot";
 
 interface ParallelPlotHandle {
   createScale: (column: string) => unknown;
@@ -8,14 +8,6 @@ interface ParallelPlotHandle {
 }
 interface HiPlotWindow {
   hiplot_last_instance?: { parallelPlot: () => ParallelPlotHandle | null };
-}
-
-async function loadDemo(page: Page, query = ""): Promise<void> {
-  await page.goto(`/${query}`);
-  const input = page.locator('textarea[placeholder="Experiments to load"]');
-  await input.fill("demo");
-  await input.press("Enter");
-  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
 }
 
 const axes = (page: Page) => page.locator("svg g.dimension");

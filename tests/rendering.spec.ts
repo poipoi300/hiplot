@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { scrollAxesToEnd } from "./plot";
+import { loadDemo, scrollAxesToEnd } from "./plot";
 
 interface ParallelPlotHandle {
   webgl: unknown;
@@ -12,14 +12,6 @@ interface ParallelPlotHandle {
 }
 interface HiPlotWindow {
   hiplot_last_instance?: { parallelPlot: () => ParallelPlotHandle | null };
-}
-
-async function loadDemo(page: Page): Promise<void> {
-  await page.goto("/");
-  const input = page.locator('textarea[placeholder="Experiments to load"]');
-  await input.fill("demo");
-  await input.press("Enter");
-  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
 }
 
 /** Counts the line canvas pixels that are not transparent, right after a redraw. */
