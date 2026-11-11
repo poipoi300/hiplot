@@ -2395,3 +2395,86 @@ was left as the production output. Independent final code/documentation
 reviews found no remaining verified findings in their scopes; the measured
 performance regression above remains an unresolved defect. No push, remote,
 packaging/release or gate-configuration changes were made.
+
+## Recovering continuous-density brush throughput
+
+This 2026-11-10 performance pass starts at `245b51e`, with every preceding
+correctness regression and tolerance retained. Evidence and reproducible local
+profilers are in [the performance artifacts](<C:/Users/Administrator/AppData/Local/Temp/hb/gpt-perf/>).
+Measurements use the same 1M×10 seeded pages, 1000×700 viewport, 465 endpoint
+bins, numeric-mean coloring and identified RTX 5090/ANGLE D3D11 or
+SwiftShader/Vulkan backends. Backend runs are serial, without concurrent browser
+tests. Production results are medians of three fresh-load p50s, each from three
+settled brush steps; p95 remains the median of three per-load maxima, not a
+stable tail estimate.
+
+### Profile before changing the implementation
+
+The fresh production baseline is **269.8ms hardware / 536.8ms SwiftShader**
+input→fence, with count updates **157.3/153.8ms** and worker raster/composite
+**91.7/371.3ms**. Full-width recomputation is **78.8/3220.8ms**. These new
+same-session measurements, rather than the preceding pass's 285.3/534.6ms,
+are the comparison baseline below. Numeric brush filtering is **8.3/8.1ms**.
+Sorting runs once in the selection-index worker; warmed interval lookup and
+intersection updates run on the main thread, not in the density worker.
+
+The outside-bundle profiler substitutes a worker compiled from the unchanged
+production modules. It times kernel updates and per-pair preparation, and uses
+one-pixel destination-framebuffer readbacks before/after draws to separate
+queued upload/setup completion, density evaluation and reconstruction. Merely
+calling `gl.finish()` did not separate completion in this browser; the initial
+unfenced profiles are retained but are not GPU-execution timings. Full readback
+is measured after the completion probe. Extra synchronization, prototype timers
+and positive-cell censuses perturb execution: profile samples explain stages,
+not a substitute for uninstrumented input latency. Raw per-pair data includes
+layer populations, column counts and whether reconstruction ran.
+
+The initial completion-separated curved 30%-selected brush sample attributes
+**195.1/122.3ms** to eleven pair-count updates, including no extrema rescans on
+that expanding step. Metadata packing/classification costs **42.2/22.1ms**,
+original-endpoint marginal reduction **28.8/22.8ms**, and completed dense draws
+**7.8/230.6ms**, hardware/software respectively. Software uses six columns per
+interior pair; hardware uses 85–86. Software reconstruction draws add17.7ms
+across five transported pairs. Full-image readback after completion adds3.0/1.4ms.
+These are individual instrumented samples, not summed production medians.
+
+The fixes added distinct work: exact marginals introduce the measured O(rows)
+endpoint reductions; independently sparse layers add positive-cell scans;
+finite-footprint tent integration adds an inner endpoint loop to every dense
+sample. Extrema multiplicities avoid tied rescans but still require exact
+bookkeeping. Removing the last distinct extrema remains visible: a 10,118-row
+shrinking step performs36,292 cell rescans. Pair-boundary cancellation affects
+admission, not this settled expanding-step throughput. Exact-curve inversion
+runs once per fragment, outside the dense endpoint loops. No correctness fix
+is reverted to obtain these measurements.
+
+### Avoid snapshots when population proves a change
+
+Every pair contains every row, including missing rows. A different selected
+population therefore proves that each pair's count grid changed: recording and
+comparing six before-statistics for every touched cell cannot preserve a cache
+hit. Such batches now retain only the cells whose numeric extrema may need
+repair after the complete batch. Equal-population exchanges still snapshot and
+compare exact statistics, retaining cancelling-exchange revisions and tied
+extrema multiplicities. This is an exact invalidation proof, not a heuristic
+based on brush direction or changed-row percentage.
+
+| 1M continuous stage | Hardware before→after ms | SwiftShader before→after ms |
+|---|---:|---:|
+| Brush input→fence | 269.8→192.1 | 536.8→446.8 |
+| Histogram | 157.3→94.7 | 153.8→93.7 |
+| Raster/composite | 91.7→89.4 | 371.3→339.1 |
+| Full recompute | 78.8→80.1 | 3220.8→3567.8 |
+
+Histogram time improves39.8%/39.1%; brush latency improves28.8%/16.8%.
+Recompute does not use the new path and its software timing worsens in this
+run; it is not claimed as an improvement. Integer brush results are77.9→87.1ms
+hardware and112.7→112.2ms software. The fresh-load brush maxima also worsen
+715.3→1035.3ms /1189.2→1432.1ms, so this is not a cold-tail improvement.
+Two RED-first work-bound regressions reproduced12 redundant snapshot writes
+and now require zero while independently checking every count, color, extremum
+and multiplicity after additions, removals and mixed batches. All41 grid units
+pass. An independent static reviewer found no concrete defect in the two
+changed files; their attempted Git/test commands were unavailable, so executed
+verification is the main session's, not theirs. Raw runs are
+`population-{hardware,software}.json` and `population-{red,green}.log`.

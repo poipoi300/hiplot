@@ -411,6 +411,39 @@ describe("exact reversible brush updates", () => {
     });
   }
 
+  for (const categorical of [false, true]) {
+    test(`${categorical ? "categorical" : "numeric"} population changes skip redundant cell snapshots`, () => {
+      const input = request({
+        columns: [1, 2].map((id) => ({ id, pixels: new Float32Array(5).fill(64) })),
+        colors: { bins: Uint32Array.of(0, 0, 1, 3, 4), palette, colorMapBins: categorical ? 0 : 4 },
+        selection: Uint8Array.of(1, 1, 0, 0, 1),
+      });
+      const kernel = new ContinuousKernel();
+      kernel.update(input);
+      // An equal-population exchange still needs exact before/after statistics.
+      kernel.update(cachedRequest(input, { selection: Uint8Array.of(0, 1, 1, 0, 1) }));
+      const snapshots = Reflect.get(kernel, "maskScratch") as { selected: Uint32Array };
+      let snapshotWrites = 0;
+      snapshots.selected = new Proxy(snapshots.selected, {
+        set(target, property, value) {
+          snapshotWrites++;
+          return Reflect.set(target, property, value, target);
+        },
+      });
+      for (const mask of [
+        [1, 1, 1, 1, 1],
+        [0, 0, 1, 0, 1],
+        [1, 0, 0, 1, 1],
+        [0, 0, 0, 0, 0],
+      ]) {
+        const selection = new Uint8Array(mask);
+        const update = kernel.update(cachedRequest(input, { selection }));
+        matchesScratch(update, { ...input, selection });
+      }
+      expect(snapshotWrites).toBe(0);
+    });
+  }
+
   test("removing one of 10000 tied extrema avoids membership traversal", () => {
     const rows = 10_000;
     const input = request({

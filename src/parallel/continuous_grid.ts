@@ -270,6 +270,7 @@ export class ContinuousKernel {
       }
     }
     this.height = request.height;
+    const populationChanged = selectedCount !== this.selectedCount;
     this.selectedCount = selectedCount;
     const currentSelection =
       request.selection === undefined && !resetRows ? selection : selection.slice();
@@ -314,7 +315,16 @@ export class ContinuousKernel {
             pair.histogram.revision = ++this.revision;
           }
         } else if (changedRows > 0) {
-          if (this.updateMask(pair, currentSelection, currentColors, changed, changedRows)) {
+          if (
+            this.updateMask(
+              pair,
+              currentSelection,
+              currentColors,
+              changed,
+              changedRows,
+              populationChanged,
+            )
+          ) {
             pair.histogram.revision = ++this.revision;
           }
         }
@@ -390,6 +400,7 @@ export class ContinuousKernel {
     colors: LineColors,
     changed: Uint32Array,
     changedRows: number,
+    populationChanged: boolean,
   ): boolean {
     const histogram = pair.histogram;
     const size = (histogram.bins + 1) ** 2;
@@ -401,7 +412,7 @@ export class ContinuousKernel {
     for (let index = 0; index < changedRows; ++index) {
       const row = changed[index];
       const cell = pair.cells[row];
-      if (before.state[cell] === 0) {
+      if (!populationChanged && before.state[cell] === 0) {
         // Snapshots occupy a dense prefix; only membership flags are indexed by cell.
         before.touched[touchedCount] = cell;
         before.selected[touchedCount] = histogram.selected[cell];
@@ -418,8 +429,20 @@ export class ContinuousKernel {
       histogram.selected[cell] += direction;
       histogram.context[cell] -= direction;
       addColor(histogram, cell, rank, colors, this.palette, direction);
+      if (
+        populationChanged &&
+        direction < 0 &&
+        rank < colors.colorMapBins &&
+        (histogram.minimumCount[cell] === 0 || histogram.maximumCount[cell] === 0) &&
+        before.state[cell] === 0
+      ) {
+        before.touched[touchedCount++] = cell;
+        before.state[cell] = 1;
+      }
     }
-    let differs = false;
+    // Every pair contains every row: a changed population proves its counts changed.
+    // Only equal-population exchanges need snapshots to detect cancelling statistics.
+    let differs = populationChanged;
     for (let index = 0; index < touchedCount; ++index) {
       const cell = before.touched[index];
       if (colors.colorMapBins > 0) {
@@ -436,12 +459,13 @@ export class ContinuousKernel {
       // Every pair shares this scratch, including cells with cancelling deltas.
       before.state[cell] = 0;
       if (
-        histogram.selected[cell] !== before.selected[index] ||
-        histogram.color0[cell] !== before.color0[index] ||
-        histogram.color1[cell] !== before.color1[index] ||
-        histogram.color2[cell] !== before.color2[index] ||
-        histogram.minimum[cell] !== before.minimum[index] ||
-        histogram.maximum[cell] !== before.maximum[index]
+        !populationChanged &&
+        (histogram.selected[cell] !== before.selected[index] ||
+          histogram.color0[cell] !== before.color0[index] ||
+          histogram.color1[cell] !== before.color1[index] ||
+          histogram.color2[cell] !== before.color2[index] ||
+          histogram.minimum[cell] !== before.minimum[index] ||
+          histogram.maximum[cell] !== before.maximum[index])
       ) {
         differs = true;
       }
