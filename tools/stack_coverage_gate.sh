@@ -15,6 +15,8 @@ FAIL_UNDER="${DIFF_COVER_FAIL_UNDER:-90}"
 REPORTS="coverage"
 mkdir -p "${REPORTS}"
 
+cargo test --manifest-path rust/Cargo.toml --locked
+
 uv run coverage run -m pytest
 uv run coverage lcov -o "${REPORTS}/python.lcov"
 

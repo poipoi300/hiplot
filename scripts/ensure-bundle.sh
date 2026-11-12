@@ -9,7 +9,7 @@ if [ ! -f "$bundle" ]; then
   exit 0
 fi
 
-if find src -type f -newer "$bundle" -print -quit | grep -q .; then
+if find src rust/src rust/Cargo.toml rust/Cargo.lock -type f -newer "$bundle" -print -quit | grep -q .; then
   echo "HiPlot bundle is stale, rebuilding..."
   bun run build
 fi

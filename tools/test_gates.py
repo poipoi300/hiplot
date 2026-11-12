@@ -44,6 +44,8 @@ def test_ci_enforced_gates_appear_in_workflow() -> None:
         "mypy": "mypy .",
         "biome": "biome check --error-on-warnings .",
         "tsc": "bun run typecheck",
+        "rust-fmt": "cargo fmt --manifest-path rust/Cargo.toml --check",
+        "rust-clippy": "cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings",
     }
     ci_gates = {g.name for g in DETERMINISTIC_GATES if g.ci_enforced}
     assert ci_gates == set(expected_evidence)

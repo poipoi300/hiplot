@@ -128,3 +128,6 @@ test-results
 coverage/
 .nyc_output/
 coverage.lcov
+
+# Embedded Rust/WASM is regenerated for builds, types and tests.
+src/wasm/embedded.generated.ts
