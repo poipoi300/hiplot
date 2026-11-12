@@ -24,6 +24,8 @@ import { type Datapoint, type DatapointValue, type HiPlotValueDef, ParamType } f
 export interface ParamDef extends HiPlotValueDef {
   name: string;
   type: ParamType;
+  /** Retains the chosen scale when the current rows require a fallback. */
+  type_requested?: ParamType;
   optional: boolean;
   numeric: boolean;
   distinct_values: Array<DatapointValue>;
@@ -168,9 +170,13 @@ export function scale_pixels_range(
 export function infertypes(
   url_states: PersistentState,
   table: ReadonlyArray<Datapoint>,
-  hints: { [key: string]: HiPlotValueDef } = {},
+  hints: { [key: string]: HiPlotValueDef & { type_requested?: ParamType } } = {},
+  notify?: (message: string) => void,
 ): ParamDefMap {
-  function infertype(key: string, hint: HiPlotValueDef | undefined): ParamDef {
+  function infertype(
+    key: string,
+    hint: (HiPlotValueDef & { type_requested?: ParamType }) | undefined,
+  ): ParamDef {
     const url_state = url_states.children(key);
     let optional = false;
     // A row's uid is a column like any other (a trial index is worth an
@@ -200,12 +206,23 @@ export function infertypes(
     }
     const distinct_values = Array.from(distinct);
     const numericSorted = numeric ? get_numeric_values_sorted(distinct_values) : [];
+    const hasFiniteValues = numericSorted.length > 0;
+    const hasNumericDomain =
+      hasFiniteValues ||
+      (typeof hint?.force_value_min === "number" &&
+        Number.isFinite(hint.force_value_min) &&
+        typeof hint.force_value_max === "number" &&
+        Number.isFinite(hint.force_value_max) &&
+        hint.force_value_min <= hint.force_value_max);
     const forceValueMinNegative =
       hint !== undefined &&
       hint.force_value_min !== null &&
       hint.force_value_min !== undefined &&
       hint.force_value_min <= 0;
-    const canBeLogScale = numericSorted[0] > 0 && !forceValueMinNegative;
+    const canBeLogScale =
+      (hasFiniteValues
+        ? numericSorted[0] > 0
+        : hasNumericDomain && (hint?.force_value_min ?? 0) > 0) && !forceValueMinNegative;
     let spansMultipleOrdersOfMagnitude = false;
     if (numericSorted.length > 10 && numericSorted[0] > 0) {
       const top5pct =
@@ -215,6 +232,7 @@ export function infertypes(
     }
     const categorical =
       !numeric ||
+      !hasFiniteValues ||
       (Math.max(valueCount, 10) / distinct_values.length > 10 && distinct_values.length < 6);
     let inferred = ParamType.CATEGORICAL;
     if (numeric && !categorical) {
@@ -223,22 +241,39 @@ export function infertypes(
         inferred = canBeLogScale ? ParamType.NUMERICLOG : ParamType.NUMERICPERCENTILE;
       }
     }
-    let type: ParamType;
-    if (hint !== undefined && hint.type !== null && hint.type !== undefined) {
-      type = hint.type;
-    } else {
-      const persisted = url_state.get("type");
-      type = isParamType(persisted) ? persisted : inferred;
+    const persisted = url_state.get("type");
+    const requested =
+      hint?.type_requested ?? hint?.type ?? (isParamType(persisted) ? persisted : null);
+    let type = requested ?? inferred;
+    let problem: string | null = null;
+    if (type !== ParamType.CATEGORICAL) {
+      if (!numeric) {
+        problem = "the column contains non-numeric values";
+      } else if (!hasNumericDomain || (type === ParamType.NUMERICPERCENTILE && !hasFiniteValues)) {
+        problem = "the column has no finite numeric values";
+      } else if (type === ParamType.NUMERICLOG && !canBeLogScale) {
+        problem = "a logarithmic scale requires a positive domain";
+      }
+      if (problem !== null) {
+        type = inferred;
+      }
+    } else if (requested === null && numeric && !hasFiniteValues) {
+      problem = "the column has no finite numeric values";
+    }
+    if (problem !== null) {
+      notify?.(`Column "${key}": ${problem}; using a ${type} scale instead.`);
     }
 
     // What other types we can render as?
     const type_options = [ParamType.CATEGORICAL];
-    if (numeric) {
+    if (numeric && hasNumericDomain) {
       type_options.push(ParamType.NUMERIC);
       if (canBeLogScale) {
         type_options.push(ParamType.NUMERICLOG);
       }
-      type_options.push(ParamType.NUMERICPERCENTILE);
+      if (hasFiniteValues) {
+        type_options.push(ParamType.NUMERICPERCENTILE);
+      }
       if (can_be_timestamp) {
         type_options.push(ParamType.TIMESTAMP);
       }
@@ -250,6 +285,7 @@ export function infertypes(
       distinct_values,
       type_options,
       type,
+      type_requested: requested ?? inferred,
       colors: hint?.colors ?? null,
       colormap: hint?.colormap ?? null,
       force_value_min: hint?.force_value_min ?? null,
