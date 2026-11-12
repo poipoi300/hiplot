@@ -8,8 +8,12 @@ import type { BrushMasks } from "../src/parallel/selection";
 import type { LineColors, LineFrame, WebGLLineRenderer } from "../src/parallel/webgl";
 import type { Datapoint } from "../src/types";
 import { expect, test } from "./fixtures";
+import { warmParallelWorker } from "./plot";
 
 interface PlotProbe {
+  linesBusy: boolean;
+  exact: { busy: boolean } | null;
+  exact_image_ref: { current: HTMLCanvasElement };
   webgl: WebGLLineRenderer;
   continuous: Pick<ContinuousRenderer, "draw" | "busy"> | null;
   continuousFrame: number;
@@ -82,17 +86,19 @@ async function waitForContinuous(page: Page, after = 0): Promise<void> {
 
 async function saveImage(page: Page, name: string, exact: boolean): Promise<void> {
   await page.evaluate(
-    ({ name, exact }) => {
+    async ({ name, exact }) => {
       const win = window as unknown as ProbeWindow;
       const pp = win.__parallelProbe.instance.parallelPlot();
       if (exact) {
         pp.drawWithWebGL(pp.webgl);
+        while (pp.exact?.busy) await new Promise(requestAnimationFrame);
       } else {
         const image = pp.continuousMetrics;
         if (image === null) throw new Error("No accepted density image");
         pp.webgl.present(image.pixels, image.width, image.height);
       }
-      const canvas = pp.foreground_ref.current;
+      const canvas =
+        exact && pp.exact !== null ? pp.exact_image_ref.current : pp.foreground_ref.current;
       const copy = document.createElement("canvas");
       copy.width = canvas.width;
       copy.height = canvas.height;
@@ -226,6 +232,7 @@ test("an idle all-row brush starts before RAF and busy moves remain coalesced", 
     { rows: 50_000, columns: 4, discrete: false, seed: 20261109 },
     "low",
   );
+  await warmParallelWorker(page);
   const result = await page.evaluate(() => {
     const pp = (
       window as unknown as ProbeWindow

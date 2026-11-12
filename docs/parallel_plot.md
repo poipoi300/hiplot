@@ -37,42 +37,39 @@ All of these interactions feed into HiPlot's shared filtered/selected state, whi
 ## Rendering model
 
 SVG draws the axes, labels and brushes; canvas layers draw density and exact
-highlighted rows. The **Exact lines / Binned density** control selects:
+highlighted rows. The rendering control selects:
 
-- **Automatic**: use binned density above 6,000 filtered rows on software or
+- **Automatic**: use continuous density above 6,000 filtered rows on software or
   unidentified renderers, above 250,000 on identified hardware, or after exact
   frames measure slower than 20 frames per second. This decision happens before
   a large dataset's first draw, while retaining fast hardware's exact path on
   moderate datasets.
-- **Binned density**: a dedicated worker counts every row into adjacent-axis
-  histograms. Endpoint resolution defaults to `min(256, ceil(axis height))` bins
-  per axis, measured in CSS pixels, with a separate bin for missing endpoints.
-  Raster work has a separate budget: sparse pairs draw every occupied cell;
-  above 4,096 drawable cells per pair, neighboring endpoint-space tiles are
-  combined until at most 4,096 remain across selected and context layers.
-  Every cell contributes its counts, endpoint sums, color statistics and numeric
-  extrema; cells are aggregated, not periodically sampled or discarded.
-  Each layer draws weighted straight segments through its tile's mean endpoints.
-  Individual geometry is approximate: dense tiles can combine several fine
-  endpoint bins, curves become straight segments and antialiasing differs.
-  Hover and highlights still use the original, unquantized row coordinates.
-
-  During brush or axis gestures over more than 20,000 rows, a separate worker
-  draws a deterministic **128-row sampled preview at half CSS resolution**.
-  Its geometry, colors and selection use the same sampled row identities.
-  This temporary picture can miss rare selected features and is not
-  density-equivalent to the all-row refinement. On release, the full worker
-  counts every row and refines the binned picture; an obsolete preview cannot
-  replace that refinement. Row-order invariance applies to the all-row raster,
-  not to the source-row-stratified preview sample.
+- **Continuous density**: count every row into retained adjacent-axis histograms,
+  with `max(256, min(1024, ceil(axis height)))` endpoint bins per axis in CSS
+  coordinates and a separate missing-endpoint bin. Sparse layers evaluate every
+  occupied cell; dense layers integrate a continuous endpoint field. Curved
+  density uses pair-local easing. Hover and highlights retain the original,
+  unquantized row coordinates, and outer-axis strips use exact endpoints.
+  Idle images render at device-pixel resolution. Gesture previews use CSS-pixel
+  resolution and can reduce horizontal evaluation on software renderers, then
+  refine on release. Every preview includes all rows and their color statistics.
 - **Exact lines**: render every original row with WebGL density accumulation,
   or Canvas 2D where WebGL2 is unavailable. This can be very slow on large data.
 
-Binned density stays active after a gesture; it does not replace the picture
-with a potentially minute-long exact draw on release. The line-shape controls
-are disabled while it is active, and their previous choice is retained for
-exact mode. The rendering choice is saved in the URL. Older saved `"low"`
-quality settings now select binned density; `"full"` selects exact lines.
+Continuous density stays active after a gesture. Both rendering modes default
+to **Curved**; **Straight** is a manual choice. Older saved automatic line shapes
+load as curved. The rendering and line-shape choices are saved in the URL.
+Older saved `"low"` quality settings select continuous density; `"full"` selects
+exact lines.
+
+Execution location is independent of rendering mode and row count. Both modes
+start locally when their predicted working buffers fit within 256 MiB; larger
+working sets go directly to a worker. Two completed local draws taking more than 50 ms promote
+subsequent draws to a worker for the plot's remaining lifetime, including mode
+changes. This confirmation avoids promotion for a single cold shader compile.
+Local continuous rendering yields between axis pairs. Busy frames coalesce while
+the SVG brush follows the pointer immediately. Workers remain embedded in
+standalone HTML, with no network requests required.
 
 See `PERFORMANCE.md` for completed-frame measurements and visual tolerances.
 

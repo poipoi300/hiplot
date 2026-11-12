@@ -1,5 +1,6 @@
 [test]
 root = "./src"
-preload = ["./src/test/setup.ts"]
+preload = ["./tools/build_wasm.ts", "./src/test/setup.ts"]
 coverageSkipTestFiles = true
-coveragePathIgnorePatterns = ["src/test/**"]
+# Compiled byte storage has no source statements and is not tracked.
+coveragePathIgnorePatterns = ["src/test/**", "src/wasm/embedded.generated.ts"]

@@ -9,6 +9,41 @@ test("exact line work leaves browser frames available for the brush", async ({ p
     { rows: 50_000, columns: 10, discrete: false, seed: 20261109 },
     "full",
   );
+  // Calibrate locally, then let the next draw use the measured session policy.
+  await page.evaluate(async () => {
+    await new Promise(requestAnimationFrame);
+    const plot = (
+      window as unknown as {
+        __parallelProbe: {
+          instance: {
+            parallelPlot: () => {
+              redrawLines: () => void;
+              linesBusy: boolean;
+            };
+          };
+        };
+      }
+    ).__parallelProbe.instance.parallelPlot();
+    for (let calibration = 0; calibration < 2; ++calibration) {
+      plot.redrawLines();
+      while (plot.linesBusy) await new Promise(requestAnimationFrame);
+      await new Promise(requestAnimationFrame);
+    }
+  });
+  await page.waitForFunction(() => {
+    const plot = (
+      window as unknown as {
+        __parallelProbe: {
+          instance: {
+            parallelPlot: () => {
+              exact: { busy: boolean } | null;
+            };
+          };
+        };
+      }
+    ).__parallelProbe.instance.parallelPlot();
+    return plot.exact !== null && !plot.exact.busy;
+  });
   const result = await page.evaluate(async () => {
     const plot = (
       window as unknown as {

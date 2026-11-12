@@ -2952,3 +2952,293 @@ passes but its remaining page failed to download the bundle with
 `net::ERR_NO_BUFFER_SPACE`; the complete unchanged rerun passed. No test retry,
 timeout increase, assertion reduction or main-suite worker reduction was used.
 The maintainer accepted the measured behavior and authorized publication.
+
+## Rust/WASM CPU kernels
+
+Numeric sorted-index construction and exact outer-axis density reduction now
+run in the dependency-free Rust crate under `rust/`, compiled to WebAssembly.
+The kernel bytes are embedded in the JavaScript and inline workers; standalone
+pages need no extra file or network request. Browsers without WebAssembly, or
+with a policy that blocks its compilation, retain the JavaScript implementation.
+The Python API and payload are unchanged.
+
+The marginal kernel preserves original row order and Float64 accumulation,
+including subpixel coverage, missing-color mass and extreme-color coverage.
+It does not use the rejected Float32 GPU reduction. Tests compare every
+statistic exactly against JavaScript, including a million coincident endpoints.
+Index tests pin original row identity, stable ties, signed zero, infinities,
+NaNs, missing values, and independent transferable output buffers.
+
+Run `bun run build:wasm` then `node bench/rust.ts` for the isolated Chromium
+benchmark. The following measurements use nine warm repetitions per kernel
+in one headless Chromium load on the same Windows workstation. They include
+all bridge input copies, output copies and result construction. Each kernel
+receives the same seeded input for both implementations. Compilation took
+3.5 ms per fresh instance; it is cached once per worker and excluded from the
+warm timings. These are CPU-kernel timings, not completed-image latencies.
+
+| Rows | Kernel | JavaScript ms | Rust/WASM ms |
+|---|---|---|---|
+| 50,000 | Numeric index | 10.3 | 3.8 |
+| 50,000 | Outer marginal | 1.1 | 0.8 |
+| 1,000,000 | Numeric index | 346.8 | 141.6 |
+| 1,000,000 | Outer marginal | 13.5 | 10.2 |
+
+The standard standalone benchmark also ran before and after integration with
+50,000 rows and 50 mixed columns, three independent loads per version, using
+hardware Chromium on the RTX 5090:
+
+| Metric | Before | Rust/WASM |
+|---|---|---|
+| Initial drawn ms | 2049 | 2075 |
+| Full redraw ms | 502 | 490 |
+| Drag p50 / p95 / max ms | 34 / 34 / 34 | 33 / 34 / 34 |
+| Stalls above 50 ms | 0 | 0 |
+| Brush release to lines ms | 164 | 160 |
+| JS heap MB | 473 | 245 |
+| HTML MB | 27.4 | 27.5 |
+
+These are the final back-to-back controls. The browser's frame cadence shifted
+to about 30 Hz in both versions; earlier three-load controls measured 8/8/9 ms
+for both versions. Heap readings depend on garbage collection and exclude
+WASM memory, so these samples do not establish a memory improvement.
+Whole-image latency differences are within ordinary workstation noise. No
+end-to-end speedup or measurable regression is established. The Rust module
+is 45,874 bytes before base64 embedding. GPU submission and rendering remain
+the major completed-image costs, and the 33 ms target remains unmet.
+Raw results are `outputs/rust/kernels.json`, `outputs/rust/paired-before.json`
+and `outputs/rust/paired-final.json`; the earlier controls are retained in
+`outputs/rust/before.json` and `outputs/rust/after.json`.
+
+All fast gates pass, including Rust formatting and Clippy. The complete stack
+gate passes 3 native Rust tests, 118 Python tests, 580 Bun tests and 230 browser
+tests, with 93% changed-line coverage across Python and TypeScript. The browser
+report is reused through the gate's existing `E2E_LCOV` option. An unchanged
+CPU test exceeded its five-second limit in earlier coverage runs; the final
+complete run passes with the original timeout and assertions. The generated
+WASM byte-storage module is omitted from source coverage; the Rust bridge and
+its JavaScript references remain covered. Library declarations, all four
+bundles, and the wheel/sdist build also pass. Logs are retained under
+`outputs/rust/`, including `final-stack-gate.log` and `browser-gate-final.log`.
+
+## Retained WASM inputs and incremental histogram uploads
+
+Categorical indexes now use Rust stable bucket construction instead of sorting
+every row in JavaScript. Category definitions are ordered by UTF-16 units,
+including unpaired surrogates; duplicate names merge, unused names disappear,
+and equal values retain original row order. Palette quantization and RGB/extreme
+histogram texture packing also run in Rust. JavaScript reference implementations remain
+available when WebAssembly is unavailable or compilation is blocked by CSP.
+
+Each density worker retains two immutable endpoint snapshots and the current
+color/selection snapshots in WASM. An unchanged outer marginal copies no input;
+a new million-row selection copies only its 1 MB mask. Arithmetic and row order
+remain Float64-exact. A numeric-index call invalidates the shared selection
+buffer, so interleaved operations cannot reuse overwritten data.
+
+Histogram textures persist within a 64 MiB reservation for both RGBA32F layers,
+plus one overflow scratch pair. Rust retains each pair's canonical occupied
+cells, their grid rows and packed Float32 values. Selection/recoloring updates
+compare encoded bits and upload only changed rows, merging adjacent runs.
+Numeric-mean texture packing keeps the direct JavaScript implementation: copying
+its planes into WASM showed no reliable gain and slightly slower dense uploads.
+Inactive pairs are pruned; resizing, color-layer changes and scratch identity
+changes reset the full texture. Context loss disposes textures and Rust handles.
+WASM linear memory is a high-water allocation and does not shrink when a slot
+is released; released buffers and handles are reusable.
+
+`node bench/rust.ts --loads 3 --repetitions 15` reports per-load warm medians,
+including bridge copies and result construction. `--baseline-js` accepts a saved
+benchmark bundle and alternates baseline/candidate loads in fresh contexts.
+The candidate also compares the previous full JavaScript packing/upload path
+with changed Rust packing/incremental uploads on real WebGL2. Each revision
+changes one cell or every cell; `gl.finish()` includes transfer completion.
+That diagnostic excludes shaders, reconstruction and image publication.
+
+`bench/run.ts --baseline-dir <dir>` alternates standalone controls, records
+browser/viewport/DPR, idle frame cadence, visibility and actual rendering mode,
+and reports worker WASM linear memory separately from the browser JS heap.
+Missing diagnostics in older bundles are reported as unreported, never zero.
+`--quality low` forces continuous density; the normal policy may select the
+exact renderer and bypass histogram uploads entirely.
+
+On hardware Chromium 153 / RTX 5090, medians of three independent load medians
+(15 warm repetitions each) include these results:
+
+| Rows | Kernel | JavaScript ms | Rust/WASM ms |
+|---|---|---|---|
+| 50,000 | Categorical index, 16 names | 7.3 | 0.1 |
+| 50,000 | Categorical index, 50,000 names | 11.8 | 2.8 |
+| 1,000,000 | Categorical index, 16 names | 277.4 | 2.4 |
+| 1,000,000 | Categorical index, 50,000 names | 415.6 | 8.8 |
+| 1,000,000 | Outer marginal, new selection | 13.8 | 10.0 |
+
+The retained-input marginal timings overlap the previous Rust implementation;
+reduced copies are established, an additional latency improvement is not.
+The changed-upload diagnostic uses a fully occupied 501-by-501 grid, three
+fresh contexts and 21 warm revisions each. A one-cell RGB/extreme update has
+median packing-plus-upload time 2.4 ms for full JavaScript versus 2.0 ms for
+the candidate, transferring 16,032 instead of 8,032,032 bytes. When every cell
+changes, medians are 2.4 versus 2.5 ms; this dense case establishes no gain.
+Numeric-mean medians match with the retained direct JavaScript packing path.
+These observations justify the sparse upload path, not a universal speedup.
+
+Raw reports are `outputs/rust-followup/final-kernels-retained-cells.json` and
+`outputs/rust-followup/final-gpu-policy.json`. Earlier prototypes are retained
+separately, including the all-Rust numeric-mean experiment and unchanged-input
+packing timings; they are not completed-image performance evidence.
+
+The final standalone controls compare the previous Rust implementation with
+this follow-up, using identical 50,000-by-50 experiment payloads. Hardware
+Chromium reports visible pages with 8.3 ms idle cadence in both variants.
+
+| Mode / metric | Previous Rust | Follow-up |
+|---|---|---|
+| Default exact worker, initial drawn ms | 1646 | 1772 |
+| Default exact worker, full redraw ms | 439 | 449 |
+| Default exact worker, brush release to lines ms | 153 | 152 |
+| Forced continuous, initial drawn ms | 1953 | 1960 |
+| Forced continuous, full redraw ms | 812 | 733 |
+| Forced continuous, brush release to lines ms | 291 | 284 |
+| Drag p50 / p95 / max ms, both modes | 8 / 8 / 9 | 8 / 8 / 9 |
+| Drag stalls above 50 ms, both modes | 0 | 0 |
+
+The default row uses four alternating loads; continuous uses three. The initial
+three-load default run also measured slower candidate startup (1654 versus
+1797 ms). An identical-bundle four-load control measures 1589 versus 1583 ms.
+Separate startup-only controls using the same page probe reverse the apparent
+difference: previous-Rust publications at 2017/1768 ms versus candidate
+1733/1632 ms. Seeded startup-only traces and CPU profiles also overlap and
+reverse the full-run ordering. The experiment JSON and embedded exact worker
+are byte-identical across versions, and the page compiles no WASM during exact
+startup. These diagnostics do not establish the cause of the full-run startup
+difference. Startup therefore remains an explicit measurement uncertainty;
+neither a general end-to-end speedup nor a resolved startup improvement is
+claimed.
+
+The candidate reports 2.6 MB WASM linear memory in exact mode and 4.5 MB in
+continuous mode, separately from JS heap medians of 245/267 MB. Older controls
+do not report WASM memory, and GPU allocations are outside both numbers, so no
+total-memory improvement is claimed. Standalone size changes from 27.5 to
+27.6 MB. Full reports are `final-default-paired.json`,
+`final-default-recheck.json` and `final-continuous-paired.json` under
+`outputs/rust-followup/`; `identical-control.json`, `probe-controls.json`,
+`startup-trace.json`, `startup-draws.log` and `startup-profiles.log` retain the
+additional startup diagnostics.
+
+Verification passes all commit-stage gates, 5 native Rust tests, 118 Python
+tests, 588 Bun tests and 231 Playwright tests, with 93% changed-line coverage.
+The new browser sequence compares warm selection, recoloring and numeric/RGB
+mode transitions against the CPU pixel reference. Offline/CSP tests also
+exercise real numeric and categorical selection workers, including UTF-16
+surrogates. Library declarations, all four plain bundles and wheel/sdist builds
+pass. The Rust module is 67,728 bytes before base64 embedding.
+
+Logs are under `outputs/rust-followup/`: `fast-gates.log`, `browser-gate.log`,
+`stack-gate-recheck.log` and `package-build.log`. The initial combined coverage
+run hit the existing five-second CPU missing-stub test timeout; the isolated
+covered test passed in 3.3 seconds, and the complete recheck passed with the
+same timeout and assertions. The successful browser report is reused through
+the existing `E2E_LCOV` option; no gate or threshold was loosened.
+
+### Measured execution and phone rasterization (2026-11-11)
+
+Exact and continuous rendering now share one execution policy. Working sets
+over 256 MiB go directly to a worker, before allocating calibration buffers.
+Smaller working sets start on the main thread; two completed local frames over 50 ms promote subsequent
+work to a worker for the lifetime of that plot. Confirmation avoids paying
+worker overhead solely because of a cold shader compile. Later cheap frames and
+changes between exact and continuous rendering do not reset the decision. Exact timing
+includes geometry preparation and GPU completion; continuous timing includes
+histogram counting and completed rasterization. Rendering quality and execution
+location remain independent. Brush overlays and render pacing use the same
+gesture path in both modes.
+
+The working-set guard uses typed-buffer bytes rather than a row threshold.
+Density estimates the fixed count, color and extrema arrays of every axis pair
+at the same bin resolution used by the kernel, including outer pairs. Exact
+rendering accounts for its coordinate buffers. A 50,000-row, 50-column density
+calibration otherwise allocated more than a gigabyte on the page before
+migrating; the guard avoids that allocation.
+
+Continuous rendering uses the same retained kernel and evaluator locally and in
+the inline worker. Local evaluation yields between axis pairs. No worker is
+created for a cheap continuous draw, and no column, palette or unchanged mask is
+resent on a retained frame. Moving to a worker releases the local evaluator.
+
+Idle continuous images now sample device pixels; gesture previews retain CSS
+resolution and refine on release. Histogram bins, endpoint coordinates,
+missing-value stub lengths and density normalization remain in CSS units.
+The CPU evaluator, shader and Rust outer-marginal reducer account for the
+physical pixel footprint. Changing DPR invalidates raster images without
+rebuilding histograms. Curved lines are the default at every row count, with
+straight lines selected manually; legacy saved automatic line shapes load as
+curved.
+
+The shared HTML template now declares the device viewport. Without it, a
+390-pixel phone used a 980-pixel layout viewport; generated standalone pages
+now use the available device width without a sample-specific workaround.
+
+Transparent context no longer triggers dense raster work. A regression fixture
+previously read 2,606,885 context entries despite zero context opacity; it now
+visits only sparse selected support and produces identical selected pixels.
+All source rows remain counted in the retained histograms.
+
+`bench/run.ts` accepts `--width`, `--height`, `--pixel-ratio` and `--line-shape`
+so before/after comparisons can hold shape and viewport constant. The original
+50,000-row, 50-column experiment and the 10,000-row phone sample have identical
+experiment SHA-256 hashes across the two bundles. Evidence is retained under
+`outputs/render-execution/`; refreshed offline pages are under
+`outputs/mobile-samples-updated/`.
+
+On the RTX 5090/D3D11 desktop, three alternating paired loads at 1600 × 1000,
+DPR 1, forced continuous density and curved lines give these medians:
+
+| Metric, 50,000 rows × 50 columns | Before | After |
+|---|---:|---:|
+| Full redraw | 704 ms | 720 ms |
+| Brush frame p50 / p95 / max | 8 / 8 / 9 ms | 8 / 8 / 9 ms |
+| Brush stalls over 50 ms | 0 / 120 | 0 / 120 |
+| Release to final lines | 278 ms | 275 ms |
+| Page JS heap | 267 MB | 267 MB |
+| Reported WASM memory | 4.5 MB | 4.5 MB |
+
+These are small-sample checks, not a general speedup claim. The page heap excludes
+worker heaps and GPU allocations. An exploratory run without the working-set
+guard reached 1,744 MB on the page; the final policy avoids that regression.
+The final paired report is `final-density-paired.json`.
+
+A separate single matched check at 390 × 844 and DPR 3, with 10,000 rows,
+10 columns and exact curved lines, retains the local GPU path in both versions.
+Warm redraws measure 13/12 ms and brush cadence remains 8 ms, with no stalls
+over 50 ms. This is phone-sized desktop emulation on the same RTX 5090, not a
+measurement of phone hardware; see `final-phone-exact.json`. The six refreshed
+standalone files and three picker switches also render offline at those mobile
+dimensions and DPR 3, with zero page errors or external requests.
+
+Verification passes all commit-stage gates, 5 Rust tests, 118 Python tests,
+597 Bun tests and all 237 Playwright tests. Combined changed-line coverage is
+94%. Library declarations, all four plain bundles and wheel/sdist builds pass;
+the wheel's JavaScript bundles and shared HTML template match the current files
+byte for byte. Logs are `fast-complete.log`, `browser-complete.log`,
+`stack-complete.log` and `package-final.log` under the evidence directory.
+
+The benchmark now follows renderer migrations and counts completed worker GPU
+frames even when their obsolete bitmaps are discarded. A deterministic
+regression test checks two completed GPU frames with one presented image.
+
+### Brush selection across mode switches
+
+Switching from exact worker lines to density retains the currently presented
+exact image until the replacement density image is presented. Revealing the
+retained density canvas when requesting a frame could briefly show an older
+brush selection. The browser regression test checks the pending and completed
+presentation states across two brush moves and round trips between modes.
+
+Three alternating paired loads of the previous and refreshed 10,000-row mobile
+samples at 390 × 844, DPR 3, with curved continuous density, retain brush frame
+p50/p95/max of 8/8/17 ms and zero stalls in 120 frames. Median full redraw is
+145/149 ms and release to final lines is 82/86 ms. These are desktop RTX 5090
+measurements at phone dimensions, not phone hardware measurements or a speedup
+claim. The paired report is `outputs/brush-mode-switch/phone-density.json`;
+refreshed offline samples are in `outputs/mobile-samples-brush-fix/`.

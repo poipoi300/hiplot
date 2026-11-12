@@ -30,6 +30,36 @@ for (const [quality, renderer] of [
       { rows: 50_000, columns: 4, discrete: false, seed: 20261109 },
       quality,
     );
+    await page.evaluate(() => {
+      (
+        window as unknown as {
+          __parallelProbe: {
+            instance: {
+              parallelPlot: () => {
+                redrawLines: () => void;
+              };
+            };
+          };
+        }
+      ).__parallelProbe.instance
+        .parallelPlot()
+        .redrawLines();
+    });
+    await page.waitForFunction(() => {
+      const plot = (
+        window as unknown as {
+          __parallelProbe: {
+            instance: {
+              parallelPlot: () => {
+                linesBusy: boolean;
+                continuous: { busy: boolean } | null;
+              };
+            };
+          };
+        }
+      ).__parallelProbe.instance.parallelPlot();
+      return !plot.linesBusy && !plot.continuous?.busy;
+    });
     const result = await page.evaluate(async (renderer) => {
       const pp = (
         window as unknown as {

@@ -129,6 +129,24 @@ repos:
         pass_filenames: false
         require_serial: true
 
+  - repo: local
+    hooks:
+      - id: rust-fmt
+        name: rustfmt
+        entry: cargo fmt --manifest-path rust/Cargo.toml --check
+        language: system
+        files: '^rust/.*\.(rs|toml)$'
+        pass_filenames: false
+        require_serial: true
+
+      - id: rust-clippy
+        name: clippy
+        entry: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+        language: system
+        files: '^rust/.*\.(rs|toml)$'
+        pass_filenames: false
+        require_serial: true
+
   # Slow gates: only on push.
   - repo: local
     hooks:

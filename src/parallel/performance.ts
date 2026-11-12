@@ -14,6 +14,28 @@ export function isRenderQuality(value: unknown): value is RenderQuality {
 
 /** The median GPU time of recent full-quality frames above which frames are slow (under 20 fps). */
 export const SLOW_FRAME_MS = 50;
+/** Bound page-owned calibration buffers before allocating a large working set. */
+export const MAX_LOCAL_RENDER_BYTES = 256 * 1024 * 1024;
+
+/** Execution location belongs to the plot session, independently of picture style. */
+export class RenderExecution {
+  private promoted = false;
+  private slowDraws = 0;
+
+  get useWorker(): boolean {
+    return this.promoted;
+  }
+
+  recordWorkingSet(bytes: number): void {
+    if (bytes > MAX_LOCAL_RENDER_BYTES) this.promoted = true;
+  }
+
+  /** Observe completed local draws, including preparation and GPU completion. */
+  record(milliseconds: number): void {
+    // The first expensive draw can include a one-time shader compilation.
+    if (milliseconds > SLOW_FRAME_MS && ++this.slowDraws >= 2) this.promoted = true;
+  }
+}
 /** The median below which slow frames count as fast again; the gap keeps the mode from flickering. */
 export const FAST_FRAME_MS = 25;
 /** Full-quality frames a verdict is based on; odd, so they have a middle one. */

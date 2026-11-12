@@ -1,5 +1,5 @@
 import { ContinuousDensityEvaluator } from "./continuous_density";
-import { ContinuousKernel } from "./continuous_grid";
+import { ContinuousRuntime } from "./continuous_runtime";
 import type { ContinuousImage, ContinuousRequest } from "./continuous_types";
 
 export interface ContinuousWorkerScope {
@@ -15,20 +15,17 @@ export function connectContinuousWorker(
   createEvaluator: () => Pick<ContinuousDensityEvaluator, "render" | "renderCooperative"> = () =>
     new ContinuousDensityEvaluator(),
 ): void {
-  const kernel = new ContinuousKernel();
-  let evaluator: ReturnType<typeof createEvaluator> | null = null;
+  const runtime = new ContinuousRuntime(createEvaluator);
   let generation = 0;
   scope.onmessage = async ({ data }) => {
     const current = ++generation;
     const isCurrent = (): boolean => generation === current;
     try {
-      evaluator ??= createEvaluator();
       // Requests carry deltas: even a superseded frame must update retained kernel state.
       // The obsolete cooperative continuation checks its generation before touching that state.
-      const update = kernel.update(data);
       const image = data.draft
-        ? evaluator.render(data, update)
-        : await evaluator.renderCooperative(data, update, isCurrent);
+        ? runtime.render(data)
+        : await runtime.renderCooperative(data, isCurrent);
       if (!isCurrent() || image === null) return;
       scope.postMessage({ id: data.id, image }, [image.pixels.buffer]);
     } catch (error) {

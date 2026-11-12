@@ -78,6 +78,41 @@ function pair(hist = histogram(), key = "1:2", left = 0, right = 16): Continuous
   return { key, left: { column: 1, x: left }, right: { column: 2, x: right }, histogram: hist };
 }
 
+test("idle density samples physical pixels while gesture previews retain CSS resolution", () => {
+  const hist = histogram();
+  populate(hist, 2, 6, 1);
+  const evaluator = new ContinuousDensityEvaluator({ gl: null });
+  const state = update([pair(hist)]);
+  const style = frame({ pixelRatio: 3 });
+  const idle = evaluator.render(style, state);
+  expect(idle.width).toBe(style.width * 3);
+  expect(idle.height).toBe(style.height * 3);
+  expect(idle.evaluatedColumns).toBe(48);
+  const draft = evaluator.render({ ...style, draft: true }, state);
+  expect(draft.width).toBe(style.width);
+  expect(draft.height).toBe(style.height);
+  expect(evaluator.render(style, state).evaluatedPairs).toBe(1);
+  evaluator.dispose();
+});
+
+test("high-DPI hairlines keep CSS thickness and density without multiplying populations", () => {
+  const hist = histogram();
+  populate(hist, 4, 4, 1);
+  const p = pair(hist);
+  const state = update([p], { rows: 1, selectedCount: 1 });
+  const image = evaluateContinuousPairCPU(p, frame({ pixelRatio: 3 }), state);
+  const alpha = Array.from(
+    { length: image.height },
+    (_, y) => at(image.pixels, image.width, 24, y)[3],
+  );
+  expect(alpha.map((value, y) => (value > 0 ? y : -1)).filter((y) => y >= 0)).toEqual([
+    10, 11, 12, 13,
+  ]);
+  expect(alpha[11]).toBe(alpha[12]);
+  expect(alpha[10]).toBe(alpha[13]);
+  expect(alpha[11]).toBeGreaterThan(alpha[10]);
+});
+
 function frame(overrides: Partial<ContinuousRequest> = {}): ContinuousRequest {
   return {
     id: 1,
@@ -124,6 +159,35 @@ const at = (pixels: Uint8ClampedArray, width: number, x: number, y: number): num
   Array.from(pixels.slice((y * width + x) * 4, (y * width + x + 1) * 4));
 
 describe("continuous pixel evaluation", () => {
+  test("transparent context skips dense raster work while preserving the selected image", () => {
+    const hist = denseContextHistogram();
+    populate(hist, 64, 64, 1000);
+    const p = pair(hist);
+    let reads = 0;
+    hist.context = new Proxy(hist.context, {
+      get(target, property) {
+        if (typeof property === "string" && /^\d+$/.test(property)) reads++;
+        return Reflect.get(target, property, target);
+      },
+    });
+    const image = evaluateContinuousPairCPU(
+      p,
+      frame({ height: 255, contextAlpha: 0 }),
+      update([p]),
+    );
+    expect(image.pixels.some((value, index) => index % 4 === 3 && value > 0)).toBe(true);
+    expect(reads).toBeLessThan(1000);
+    const selectedOnly = histogram(256);
+    populate(selectedOnly, 64, 64, 1000);
+    expect(image.pixels).toEqual(
+      evaluateContinuousPairCPU(
+        pair(selectedOnly),
+        frame({ height: 255, contextAlpha: 0 }),
+        update([pair(selectedOnly)]),
+      ).pixels,
+    );
+  });
+
   test("independently dense layers stop classification once both exceed the sparse limit", () => {
     const hist = histogram(128);
     hist.selected.fill(1);

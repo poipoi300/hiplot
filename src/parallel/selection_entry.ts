@@ -1,3 +1,4 @@
+import { rustMemoryBytes } from "../wasm/kernels";
 import {
   buildSelectionIndex,
   type SelectionIndexRequest,
@@ -15,7 +16,7 @@ export function connectSelectionWorker(scope: SelectionWorkerScope): void {
     const transfer: Transferable[] = [index.order.buffer, index.missing.buffer];
     if (index.kind === "numeric") transfer.push(index.values.buffer);
     else transfer.push(index.offsets.buffer);
-    scope.postMessage({ id: data.id, index }, transfer);
+    scope.postMessage({ id: data.id, index, wasmMemoryBytes: rustMemoryBytes() }, transfer);
   };
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ContinuousWorkerScope } from "./continuous_entry";
+import { ContinuousRuntime } from "./continuous_runtime";
 import type { ContinuousImage, ContinuousRequest, ContinuousUpdate } from "./continuous_types";
 import { ContinuousRenderer } from "./continuous_worker";
 import type { LineColors, LineFrame } from "./webgl";
@@ -75,6 +76,38 @@ const ready = async (): Promise<void> => {
   await Promise.resolve();
 };
 
+test("local density retains deltas and publishes every row without starting a worker", async () => {
+  const images: ContinuousImage[] = [];
+  const renderer = new ContinuousRenderer(
+    (image) => images.push(image),
+    () => {
+      throw new Error("Cheap density must not start a worker");
+    },
+    "local",
+  );
+  const { frame, colors, selection } = source();
+  const idle = async () => {
+    while (renderer.busy) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  try {
+    renderer.draw(frame, colors, selection);
+    await idle();
+    expect(images).toHaveLength(1);
+    expect(images[0].rows).toBe(selection.length);
+    renderer.draw(frame, colors, selection);
+    await idle();
+    expect(images[1].evaluatedPairs).toBe(0);
+    selection[1] = 0;
+    renderer.draw({ ...frame, selectedCount: 1, contextCount: 1 }, colors, selection);
+    await idle();
+    expect(images[2].rows).toBe(2);
+    expect(images[2].evaluatedPairs).toBeGreaterThan(0);
+    expect(images[2].pixels).not.toEqual(images[1].pixels);
+  } finally {
+    renderer.dispose();
+  }
+});
+
 function workerRequest(id: number, draft = false): ContinuousRequest {
   const { frame, colors, selection } = source();
   return {
@@ -87,6 +120,16 @@ function workerRequest(id: number, draft = false): ContinuousRequest {
     selection,
   };
 }
+
+test("local cooperative validation rejects through its promise so the host can release busy", async () => {
+  const runtime = new ContinuousRuntime();
+  try {
+    const work = runtime.renderCooperative({ ...workerRequest(1), height: Number.NaN }, () => true);
+    await expect(work).rejects.toThrow("axis height");
+  } finally {
+    runtime.dispose();
+  }
+});
 
 class ControlledEvaluator {
   readonly drafts: { frame: ContinuousRequest; update: ContinuousUpdate }[] = [];

@@ -16,13 +16,18 @@ interface HiPlotWindow {
 
 /** Counts the line canvas pixels that are not transparent, right after a redraw. */
 async function paintedPixels(page: Page): Promise<number> {
-  return page.evaluate(() => {
+  return page.evaluate(async () => {
     const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot();
-    const canvas = pp?.foreground_ref.current;
+    let canvas = pp?.foreground_ref.current;
     if (!pp || !canvas) {
       throw new Error("No parallel plot");
     }
     pp.redrawLines();
+    if (pp.exact !== null) {
+      while (pp.exact.busy) await new Promise(requestAnimationFrame);
+      canvas = pp.exact_image_ref.current;
+      if (!canvas) throw new Error("No completed line surface");
+    }
     const copy = document.createElement("canvas");
     copy.width = canvas.width;
     copy.height = canvas.height;
@@ -42,7 +47,7 @@ async function paintedPixels(page: Page): Promise<number> {
 }
 
 async function renderer(page: Page): Promise<"webgl" | "canvas"> {
-  return page.evaluate(() => {
+  return page.evaluate(async () => {
     const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot();
     if (!pp) {
       throw new Error("No parallel plot");
@@ -164,15 +169,20 @@ test("a steep straight line keeps its width instead of breaking into dots", asyn
 
   // Coverage of the rising line per pixel row, in a window around where it
   // crosses the row, over the part of the gap the other line keeps clear of.
-  const rowSums = await page.evaluate(() => {
+  const rowSums = await page.evaluate(async () => {
     const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
       | (ParallelPlotHandle & CoverageProbe)
       | null;
-    const canvas = pp?.foreground_ref.current;
+    let canvas = pp?.foreground_ref.current;
     if (!pp || !canvas) {
       throw new Error("No parallel plot");
     }
     pp.redrawLines();
+    if (pp.exact !== null) {
+      while (pp.exact.busy) await new Promise(requestAnimationFrame);
+      canvas = pp.exact_image_ref.current;
+      if (!canvas) throw new Error("No completed line surface");
+    }
     const copy = document.createElement("canvas");
     copy.width = canvas.width;
     copy.height = canvas.height;
@@ -242,15 +252,20 @@ for (const deviceScaleFactor of [0.5, 1, 2]) {
       // Per pixel row, the bundle's opacity summed in a window around where it
       // crosses the row, next to the exact coverage of one opaque line along
       // the same segment.
-      const rowSums = await page.evaluate(() => {
+      const rowSums = await page.evaluate(async () => {
         const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
           | (ParallelPlotHandle & CoverageProbe & BundleProbe)
           | null;
-        const canvas = pp?.foreground_ref.current;
+        let canvas = pp?.foreground_ref.current;
         if (!pp || !canvas) {
           throw new Error("No parallel plot");
         }
         pp.redrawLines();
+        if (pp.exact !== null) {
+          while (pp.exact.busy) await new Promise(requestAnimationFrame);
+          canvas = pp.exact_image_ref.current;
+          if (!canvas) throw new Error("No completed line surface");
+        }
         const opacities = (draw: (context: CanvasRenderingContext2D) => void) => {
           const copy = document.createElement("canvas");
           copy.width = canvas.width;
@@ -342,15 +357,20 @@ for (const deviceScaleFactor of [1, 2]) {
       // its angle: the line's intensity per unit length, which exact pixel
       // coverage keeps whatever the line's offset between pixel centers. Its
       // coefficient of variation along the segment, clear of the axes.
-      const variations = await page.evaluate(() => {
+      const variations = await page.evaluate(async () => {
         const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
           | (ParallelPlotHandle & CoverageProbe & BundleProbe)
           | null;
-        const canvas = pp?.foreground_ref.current;
+        let canvas = pp?.foreground_ref.current;
         if (!pp || !canvas) {
           throw new Error("No parallel plot");
         }
         pp.redrawLines();
+        if (pp.exact !== null) {
+          while (pp.exact.busy) await new Promise(requestAnimationFrame);
+          canvas = pp.exact_image_ref.current;
+          if (!canvas) throw new Error("No completed line surface");
+        }
         const copy = document.createElement("canvas");
         copy.width = canvas.width;
         copy.height = canvas.height;
@@ -643,16 +663,21 @@ async function segmentProfile(
   { from = 0.1, to = 0.4, radius = 6, redraw = true } = {},
 ): Promise<ColumnProfile[]> {
   return page.evaluate(
-    ({ from, to, radius, redraw }) => {
+    async ({ from, to, radius, redraw }) => {
       const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
         | (ParallelPlotHandle & CoverageProbe & BundleProbe)
         | null;
-      const canvas = pp?.foreground_ref.current;
+      let canvas = pp?.foreground_ref.current;
       if (!pp || !canvas) {
         throw new Error("No parallel plot");
       }
       if (redraw) {
         pp.redrawLines();
+        if (pp.exact !== null) {
+          while (pp.exact.busy) await new Promise(requestAnimationFrame);
+          canvas = pp.exact_image_ref.current;
+          if (!canvas) throw new Error("No completed line surface");
+        }
       }
       const copy = document.createElement("canvas");
       copy.width = canvas.width;

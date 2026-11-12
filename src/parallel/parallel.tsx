@@ -67,7 +67,7 @@ import {
   savedBrushIntervals,
 } from "./brushes";
 import { categoryTagTexts, placeBrushTags, type TagTexts } from "./brushtags";
-import type { ContinuousImage } from "./continuous_types";
+import { type ContinuousImage, continuousHistogramMinimumBytes } from "./continuous_types";
 import { ContinuousRenderer } from "./continuous_worker";
 import { ExactRenderer } from "./exact_worker";
 import { categoryIndices, countByCategory, type FlowAxis, flowAxes } from "./flow";
@@ -80,6 +80,7 @@ import {
   FramePerformance,
   isRenderQuality,
   RENDER_QUALITIES,
+  RenderExecution,
   type RenderQuality,
 } from "./performance";
 import { type AxisSelection, BrushMasks } from "./selection";
@@ -434,10 +435,6 @@ const HOVER_DISTANCE_PIXELS = 5;
 
 /** Bin key of the deselected rows in the Canvas 2D fallback. */
 const CONTEXT_BIN = -1;
-/** "auto" switches to straight segments above this many rows, where curves blur into mush. */
-const STRAIGHT_LINES_ABOVE_ROWS = 10_000;
-/** Above this many rows, lines drawn during a drag are not anti-aliased. */
-const LIGHT_DRAG_ROWS = 20_000;
 /** How long after the last scroll event a scroll still counts as a gesture. */
 const SCROLL_SETTLE_MS = 150;
 const RENDER_QUALITY_LABELS: Record<RenderQuality, { label: string; title: string }> = {
@@ -459,7 +456,7 @@ const RENDER_QUALITY_LABELS: Record<RenderQuality, { label: string; title: strin
 const CONTEXT_ALPHA_LIGHT = 0.28;
 const CONTEXT_ALPHA_DARK = 0.34;
 
-export type LineShape = "auto" | "curved" | "straight";
+export type LineShape = "curved" | "straight";
 
 /** The line shapes a user picks, drawn as the lines they make. */
 const LINE_SHAPE_ICONS = {
@@ -486,7 +483,7 @@ const LINE_SHAPE_ICONS = {
     </svg>
   ),
 } as const;
-const isLineShape = (value: unknown): value is LineShape =>
+const isLineShape = (value: unknown): value is LineShape | "auto" =>
   value === "auto" || value === "curved" || value === "straight";
 
 /** Target frame interval while lines draw progressively (60 Hz). */
@@ -702,7 +699,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       ),
       upright: new Set(readState(props.persistentState, "upright", isStringArray, [])),
       dimensions: [],
-      lineShape: readState(props.persistentState, "lineShape", isLineShape, "auto"),
+      lineShape:
+        readState(props.persistentState, "lineShape", isLineShape, "curved") === "straight"
+          ? "straight"
+          : "curved",
       renderQuality: readState(props.persistentState, "renderQuality", isRenderQuality, "auto"),
       slowFrames: false,
       brushed: false,
@@ -1147,8 +1147,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   private brushMoveFrame: number | null = null;
   private scheduleBrushFrame(): void {
     if (
-      this.continuousMode() &&
-      this.draftFrame() &&
+      this.interacting &&
       (!this.continuous?.busy || this.continuous.refining) &&
       !this.linesBusy
     ) {
@@ -1197,17 +1196,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   render() {
-    const limit = COUNT_FORMAT.format(STRAIGHT_LINES_ABOVE_ROWS);
-    const rows = COUNT_FORMAT.format(this.props.rows_filtered.length);
     const shapes: { shape: LineShape; label: string; title: string; icon?: React.ReactElement }[] =
       [
-        {
-          shape: "auto",
-          label: "Auto",
-          title: this.curvedLines()
-            ? `Auto: curved for ${rows} rows (straight above ${limit}, where curves blur into one mass)`
-            : `Auto: straight for ${rows} rows (curved up to ${limit})`,
-        },
         {
           shape: "curved",
           label: "Curved",
@@ -2568,9 +2558,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return { r: parsed.r, g: parsed.g, b: parsed.b };
   }
 
-  /** Large exact-line drags omit anti-aliasing; accumulation precision never changes. */
+  /** Gesture previews omit anti-aliasing; accumulation precision never changes. */
   draftFrame(): boolean {
-    return this.interacting && this.props.rows_filtered.length > LIGHT_DRAG_ROWS;
+    return this.interacting && this.renderExecution.useWorker;
   }
 
   /** Whether a frame is drawn during a gesture: a brush or axis drag, or a scroll. */
@@ -2591,6 +2581,21 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** Measures each full-quality frame on the GPU, for the "auto" quality. */
   private frameWatch: number | null = null;
   private framePerformance = new FramePerformance();
+  readonly renderExecution = new RenderExecution();
+  private localPreparationMs: number | null = null;
+
+  private collectFrame(webgl: WebGLLineRenderer): boolean {
+    const busy = webgl.busy;
+    const finished = webgl.finishedFrame();
+    if (finished !== null) {
+      if (this.localPreparationMs !== null) {
+        this.renderExecution.record(finished.milliseconds + this.localPreparationMs);
+        this.localPreparationMs = null;
+      }
+      this.recordFrame(finished);
+    }
+    return busy;
+  }
 
   /**
    * Polls the renderer while a frame is in flight; one loop serves every frame
@@ -2603,9 +2608,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     const check = (): void => {
       this.frameWatch = null;
       // Reading `busy` records the frame in flight once it has finished.
-      const busy = webgl.busy;
-      const finished = webgl.finishedFrame();
-      if (finished !== null) this.recordFrame(finished);
+      const busy = this.collectFrame(webgl);
       if (busy) {
         this.frameWatch = requestAnimationFrame(check);
       }
@@ -2672,11 +2675,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return true;
   }
 
-  /** Curves between axes unless the user chose straight lines, or "auto" meets many rows. */
+  /** Curves between axes unless the user chose straight lines. */
   curvedLines(): boolean {
-    if (this.state.lineShape === "auto") {
-      return this.props.rows_filtered.length <= STRAIGHT_LINES_ABOVE_ROWS;
-    }
     return this.state.lineShape === "curved";
   }
 
@@ -2712,14 +2712,16 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   /** Draws every original row; used by exact mode and its pixel-equivalence tests. */
   private drawWithWebGL(webgl: WebGLLineRenderer): void {
+    this.collectFrame(webgl);
+    const started = performance.now();
     const geometry = this.geometry();
     const mask = this.selectionMask(geometry);
     const colors = this.lineColors(geometry);
     const frame = this.lineFrame(geometry, mask);
-    if (
-      geometry.rows.length > LIGHT_DRAG_ROWS &&
-      this.drawExactWorker(frame, geometry, colors, mask)
-    )
+    this.renderExecution.recordWorkingSet(
+      frame.axes.reduce((bytes, axis) => bytes + axis.pixels.byteLength, 0),
+    );
+    if (this.renderExecution.useWorker && this.drawExactWorker(frame, geometry, colors, mask))
       return;
     this.exact?.dispose();
     this.exact = null;
@@ -2732,38 +2734,55 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     );
     webgl.setColors(colors);
     webgl.setSelection(mask);
+    this.localPreparationMs = performance.now() - started;
     webgl.draw(frame);
     this.watchFrames(webgl);
   }
 
   private drawContinuous(): void {
+    this.renderExecution.recordWorkingSet(
+      continuousHistogramMinimumBytes(this.state.dimensions.length, this.h),
+    );
+    const execution =
+      this.renderExecution.useWorker && typeof Worker !== "undefined" ? "worker" : "local";
+    if (this.continuous !== null && this.continuous.execution !== execution) {
+      this.continuous.dispose();
+      this.continuous = null;
+    }
     if (this.continuous === null) {
-      this.continuous = new ContinuousRenderer((image) => {
-        if (!this.continuousMode()) {
-          return;
-        }
-        this.continuousFrame += 1;
-        this.continuousMetrics = image;
-        if (this.webgl !== null) {
-          this.webgl.present(image.pixels, image.width, image.height);
-          this.watchFrames(this.webgl);
-        } else if (this.foreground !== null) {
-          const source = document.createElement("canvas");
-          source.width = image.width;
-          source.height = image.height;
-          const context = source.getContext("2d");
-          if (context === null) {
-            throw new Error("No density image context");
+      this.continuous = new ContinuousRenderer(
+        (image) => {
+          if (!this.continuousMode()) {
+            return;
           }
-          context.putImageData(
-            new ImageData(new Uint8ClampedArray(image.pixels), image.width, image.height),
-            0,
-            0,
-          );
-          this.foreground.clearRect(0, 0, this.w, this.h);
-          this.foreground.drawImage(source, 0, 0, this.w, this.h);
-        }
-      });
+          this.continuousFrame += 1;
+          this.continuousMetrics = image;
+          if (execution === "local") this.renderExecution.record(image.milliseconds);
+          this.localPreparationMs = null;
+          if (this.webgl !== null) {
+            this.webgl.present(image.pixels, image.width, image.height);
+            this.watchFrames(this.webgl);
+          } else if (this.foreground !== null) {
+            const source = document.createElement("canvas");
+            source.width = image.width;
+            source.height = image.height;
+            const context = source.getContext("2d");
+            if (context === null) {
+              throw new Error("No density image context");
+            }
+            context.putImageData(
+              new ImageData(new Uint8ClampedArray(image.pixels), image.width, image.height),
+              0,
+              0,
+            );
+            this.foreground.clearRect(0, 0, this.w, this.h);
+            this.foreground.drawImage(source, 0, 0, this.w, this.h);
+          }
+          this.showDirectLines();
+        },
+        undefined,
+        execution,
+      );
     }
     const geometry = this.geometry();
     const mask = this.selectionMask(geometry);
@@ -2843,7 +2862,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (this.continuousMode()) {
       this.exact?.dispose();
       this.exact = null;
-      this.showDirectLines();
       // Pace active drafts, but let a new gesture interrupt full-width refinement.
       if (
         this.interactiveFrame() &&

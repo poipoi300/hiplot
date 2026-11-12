@@ -20,11 +20,12 @@
  *   bun bench/run.ts --dir <html dir> [--reps 3] [--out results.json] [--label name]
  */
 
-import { readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { chromium, type Page } from "@playwright/test";
+import { measureFrameCadence } from "./environment.ts";
 
 const SETTLE_QUIET_MS = 500;
 const SETTLE_QUIET_FRAMES = 20;
@@ -61,6 +62,11 @@ interface RepResult {
   brushEndLinesMs: number;
   brushEndTableMs: number;
   jsHeapMB: number;
+  wasmMemoryMB: number | null;
+  idleFrameP50Ms: number;
+  idleFrameP95Ms: number;
+  visibility: DocumentVisibilityState | "mixed";
+  renderMode: string;
 }
 
 interface SizeResult {
@@ -76,6 +82,13 @@ declare global {
     hiplot_last_instance: {
       state: { colorby: string; params_def: Record<string, { type: string }> };
       setState: (state: { colorby: string }) => void;
+      parallelPlot: () => {
+        continuousMode?: () => boolean;
+        continuousMetrics?: { wasmMemoryBytes?: number } | null;
+        brushMasks?: () => { wasmMemoryBytes?: number };
+        exact?: unknown;
+        webgl?: unknown;
+      } | null;
     };
   }
 }
@@ -324,14 +337,31 @@ async function runOnce(page: Page, url: string): Promise<RepResult> {
     };
   });
   const redrawMs = await measureRedraw(page);
+  const cadence = await measureFrameCadence(page);
   const { drag, mouseUpAt } = await measureBrush(page);
   const linesSettledAt = await waitForDrawsToSettle(page, mouseUpAt, false);
   const tableSettledAt = await waitForTableToSettle(page, mouseUpAt);
-  const jsHeapMB = await page.evaluate(
-    () =>
-      ((performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ??
-        0) / 1e6,
-  );
+  const memory = await page.evaluate(() => {
+    const plot = window.hiplot_last_instance.parallelPlot();
+    const selectionBytes = plot?.brushMasks?.().wasmMemoryBytes;
+    const densityBytes = plot?.continuousMetrics?.wasmMemoryBytes;
+    return {
+      jsHeapMB:
+        ((performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+          ?.usedJSHeapSize ?? 0) / 1e6,
+      wasmMemoryMB:
+        selectionBytes === undefined && densityBytes === undefined
+          ? null
+          : ((selectionBytes ?? 0) + (densityBytes ?? 0)) / 1e6,
+      renderMode: plot?.continuousMode?.()
+        ? "continuous"
+        : plot?.exact
+          ? "exact-worker"
+          : plot?.webgl
+            ? "exact-webgl"
+            : "canvas",
+    };
+  });
   return {
     decodeMs,
     domReadyMs,
@@ -340,7 +370,10 @@ async function runOnce(page: Page, url: string): Promise<RepResult> {
     drag,
     brushEndLinesMs: Math.max(0, linesSettledAt - mouseUpAt),
     brushEndTableMs: tableSettledAt - mouseUpAt,
-    jsHeapMB,
+    ...memory,
+    idleFrameP50Ms: cadence.p50Ms,
+    idleFrameP95Ms: cadence.p95Ms,
+    visibility: cadence.visibility,
   };
 }
 
@@ -369,6 +402,17 @@ function medianResult(reps: RepResult[]): RepResult {
     brushEndLinesMs: pick((r) => r.brushEndLinesMs),
     brushEndTableMs: pick((r) => r.brushEndTableMs),
     jsHeapMB: pick((r) => r.jsHeapMB),
+    wasmMemoryMB: reps.every((rep) => rep.wasmMemoryMB === null)
+      ? null
+      : median(reps.flatMap((rep) => (rep.wasmMemoryMB === null ? [] : [rep.wasmMemoryMB]))),
+    idleFrameP50Ms: pick((r) => r.idleFrameP50Ms),
+    idleFrameP95Ms: pick((r) => r.idleFrameP95Ms),
+    visibility: reps.every((rep) => rep.visibility === reps[0].visibility)
+      ? reps[0].visibility
+      : "mixed",
+    renderMode: reps.every((rep) => rep.renderMode === reps[0].renderMode)
+      ? reps[0].renderMode
+      : "mixed",
   };
 }
 
@@ -387,6 +431,9 @@ function formatRow(label: string, result: SizeResult): string {
     ms(m.brushEndLinesMs),
     ms(m.brushEndTableMs),
     m.jsHeapMB.toFixed(0),
+    m.wasmMemoryMB?.toFixed(1) ?? "unreported",
+    ms(m.idleFrameP50Ms),
+    m.renderMode,
   ].join(" | ");
 }
 
@@ -394,6 +441,12 @@ async function main(): Promise<void> {
   const { values } = parseArgs({
     options: {
       dir: { type: "string" },
+      "baseline-dir": { type: "string" },
+      quality: { type: "string" },
+      "line-shape": { type: "string" },
+      width: { type: "string", default: "1600" },
+      height: { type: "string", default: "1000" },
+      "pixel-ratio": { type: "string", default: "1" },
       reps: { type: "string", default: "3" },
       out: { type: "string" },
       label: { type: "string", default: "run" },
@@ -405,6 +458,20 @@ async function main(): Promise<void> {
   }
   const dir = path.resolve(values.dir);
   const reps = Number.parseInt(values.reps, 10);
+  const viewport = { width: Number(values.width), height: Number(values.height) };
+  const deviceScaleFactor = Number(values["pixel-ratio"]);
+  if (
+    Object.values(viewport).some((size) => !Number.isSafeInteger(size) || size <= 0) ||
+    !Number.isFinite(deviceScaleFactor) ||
+    deviceScaleFactor <= 0
+  )
+    throw new Error("Viewport dimensions and pixel ratio must be positive");
+  if (values["line-shape"] !== undefined && !["curved", "straight"].includes(values["line-shape"]))
+    throw new Error("Line shape must be curved or straight");
+  if (values.quality !== undefined && !["auto", "full", "low"].includes(values.quality))
+    throw new Error("Quality must be auto, full or low");
+  if (!Number.isSafeInteger(reps) || reps < 1)
+    throw new Error("Repetitions must be a positive integer");
   const files = readdirSync(dir)
     .filter((name) => /^bench-\d+x\d+\.html$/.test(name))
     .sort((a, b) => statSync(path.join(dir, a)).size - statSync(path.join(dir, b)).size);
@@ -419,51 +486,98 @@ async function main(): Promise<void> {
     headless: !values.headed,
     args: ["--enable-precise-memory-info", "--enable-gpu-rasterization", "--ignore-gpu-blocklist"],
   });
+  const browserVersion = browser.version();
   const results: Record<string, SizeResult> = {};
   let renderer = "unknown";
   try {
-    const context = await browser.newContext({
-      viewport: { width: 1600, height: 1000 },
-      deviceScaleFactor: 1,
-    });
-    await context.addInitScript(installProbe);
-    const page = await context.newPage();
+    const page = await browser.newPage();
     renderer = await page.evaluate(() => {
       const gl = document.createElement("canvas").getContext("webgl");
       const info = gl?.getExtension("WEBGL_debug_renderer_info");
       return gl && info ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) : "no webgl";
     });
+    await page.close();
     for (const file of files) {
-      const url = pathToFileURL(path.join(dir, file)).href;
-      const runs: RepResult[] = [];
+      const variants: { label: string; dir: string; runs: RepResult[] }[] =
+        values["baseline-dir"] === undefined
+          ? [{ label: "", dir, runs: [] }]
+          : [
+              { label: "baseline/", dir: path.resolve(values["baseline-dir"]), runs: [] },
+              { label: "candidate/", dir, runs: [] },
+            ];
       for (let rep = 0; rep < reps; rep++) {
-        runs.push(await runOnce(page, url));
-        process.stderr.write(`${file} rep ${rep + 1}/${reps} done\n`);
+        for (const variant of rep % 2 === 0 ? variants : [...variants].reverse()) {
+          const context = await browser.newContext({
+            viewport,
+            deviceScaleFactor,
+          });
+          await context.addInitScript(installProbe);
+          try {
+            const page = await context.newPage();
+            const url = pathToFileURL(path.join(variant.dir, file));
+            if (values["line-shape"] !== undefined)
+              url.searchParams.set(
+                "hip.PARALLEL_PLOT.lineShape",
+                JSON.stringify(values["line-shape"]),
+              );
+            if (values.quality !== undefined)
+              url.searchParams.set(
+                "hip.PARALLEL_PLOT.renderQuality",
+                JSON.stringify(values.quality),
+              );
+            variant.runs.push(await runOnce(page, url.href));
+            process.stderr.write(`${variant.label}${file} rep ${rep + 1}/${reps} done\n`);
+          } finally {
+            await context.close();
+          }
+        }
       }
-      results[file] = {
-        file,
-        htmlMB: statSync(path.join(dir, file)).size / 1e6,
-        reps: runs,
-        median: medianResult(runs),
-      };
+      for (const variant of variants)
+        results[variant.label + file] = {
+          file,
+          htmlMB: statSync(path.join(variant.dir, file)).size / 1e6,
+          reps: variant.runs,
+          median: medianResult(variant.runs),
+        };
     }
   } finally {
     await browser.close();
   }
 
   const header =
-    "size | HTML MB | decode ms | DOM ready ms | initial drawn ms | full redraw ms | drag frame p50 / p95 / max ms | stalls >50ms | brush end → lines ms | brush end → table ms | JS heap MB";
+    "size | HTML MB | decode ms | DOM ready ms | initial drawn ms | full redraw ms | drag frame p50 / p95 / max ms | stalls >50ms | brush end → lines ms | brush end → table ms | JS heap MB | WASM MB | idle frame ms | mode";
   console.log(`# ${values.label} (WebGL renderer: ${renderer})`);
   console.log(header);
   console.log(header.replace(/[^|]+/g, "---"));
   for (const [file, result] of Object.entries(results)) {
-    const [, rows, columns] = /^bench-(\d+)x(\d+)\.html$/.exec(file) ?? [];
-    console.log(formatRow(`${Number(rows) / 1000}k × ${columns}`, result));
+    const [, rows, columns] = /^bench-(\d+)x(\d+)\.html$/.exec(result.file) ?? [];
+    console.log(
+      formatRow(
+        `${file.startsWith("baseline/") ? "baseline " : file.startsWith("candidate/") ? "candidate " : ""}${Number(rows) / 1000}k × ${columns}`,
+        result,
+      ),
+    );
   }
   if (values.out !== undefined) {
+    mkdirSync(path.dirname(path.resolve(values.out)), { recursive: true });
     writeFileSync(
       values.out,
-      JSON.stringify({ label: values.label, renderer, results }, null, 2),
+      JSON.stringify(
+        {
+          label: values.label,
+          renderer,
+          environment: {
+            browser: browserVersion,
+            platform: process.platform,
+            arch: process.arch,
+            viewport,
+            deviceScaleFactor,
+          },
+          results,
+        },
+        null,
+        2,
+      ),
       "utf-8",
     );
   }

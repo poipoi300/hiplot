@@ -50,7 +50,11 @@ test("brushing labels the brush ends and enables Reset brushes", async ({ page }
 test("the line shape can be switched and is remembered", async ({ page }) => {
   await loadDemo(page);
   const group = page.getByRole("group", { name: "Line shape" });
-  await expect(group.getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "true");
+  await expect(group.getByRole("button", { name: "Curved" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(group.getByRole("button", { name: "Auto", exact: true })).toHaveCount(0);
   await group.getByRole("button", { name: "Straight" }).click();
   await expect(group.getByRole("button", { name: "Straight" })).toHaveAttribute(
     "aria-pressed",
@@ -156,15 +160,12 @@ test.describe("line highlight around brushes", () => {
   });
 });
 
-test("Auto names the line shape it chose and why", async ({ page }) => {
+test("curved lines are the default shape", async ({ page }) => {
   await loadDemo(page);
-  const auto = page
+  const curved = page
     .getByRole("group", { name: "Line shape" })
-    .getByRole("button", { name: "Auto", exact: true });
-  await expect(auto).toHaveAttribute(
-    "title",
-    /^Auto: curved for [\d,]+ rows \(straight above 10,000, where curves blur into one mass\)$/,
-  );
+    .getByRole("button", { name: "Curved", exact: true });
+  await expect(curved).toHaveAttribute("aria-pressed", "true");
 });
 
 test("in server mode the top panel fits one row at 1280 px, the input widening when edited", async ({
