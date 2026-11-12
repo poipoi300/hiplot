@@ -13,6 +13,8 @@ interface PlotProbe {
   webgl: object | null;
   interacting: boolean;
   foreground_ref: { current: HTMLCanvasElement };
+  exact_image_ref: { current: HTMLCanvasElement };
+  exact: { busy: boolean } | null;
   geometry: () => LineGeometry;
   brushMasks: () => BrushMasks;
   selectionMask: (geometry: LineGeometry) => Uint8Array;
@@ -48,10 +50,11 @@ async function load(page: Page): Promise<void> {
 }
 
 async function losslessImage(page: Page): Promise<string> {
-  return page.evaluate(() => {
+  return page.evaluate(async () => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
     pp.redrawLines();
-    const canvas = pp.foreground_ref.current;
+    while (pp.exact?.busy) await new Promise(requestAnimationFrame);
+    const canvas = pp.exact === null ? pp.foreground_ref.current : pp.exact_image_ref.current;
     const copy = document.createElement("canvas");
     copy.width = canvas.width;
     copy.height = canvas.height;
@@ -70,7 +73,7 @@ test("live WebGL brushes use typed flags and publish identical pixels and ordere
   page,
 }) => {
   await load(page);
-  const result = await page.evaluate(() => {
+  const result = await page.evaluate(async () => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
     const masks = pp.brushMasks();
     const selectedRows = masks.selectedRows.bind(masks);
@@ -97,13 +100,17 @@ test("live WebGL brushes use typed flags and publish identical pixels and ordere
     const expected = pp.props.rows_filtered
       .filter((_, row) => mask[row] === 1)
       .map((row) => row.uid);
-    const read = (): Uint8ClampedArray => {
+    const read = async (): Promise<Uint8ClampedArray> => {
       if (pp.webgl === null) {
         throw new Error("Expected a WebGL renderer");
       }
       // Compare submitted frames, not the gesture scheduler's deferred previous frame.
+      const interacting = pp.interacting;
+      pp.interacting = false;
       pp.drawWithWebGL(pp.webgl);
-      const canvas = pp.foreground_ref.current;
+      pp.interacting = interacting;
+      while (pp.exact?.busy) await new Promise(requestAnimationFrame);
+      const canvas = pp.exact === null ? pp.foreground_ref.current : pp.exact_image_ref.current;
       const copy = document.createElement("canvas");
       copy.width = canvas.width;
       copy.height = canvas.height;
@@ -114,11 +121,11 @@ test("live WebGL brushes use typed flags and publish identical pixels and ordere
       context.drawImage(canvas, 0, 0);
       return context.getImageData(0, 0, copy.width, copy.height).data;
     };
-    const before = read();
+    const before = await read();
     pp.endBrushGesture();
     // Rebuild selection flags from published objects, the pre-columnar reference path.
     (pp as unknown as { liveBrushMask: unknown }).liveBrushMask = null;
-    const after = read();
+    const after = await read();
     const published = (pp as unknown as { publishedSelection: Datapoint[] }).publishedSelection.map(
       (row) => row.uid,
     );
@@ -353,8 +360,6 @@ test("Canvas fallback still materializes every live brush selection", async ({ p
     }
     pp.startBrushGesture({ sourceEvent: { target }, y: pp.h * 0.2 }, dimension);
     pp.continueBrushGesture(pp.h * 0.6);
-    pp.cancelBrushMove();
-    pp.pplot.brush(false);
     const mask = pp.selectionMask(pp.geometry());
     const expected = pp.props.rows_filtered
       .filter((_, row) => mask[row] === 1)

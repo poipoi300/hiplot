@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import { chromium, type Page } from "@playwright/test";
 import type { HiPlot } from "../src/component";
 import type { HiPlotRenderOptions } from "../src/hiplot_web";
+import type { ExactReply } from "../src/parallel/exact_types";
 import type { ExactRenderer } from "../src/parallel/exact_worker";
 import type { FinishedFrame, LineFrame, WebGLLineRenderer } from "../src/parallel/webgl";
 import type { HiPlotExperiment } from "../src/types";
@@ -25,6 +26,8 @@ interface ContinuousProbe {
   exact:
     | (Pick<ExactRenderer, "busy" | "draw"> & {
         onImage: (bitmap: ImageBitmap, finished: FinishedFrame) => void;
+        worker: Worker | null;
+        connect: (worker: Worker) => void;
       })
     | null;
   continuous: {
@@ -129,7 +132,7 @@ export async function loadParallelBenchmark(
       }
       const continuous = pp as unknown as ContinuousProbe;
       return (
-        !pp.webgl.busy &&
+        !pp.linesBusy &&
         !continuous.exact?.busy &&
         (!continuous.continuousMode() ||
           (continuous.continuousFrame > 0 && !continuous.continuous?.busy))
@@ -248,10 +251,28 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
       fenceFrame(start);
     };
     const continuous = pp as unknown as ContinuousProbe;
-    if (continuous.exact !== null) {
-      const exact = continuous.exact;
-      let requestedAt = performance.now();
-      let inputAt: number | null = null;
+    const instrumentExact = (
+      exact: NonNullable<ContinuousProbe["exact"]>,
+      initialRequestedAt = performance.now(),
+      initialInputAt: number | null = null,
+    ): void => {
+      let requestedAt = initialRequestedAt;
+      let inputAt = initialInputAt;
+      const observe = (worker: Worker): void => {
+        const receive = worker.onmessage;
+        if (receive === null) throw new Error("Exact worker has no reply handler");
+        worker.onmessage = (event: MessageEvent<ExactReply>) => {
+          if (event.data.kind === "frame")
+            probe.samples.push({ stage: "fence", milliseconds: event.data.finished.milliseconds });
+          receive.call(worker, event);
+        };
+      };
+      const connect = exact.connect.bind(exact);
+      exact.connect = (worker) => {
+        connect(worker);
+        observe(worker);
+      };
+      if (exact.worker !== null) observe(exact.worker);
       const request = exact.draw.bind(exact);
       exact.draw = (frame, ...args) => {
         requestedAt = performance.now();
@@ -278,12 +299,30 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
           }),
         );
       };
-    }
+    };
+    if (continuous.exact !== null) instrumentExact(continuous.exact);
+    const host = pp as unknown as {
+      drawExactWorker: (frame: LineFrame, ...args: unknown[]) => boolean;
+      drawContinuous: () => void;
+    };
+    const drawWorker = host.drawExactWorker.bind(host);
+    host.drawExactWorker = (frame, ...args) => {
+      const previous = continuous.exact;
+      const started = performance.now();
+      const inputAt = probe.brushInputAt;
+      const available = drawWorker(frame, ...args);
+      if (continuous.exact !== null && continuous.exact !== previous) {
+        probe.lastFrame = frame;
+        probe.samples.push({ stage: "submit", milliseconds: performance.now() - started });
+        instrumentExact(continuous.exact, started, inputAt);
+      }
+      return available;
+    };
     if (continuous.continuous !== null) {
       let requestedAt = performance.now();
       let requestedInputAt: number | null = null;
-      const request = continuous.continuous.draw.bind(continuous.continuous);
-      continuous.continuous.draw = (...args) => {
+      const request = host.drawContinuous.bind(host);
+      host.drawContinuous = () => {
         requestedAt = performance.now();
         requestedInputAt = probe.brushInputAt;
         if (requestedInputAt !== null)
@@ -291,7 +330,7 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
             stage: "inputToRequest",
             milliseconds: requestedAt - requestedInputAt,
           });
-        request(...args);
+        request();
         probe.samples.push({
           stage: "continuousSubmit",
           milliseconds: performance.now() - requestedAt,
@@ -361,6 +400,15 @@ async function takeSamples(page: Page): Promise<Sample[]> {
 }
 
 export async function measureParallelBenchmark(page: Page, steps: number) {
+  // Complete any execution migration before instrumenting retained renderer instances.
+  await page.evaluate(() => {
+    (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot()?.redrawLines();
+  });
+  await settle(page);
+  await page.evaluate(() => {
+    (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot()?.redrawLines();
+  });
+  await settle(page);
   await instrumentParallelBenchmark(page);
   // A warmed, full-quality redraw before gestures; also captures the exact frame.
   await page.evaluate(() => {
@@ -376,7 +424,7 @@ export async function measureParallelBenchmark(page: Page, steps: number) {
   });
   for (const name of [
     shape.curved ? "Straight" : "Curved",
-    { auto: "Auto", straight: "Straight", curved: "Curved" }[shape.selected],
+    { straight: "Straight", curved: "Curved" }[shape.selected],
   ]) {
     await page
       .getByRole("group", { name: "Line shape" })

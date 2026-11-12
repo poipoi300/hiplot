@@ -1,5 +1,6 @@
 import { loadParallelBenchmark } from "../bench/parallel";
 import { expect, test } from "./fixtures";
+import { warmParallelWorker } from "./plot";
 
 interface ContextWindow {
   __parallelProbe: {
@@ -19,6 +20,7 @@ test("lost worker WebGL preserves histograms and subsequent images via CPU", asy
     { rows: 300, columns: 2, discrete: false, seed: 20261109 },
     "low",
   );
+  await warmParallelWorker(page);
   const worker = page.workers()[0];
   expect(worker).toBeDefined();
   await worker.evaluate(() => {

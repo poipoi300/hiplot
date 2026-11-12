@@ -6,9 +6,42 @@ import {
   FramePerformance,
   HARDWARE_CONTINUOUS_ABOVE_ROWS,
   isRenderQuality,
+  MAX_LOCAL_RENDER_BYTES,
   MEASURED_FRAMES,
+  RenderExecution,
   SLOW_FRAME_MS,
 } from "./performance";
+
+describe("render execution", () => {
+  test("large working sets skip local calibration independently of row count or mode", () => {
+    const execution = new RenderExecution();
+    execution.recordWorkingSet(MAX_LOCAL_RENDER_BYTES);
+    expect(execution.useWorker).toBe(false);
+    execution.recordWorkingSet(MAX_LOCAL_RENDER_BYTES + 1);
+    expect(execution.useWorker).toBe(true);
+    execution.recordWorkingSet(1);
+    execution.record(1);
+    expect(execution.useWorker).toBe(true);
+  });
+  test("cheap completed draws keep either rendering mode local", () => {
+    const execution = new RenderExecution();
+    for (const milliseconds of [0, 8, 16, SLOW_FRAME_MS]) execution.record(milliseconds);
+    expect(execution.useWorker).toBe(false);
+  });
+
+  test("a cold slow draw needs confirmation before the session promotes permanently", () => {
+    const execution = new RenderExecution();
+    execution.record(5);
+    execution.record(SLOW_FRAME_MS + 1);
+    expect(execution.useWorker).toBe(false);
+    execution.record(1);
+    expect(execution.useWorker).toBe(false);
+    execution.record(SLOW_FRAME_MS + 1);
+    expect(execution.useWorker).toBe(true);
+    execution.record(1);
+    expect(execution.useWorker).toBe(true);
+  });
+});
 
 function record(performance: FramePerformance, milliseconds: number, count: number): boolean[] {
   return Array.from({ length: count }, () => performance.recordFullFrame(milliseconds));

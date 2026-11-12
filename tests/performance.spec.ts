@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
+import { warmParallelWorker } from "./plot";
 
 interface DrawnFrame {
   draft: boolean;
@@ -7,8 +8,18 @@ interface DrawnFrame {
   drawnRows: number;
 }
 interface QualityProbe {
+  linesBusy: boolean;
+  draftFrame: () => boolean;
+  geometry: () => { rows: readonly unknown[] };
+  lineFrame: (
+    geometry: unknown,
+    mask: Uint8Array,
+  ) => DrawnFrame & { selectedCount: number; contextCount: number };
+  drawWithWebGL: (renderer: QualityProbe["webgl"]) => void;
+  recordFrame: (frame: { milliseconds: number; fullQuality: boolean }) => void;
   webgl: {
     draw: (frame: DrawnFrame) => void;
+    drawCooperative: (frame: DrawnFrame, isCurrent?: () => boolean) => Promise<void>;
     present: (pixels: Uint8ClampedArray, width: number, height: number) => void;
     finishedFrame: () => { milliseconds: number; fullQuality: boolean } | null;
     busy: boolean;
@@ -49,6 +60,14 @@ async function upload(page: Page, count: number, state = ""): Promise<void> {
 }
 
 async function recordFrames(page: Page): Promise<void> {
+  const before = await page.evaluate(() => {
+    const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot();
+    if (!pp?.continuous) return null;
+    const before = pp.continuousFrame;
+    pp.redrawLines();
+    return before;
+  });
+  if (before !== null) await waitForContinuous(page, before);
   await page.evaluate(() => {
     const win = window as unknown as HiPlotWindow;
     const pp = win.hiplot_last_instance?.parallelPlot();
@@ -56,25 +75,26 @@ async function recordFrames(page: Page): Promise<void> {
     win.__frames = [];
     win.__presentations = 0;
     win.__continuousRows = [];
-    if (pp.continuous !== null) {
-      const continuousDraw = pp.continuous.draw.bind(pp.continuous);
-      pp.continuous.draw = (frame, colors, mask) => {
+    const lineFrame = pp.lineFrame.bind(pp);
+    pp.lineFrame = (geometry, mask) => {
+      const frame = lineFrame(geometry, mask);
+      if (pp.continuousMode()) {
         win.__continuousRows?.push(
           frame.drawnRows,
           mask.length,
           frame.selectedCount + frame.contextCount,
         );
-        continuousDraw(frame, colors, mask);
-      };
-    }
-    const draw = pp.webgl.draw.bind(pp.webgl);
-    pp.webgl.draw = (frame) => {
+      }
+      return frame;
+    };
+    const draw = pp.drawWithWebGL.bind(pp);
+    pp.drawWithWebGL = (renderer) => {
       win.__frames?.push({
-        draft: frame.draft,
-        resolution: frame.resolution,
-        drawnRows: frame.drawnRows,
+        draft: pp.draftFrame(),
+        resolution: 1,
+        drawnRows: pp.geometry().rows.length,
       });
-      draw(frame);
+      draw(renderer);
     };
     const present = pp.webgl.present.bind(pp.webgl);
     pp.webgl.present = (...args) => {
@@ -179,10 +199,13 @@ test("slow exact frames engage automatic binning and the menu can force exact li
   await page.evaluate(async () => {
     const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot();
     if (!pp) throw new Error("No parallel plot");
-    pp.webgl.finishedFrame = () => ({ milliseconds: 200, fullQuality: true });
+    const recordFrame = pp.recordFrame.bind(pp);
+    pp.recordFrame = () => recordFrame({ milliseconds: 200, fullQuality: true });
     for (let i = 0; i < 5; ++i) {
       pp.redrawLines();
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      do {
+        await new Promise(requestAnimationFrame);
+      } while (pp.linesBusy);
     }
   });
   await waitForContinuous(page);
@@ -265,6 +288,8 @@ test("continuous brushing presents density while worker jobs are slower than inp
 }) => {
   await upload(page, 12_000, `&hip.PARALLEL_PLOT.renderQuality=${encodeURIComponent('"low"')}`);
   await waitForContinuous(page);
+  await recordFrames(page);
+  await warmParallelWorker(page);
   const result = await page.evaluate(async () => {
     const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot() as
       | (QualityProbe & {

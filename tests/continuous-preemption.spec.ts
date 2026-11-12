@@ -3,6 +3,7 @@ import type { ContinuousImage } from "../src/parallel/continuous_types";
 import type { ContinuousRenderer } from "../src/parallel/continuous_worker";
 import type { LineColors, LineFrame } from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
+import { warmParallelWorker } from "./plot";
 
 interface PreemptionWindow {
   __parallelProbe: {
@@ -34,6 +35,7 @@ test("a real new gesture overtakes release refinement before its image is publis
     { rows: 4096, columns: 6, discrete: false, seed: 20261109 },
     "low",
   );
+  await warmParallelWorker(page);
   const worker = page.workers()[0];
   await worker.evaluate(() => {
     const scope = self as unknown as WorkerEvents;
