@@ -25,7 +25,7 @@ import { ContextMenu } from "./contextmenu";
 import { type HiPlotDataControlProps, SelectedCountProgressBar } from "./controls";
 import { StaticDataProvider } from "./dataproviders/static";
 import { apply_filter, apply_filters, type Filter, FilterType, isFilter } from "./filters";
-import { ErrorDisplay, HeaderBar } from "./header";
+import { HeaderBar } from "./header";
 import style from "./hiplot.module.css";
 import { infertypes, type ParamDef, type ParamDefMap } from "./infertypes";
 import { ColorLegend } from "./legend";
@@ -149,11 +149,7 @@ class PluginBoundary extends React.Component<PluginBoundaryProps, PluginBoundary
   }
   render() {
     if (this.state.error !== null) {
-      return (
-        <div className="alert alert-danger" role="alert">
-          The {this.props.name} display could not be drawn: {this.state.error}
-        </div>
-      );
+      return null;
     }
     return <React.Fragment key={this.state.generation}>{this.props.children}</React.Fragment>;
   }
@@ -549,18 +545,20 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     if (datasets.rows_all_unfiltered === datasets.rows_filtered) {
       initFilters = [];
     }
-    const params_def = infertypes(
+    const params_def_unfiltered = infertypes(
       this.state.persistentState.children(PSTATE_PARAMS),
-      datasets.rows_filtered,
+      datasets.rows_all_unfiltered,
       experiment.parameters_definition,
+      this.notify,
     );
-    const params_def_unfiltered =
+    const params_def =
       datasets.rows_filtered === datasets.rows_all_unfiltered
-        ? params_def
+        ? params_def_unfiltered
         : infertypes(
             this.state.persistentState.children(PSTATE_PARAMS),
-            datasets.rows_all_unfiltered,
-            experiment.parameters_definition,
+            datasets.rows_filtered,
+            params_def_unfiltered,
+            this.notify,
           );
 
     // Color handling
@@ -712,6 +710,13 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     }
   }
   componentDidUpdate(prevProps: HiPlotProps, prevState: HiPlotState): void {
+    if (
+      this.state.loadStatus === HiPlotLoadStatus.Error &&
+      this.state.error !== null &&
+      (prevState.loadStatus !== HiPlotLoadStatus.Error || prevState.error !== this.state.error)
+    ) {
+      this.notify(this.state.error);
+    }
     if (prevProps.dark !== this.props.dark) {
       this.applyDarkModeSetting(this.props.dark);
     }
@@ -748,7 +753,6 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       prom
         .then((data) => {
           if ("error" in data) {
-            console.log("Experiment loading failed", data);
             this.setState({
               loadStatus: HiPlotLoadStatus.Error,
               experiment: null,
@@ -762,13 +766,15 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
           if (error instanceof CanceledLoad) {
             return;
           }
-          console.log("Error", error);
+          console.error("Experiment loading failed", error);
           this.setState({
             loadStatus: HiPlotLoadStatus.Error,
             experiment: null,
-            error: "HTTP error, check server logs / javascript console",
+            error:
+              error instanceof Error
+                ? error.message
+                : "Could not load the experiment. Check the server connection and try again.",
           });
-          throw error;
         });
     }
   }
@@ -796,6 +802,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
             [column]: {
               ...state.params_def[column],
               type: possible_type,
+              type_requested: possible_type,
             },
           },
         }));
@@ -875,6 +882,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
         this.state.persistentState.children(PSTATE_PARAMS),
         rows_filtered,
         this.state.params_def,
+        this.notify,
       ),
     );
     return new_pd;
@@ -1034,9 +1042,6 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
             onClearSelection={this.clearSelection}
             {...controlProps}
           />
-          {this.state.loadStatus === HiPlotLoadStatus.Error && this.state.error !== null && (
-            <ErrorDisplay error={this.state.error} />
-          )}
           {this.state.loadStatus !== HiPlotLoadStatus.Loaded && (
             <DocAndCredits dark={this.state.dark} />
           )}

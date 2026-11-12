@@ -8,12 +8,18 @@
   flex-direction: column;
   align-items: flex-end;
   gap: 8px;
-  pointer-events: none;
+  width: min(420px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--hip-axis) var(--hip-surface);
 }
 .toast {
   display: flex;
   align-items: flex-start;
   gap: 10px;
+  flex: none;
+  width: 100%;
   max-width: 420px;
   padding: 10px 10px 10px 14px;
   border: 1px solid var(--hip-rule);
@@ -36,25 +42,20 @@
 }
 .message {
   flex: 1;
+  min-width: 0;
   overflow-wrap: anywhere;
 }
-.dismiss {
-  display: inline-flex;
+.actions {
+  display: flex;
   align-items: center;
-  justify-content: center;
   flex: none;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--hip-muted);
-  cursor: pointer;
+  gap: 4px;
 }
-.dismiss:hover {
-  background: var(--hip-brush-fill);
-  color: var(--hip-fg);
+.status {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--hip-muted);
 }
 
 @keyframes toast-in {

@@ -25,6 +25,109 @@ const range = (count: number, map: (i: number) => number): number[] =>
   Array.from({ length: count }, (_, i) => map(i));
 
 describe("type inference", () => {
+  test("columns without finite numbers render categorically and warn", () => {
+    for (const values of [
+      [null],
+      [undefined],
+      [NaN, Infinity, -Infinity],
+      ["", "NA", "N/A", "null", "None", "nan", "inf", "-inf"],
+    ]) {
+      const warnings: string[] = [];
+      const pd = infertypes(
+        new PersistentStateInMemory("", {}),
+        rows("load_checkpoint", values),
+        {},
+        (message) => warnings.push(message),
+      ).load_checkpoint;
+      expect(pd.type).toBe(ParamType.CATEGORICAL);
+      expect(pd.type_options).toEqual([ParamType.CATEGORICAL]);
+      expect(pd.distinct_values).toEqual(
+        Array.from(new Set(values.filter((value) => value !== undefined))),
+      );
+      expect(create_d3_scale(pd).kind).toBe("categorical");
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('Column "load_checkpoint"');
+      expect(warnings[0]).toContain("no finite numeric values");
+    }
+  });
+
+  test("unusable saved scales fall back to a supported type and warn", () => {
+    for (const [values, requested, expected] of [
+      [["checkpoint.pt", "latest.pt"], ParamType.NUMERIC, ParamType.CATEGORICAL],
+      [[null, "NA"], ParamType.NUMERICPERCENTILE, ParamType.CATEGORICAL],
+      [[null], ParamType.TIMESTAMP, ParamType.CATEGORICAL],
+      [[-1, 0, 1], ParamType.NUMERICLOG, ParamType.NUMERIC],
+    ] as const) {
+      const warnings: string[] = [];
+      const state = new PersistentStateInMemory("", { "x.type": requested });
+      const pd = infertypes(state, rows("x", [...values]), {}, (message) =>
+        warnings.push(message),
+      ).x;
+      expect(pd.type).toBe(expected);
+      expect(pd.type_options).not.toContain(requested);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('Column "x"');
+      expect(create_d3_scale(pd).paramType).toBe(expected);
+      expect(state.children("x").get("type")).toBe(requested);
+    }
+  });
+
+  test("a temporarily unusable numeric column regains its scale when rows are restored", () => {
+    const state = new PersistentStateInMemory("", {});
+    const allRows = rows("x", [1, 2, 3, null]);
+    const original = infertypes(state, allRows);
+    const filtered = infertypes(state, [allRows[3]], original);
+    expect(filtered.x.type).toBe(ParamType.CATEGORICAL);
+    const restored = infertypes(state, allRows, filtered);
+    expect(restored.x.type).toBe(ParamType.NUMERIC);
+    expect(create_d3_scale(restored.x).kind).toBe("continuous");
+  });
+
+  test("explicit categorical missing-value columns do not warn", () => {
+    const warnings: string[] = [];
+    const state = new PersistentStateInMemory("", { "x.type": ParamType.CATEGORICAL });
+    const pd = infertypes(state, rows("x", [null]), {}, (message) => warnings.push(message)).x;
+    expect(pd.type).toBe(ParamType.CATEGORICAL);
+    expect(warnings).toEqual([]);
+  });
+
+  test("finite explicit bounds keep numeric scales usable without finite samples", () => {
+    for (const type of [ParamType.NUMERIC, ParamType.NUMERICLOG, ParamType.TIMESTAMP]) {
+      const warnings: string[] = [];
+      const hint = { ...infer("x", [null]), type, force_value_min: 1, force_value_max: 10 };
+      const pd = infertypes(
+        new PersistentStateInMemory("", {}),
+        rows("x", [null]),
+        { x: { ...hint, type_requested: type } },
+        (message) => warnings.push(message),
+      ).x;
+      expect(pd.type).toBe(type);
+      const scale = create_d3_scale(pd);
+      expect(scale.kind === "continuous" && scale.domain()).toEqual([1, 10]);
+      expect(warnings).toEqual([]);
+    }
+  });
+
+  test("percentile scales need samples even when explicit bounds exist", () => {
+    const hint = {
+      ...infer("x", [null]),
+      type: ParamType.NUMERICPERCENTILE,
+      type_requested: ParamType.NUMERICPERCENTILE,
+      force_value_min: 1,
+      force_value_max: 10,
+    };
+    const warnings: string[] = [];
+    const pd = infertypes(
+      new PersistentStateInMemory("", {}),
+      rows("x", [null]),
+      { x: hint },
+      (message) => warnings.push(message),
+    ).x;
+    expect(create_d3_scale(pd).kind).toBe("categorical");
+    expect(pd.type_options).not.toContain(ParamType.NUMERICPERCENTILE);
+    expect(warnings).toHaveLength(1);
+  });
+
   test("numeric uids make a numeric column, as a trial index", () => {
     const table = rows(
       "loss",

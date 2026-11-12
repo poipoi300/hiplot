@@ -212,8 +212,9 @@ pills. Borders are 1 px hairlines in `--hip-rule`.
   ink and an 18 px round clear button. The lasso being drawn is a dashed
   1.5 px accent outline over the accent tint, under a crosshair.
 - **Toast**: bottom-right, surface background, floating shadow, ink text;
-  errors carry a red dot like Exclude. Disappears after a few seconds or on
-  dismiss.
+  errors carry a red dot like Exclude. Messages stay until dismissed and have
+  a Copy button with success or failure feedback. The stack scrolls within
+  the viewport when messages accumulate.
 - **Brush tags**: pills in the brush stroke color with background-colored
   600 text, at the top and bottom edges of each brush (one tag when a
   categorical brush covers a single category), in the notation of the
