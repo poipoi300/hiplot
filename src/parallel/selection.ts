@@ -75,6 +75,11 @@ export class BrushMasks {
   private nextId = 0;
   private disposed = false;
   private failure: Error | null = null;
+  private workerWasmBytes = 0;
+
+  get wasmMemoryBytes(): number {
+    return this.workerWasmBytes;
+  }
 
   constructor(
     rows: ReadonlyArray<Datapoint>,
@@ -146,6 +151,7 @@ export class BrushMasks {
         }
         this.pending.delete(data.id);
         pending.column.index = data.index;
+        this.workerWasmBytes = data.wasmMemoryBytes ?? 0;
         pending.resolve();
       };
       worker.onerror = (event) => this.fail(new Error(`Selection worker failed: ${event.message}`));

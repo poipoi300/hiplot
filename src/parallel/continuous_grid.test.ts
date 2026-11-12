@@ -5,11 +5,31 @@ import {
   type ContinuousHistogram,
   type ContinuousRequest,
   type ContinuousUpdate,
+  continuousHistogramMinimumBytes,
   EMPTY_COLOR_KEY,
   MAX_DENSITY_BINS,
   MIN_DENSITY_BINS,
 } from "./continuous_types";
 import type { LineColors } from "./webgl";
+
+test("histogram working-set estimates match fixed retained arrays at each bin bound", () => {
+  expect(continuousHistogramMinimumBytes(0, 400)).toBe(0);
+  for (const height of [20, 300, 1100]) {
+    const input = request({ height });
+    const update = new ContinuousKernel().update(input);
+    const fixedBytes = update.pairs.reduce(
+      (total, pair) =>
+        total +
+        Object.values(pair.histogram).reduce(
+          (sum, value) => sum + (ArrayBuffer.isView(value) ? value.byteLength : 0),
+          0,
+        ) -
+        pair.histogram.occupied.byteLength,
+      0,
+    );
+    expect(continuousHistogramMinimumBytes(input.axes.length, height)).toBe(fixedBytes);
+  }
+});
 
 const palette = [
   { r: 12.5, g: 47, b: 255 },
@@ -993,6 +1013,9 @@ describe("malformed continuous input", () => {
   test("invalid heights, IDs and axis positions fail loudly", () => {
     for (const height of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(() => new ContinuousKernel().update(request({ height }))).toThrow("axis height");
+    }
+    for (const pixelRatio of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => new ContinuousKernel().update(request({ pixelRatio }))).toThrow("pixel ratio");
     }
     for (const id of [-1, 0.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
       expect(() =>

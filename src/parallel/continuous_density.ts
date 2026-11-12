@@ -1,5 +1,6 @@
 import type { RGB } from "../lib/colors";
 import { linkProgram } from "../lib/webgl";
+import { rustKernels, rustMemoryBytes } from "../wasm/kernels";
 import { CONTINUOUS_CURVE_GLSL, continuousCurve } from "./continuous_curve";
 import {
   type ContinuousReconstructionPlan,
@@ -18,6 +19,7 @@ import {
   type ContinuousUpdate,
   EMPTY_COLOR_KEY,
 } from "./continuous_types";
+import { HistogramTextures } from "./histogram_upload";
 import { densityReference, type LineColors } from "./webgl";
 
 /** Sparse grids query every intersecting occupied cell; dense grids reconstruct the field. */
@@ -44,6 +46,7 @@ export function continuousSparseIndex(
   const ends = new Int32Array(starts.length);
   const counts = new Uint32Array(columns * tiles);
   const spacing = style.height / (histogram.bins - 1);
+  const ratio = style.pixelRatio ?? 1;
   const stride = histogram.bins + 1;
   for (let x = 0; x < columns; ++x) {
     const position = ((x + 0.5) * gap) / columns;
@@ -64,10 +67,11 @@ export function continuousSparseIndex(
         : ((1 - weight) * left + weight * right) * spacing;
       const slope = missing ? 0 : (derivative * (right - left) * spacing) / gap;
       const radius =
-        Math.max(style.lineWidth / 2, 0.5) * Math.hypot(1, slope) + (1 + Math.abs(slope)) / 2;
+        Math.max(style.lineWidth / 2, 0.5 / ratio) * Math.hypot(1, slope) +
+        (1 + Math.abs(slope)) / (2 * ratio);
       // Whole-pixel outward rounding also includes float-roundoff at tile boundaries.
-      const first = Math.max(0, Math.floor(center - radius - 0.5));
-      const last = Math.min(height - 1, Math.ceil(center + radius - 0.5));
+      const first = Math.max(0, Math.floor((center - radius) * ratio - 0.5));
+      const last = Math.min(height - 1, Math.ceil((center + radius) * ratio - 0.5));
       if (first > last) continue;
       const start = Math.floor(first / DENSITY_TILE_ROWS);
       const end = Math.floor(last / DENSITY_TILE_ROWS);
@@ -111,7 +115,8 @@ export interface ContinuousPixel {
   winnerCoverage: number;
 }
 
-type DensityStyle = Pick<ContinuousRequest, "height" | "lineWidth" | "curved" | "colorMode">;
+type DensityStyle = Pick<ContinuousRequest, "height" | "lineWidth" | "curved" | "colorMode"> &
+  Partial<Pick<ContinuousRequest, "pixelRatio">>;
 
 interface SparseDensityLayers {
   selected: boolean;
@@ -119,20 +124,29 @@ interface SparseDensityLayers {
   cells: Uint32Array;
 }
 
-function sparseDensityLayers(histogram: ContinuousHistogram): SparseDensityLayers {
+function sparseDensityLayers(
+  histogram: ContinuousHistogram,
+  includeContext = true,
+): SparseDensityLayers {
   let selectedCount = 0;
   let contextCount = 0;
   for (const cell of histogram.occupied) {
     if (histogram.selected[cell] > 0) selectedCount++;
-    if (histogram.context[cell] > 0) contextCount++;
-    if (selectedCount > SPARSE_DENSITY_CELLS && contextCount > SPARSE_DENSITY_CELLS)
-      return { selected: false, context: false, cells: new Uint32Array() };
+    if (includeContext && histogram.context[cell] > 0) contextCount++;
+    if (
+      selectedCount > SPARSE_DENSITY_CELLS &&
+      (!includeContext || contextCount > SPARSE_DENSITY_CELLS)
+    )
+      return { selected: false, context: !includeContext, cells: new Uint32Array() };
   }
   const selected = selectedCount <= SPARSE_DENSITY_CELLS;
   const context = contextCount <= SPARSE_DENSITY_CELLS;
   const cells: number[] = [];
   for (const cell of histogram.occupied) {
-    if ((selected && histogram.selected[cell] > 0) || (context && histogram.context[cell] > 0))
+    if (
+      (selected && histogram.selected[cell] > 0) ||
+      (includeContext && context && histogram.context[cell] > 0)
+    )
       cells.push(cell);
   }
   return { selected, context, cells: Uint32Array.from(cells) };
@@ -252,6 +266,7 @@ function evaluatePixelLayers(
   const { bins } = histogram;
   const stride = bins + 1;
   const spacing = style.height / (bins - 1);
+  const ratio = style.pixelRatio ?? 1;
   const t = x / gap;
   const [w, derivative] = style.curved ? continuousCurve(t) : [t, 1];
   const exact = (left: number, right: number, cell: number, sparsePhase: boolean): void => {
@@ -262,7 +277,7 @@ function evaluatePixelLayers(
       ? (left === bins ? right : left) * spacing
       : ((1 - w) * left + w * right) * spacing;
     const slope = missing ? 0 : (derivative * (right - left) * spacing) / gap;
-    const coverage = continuousStripCoverage(y - center, slope, style.lineWidth);
+    const coverage = continuousStripCoverage((y - center) * ratio, slope, style.lineWidth * ratio);
     addCell(
       output,
       histogram,
@@ -285,7 +300,7 @@ function evaluatePixelLayers(
   const weight = reverse ? 1 - w : w;
   for (let a = 0; a < bins; ++a) {
     const b = (y / spacing - (1 - weight) * a) / weight;
-    const radius = 0.5 / (weight * spacing);
+    const radius = 0.5 / (weight * spacing * ratio);
     // Integrate the reconstructed field over the vertical pixel footprint before tone mapping.
     const first = Math.max(0, Math.ceil(b - radius - 1));
     const last = Math.min(bins - 1, Math.floor(b + radius + 1));
@@ -300,10 +315,14 @@ function evaluatePixelLayers(
       const localSlope = (derivative * (right - left) * spacing) / gap;
       const factor =
         (style.lineWidth * Math.hypot(1, localSlope)) /
-        (weight * spacing * stripCenterCoverage(localSlope, style.lineWidth));
+        (weight * spacing * stripCenterCoverage(localSlope, style.lineWidth * ratio));
       // Dense bins reconstruct a continuous endpoint interval, not coincident bin-center lines.
       const distance = Math.max(0, Math.abs(y - center) - spacing / 2);
-      const coverage = continuousStripCoverage(distance, localSlope, style.lineWidth);
+      const coverage = continuousStripCoverage(
+        distance * ratio,
+        localSlope,
+        style.lineWidth * ratio,
+      );
       addCell(
         output,
         histogram,
@@ -428,27 +447,27 @@ function pairGap(pair: ContinuousPair): number {
   return Math.round((pair.right.x - pair.left.x) * 65536) / 65536;
 }
 
-/** Reduce original endpoints once, preserving the exact flat outer-strip footprint. */
-function evaluateContinuousMarginal(
+/** Float64 reference and capability fallback for the Rust endpoint reduction. */
+export function reduceContinuousMarginalCPU(
   marginal: ContinuousMarginal,
-  frame: ContinuousRequest,
-  update: ContinuousUpdate,
-  columns: number,
-  separateLayers: boolean,
-): ContinuousPairImage {
-  const height = Math.max(1, Math.ceil(frame.height));
+  colors: LineColors,
+  height: number,
+  lineWidth: number,
+  colorMode: ContinuousRequest["colorMode"],
+  pixelRatio = 1,
+): ContinuousPixel[] {
+  lineWidth *= pixelRatio;
   const rows = Array.from({ length: height }, emptyPixel);
-  const { colors } = update;
   const palette =
     colors.colorMapBins === 0
       ? colors.palette.map(({ r, g, b }) =>
           [r, g, b].map((channel) => Math.round((channel / 255) * COLOR_CHANNEL_SCALE)),
         )
       : [];
-  const halfWidth = Math.max(frame.lineWidth / 2, 0.5);
-  const lineScale = Math.min(frame.lineWidth, 1);
+  const halfWidth = Math.max(lineWidth / 2, 0.5);
+  const lineScale = Math.min(lineWidth, 1);
   for (let row = 0; row < marginal.pixels.length; ++row) {
-    const endpoint = marginal.pixels[row];
+    const endpoint = marginal.pixels[row] * pixelRatio;
     if (!Number.isFinite(endpoint)) continue;
     const rank = colors.bins[row];
     const selected = marginal.selection[row] !== 0;
@@ -475,10 +494,10 @@ function evaluateContinuousMarginal(
         pixel.color1 += coverage;
       } else {
         pixel.color0 += rank * coverage;
-        if (frame.colorMode !== "mean") {
+        if (colorMode !== "mean") {
           if (
             pixel.winner === EMPTY_COLOR_KEY ||
-            (frame.colorMode === "lowest" ? rank < pixel.winner : rank > pixel.winner)
+            (colorMode === "lowest" ? rank < pixel.winner : rank > pixel.winner)
           ) {
             pixel.winner = rank;
             pixel.winnerCoverage = coverage;
@@ -488,6 +507,37 @@ function evaluateContinuousMarginal(
       }
     }
   }
+  return rows;
+}
+
+/** Reduce original endpoints once, preserving the exact flat outer-strip footprint. */
+function evaluateContinuousMarginal(
+  marginal: ContinuousMarginal,
+  frame: ContinuousRequest,
+  update: ContinuousUpdate,
+  columns: number,
+  separateLayers: boolean,
+): ContinuousPairImage {
+  const height = Math.max(1, Math.ceil(frame.height * frame.pixelRatio));
+  const { colors } = update;
+  const reduced = rustKernels()?.marginal(
+    marginal,
+    colors,
+    height,
+    frame.lineWidth,
+    frame.colorMode,
+    frame.pixelRatio,
+  );
+  const rows =
+    reduced ??
+    reduceContinuousMarginalCPU(
+      marginal,
+      colors,
+      height,
+      frame.lineWidth,
+      frame.colorMode,
+      frame.pixelRatio,
+    );
   const pixels = new Uint8ClampedArray(columns * height * 4);
   const contextPixels = separateLayers ? new Uint8ClampedArray(pixels.length) : undefined;
   const selectedFrame = separateLayers ? { ...frame, contextAlpha: 0 } : frame;
@@ -527,18 +577,18 @@ export function evaluateContinuousPairCPU(
   pair: ContinuousPair,
   frame: ContinuousRequest,
   update: ContinuousUpdate,
-  columns = Math.max(1, Math.ceil(pairGap(pair))),
+  columns = Math.max(1, Math.ceil(pairGap(pair) * frame.pixelRatio)),
   separateLayers = false,
 ): ContinuousPairImage {
   if (pair.marginal !== undefined)
     return evaluateContinuousMarginal(pair.marginal, frame, update, columns, separateLayers);
-  const height = Math.max(1, Math.ceil(frame.height));
+  const height = Math.max(1, Math.ceil(frame.height * frame.pixelRatio));
   const pixels = new Uint8ClampedArray(columns * height * 4);
   const contextPixels = separateLayers ? new Uint8ClampedArray(pixels.length) : undefined;
   const selectedFrame = separateLayers ? { ...frame, contextAlpha: 0 } : frame;
   const contextReference = densityReference(update.contextCount, frame.height);
   const gap = pairGap(pair);
-  const layers = sparseDensityLayers(pair.histogram);
+  const layers = sparseDensityLayers(pair.histogram, frame.contextAlpha > 0);
   const spatial = continuousSparseIndex(pair.histogram, frame, gap, columns, height, layers.cells);
   for (let y = 0; y < height; ++y) {
     for (let x = 0; x < columns; ++x) {
@@ -548,7 +598,7 @@ export function evaluateContinuousPairCPU(
         frame,
         gap,
         ((x + 0.5) * gap) / columns,
-        y + 0.5,
+        (y + 0.5) / frame.pixelRatio,
         layers,
         spatial.indices,
         spatial.ranges[bucket],
@@ -598,6 +648,7 @@ uniform bool u_sparseContext;
 uniform bool u_curved;
 uniform bool u_separateLayers;
 uniform float u_height;
+uniform float u_pixelRatio;
 uniform float u_gap;
 uniform float u_columns;
 uniform float u_lineWidth;
@@ -627,19 +678,20 @@ float centerCoverage(float slope) {
   // corner triangles have total area excess^2 / abs(slope), in unnormalized units.
   float magnitude = abs(slope);
   float excess = max(0.0, 0.5 * (1.0 + magnitude) -
-    max(u_lineWidth * 0.5, 0.5) * sqrt(1.0 + slope * slope));
+    max(u_lineWidth * u_pixelRatio * 0.5, 0.5) * sqrt(1.0 + slope * slope));
   return excess <= 0.0 ? 1.0 : 1.0 - excess * excess / magnitude;
 }
 float stripCoverage(float distanceY, float slope) {
   float length = sqrt(1.0 + slope * slope);
   float narrow = min(1.0, abs(slope)) / length;
   float wide = max(1.0, abs(slope)) / length;
-  float halfWidth = max(u_lineWidth * 0.5, 0.5);
+  float halfWidth = max(u_lineWidth * u_pixelRatio * 0.5, 0.5);
+  distanceY *= u_pixelRatio;
   // Reject disjoint square/strip footprints before evaluating their intersection.
   if (abs(distanceY) >= halfWidth * length + 0.5 * (1.0 + abs(slope))) return 0.0;
   float across = distanceY / length;
   return max(0.0, (squareBelow(across + halfWidth, narrow, wide) -
-    squareBelow(across - halfWidth, narrow, wide)) / centerCoverage(slope) * min(u_lineWidth, 1.0));
+    squareBelow(across - halfWidth, narrow, wide)) / centerCoverage(slope) * min(u_lineWidth * u_pixelRatio, 1.0));
 }
 float endpointTentIntegral(float position) {
   float rising = clamp(position + 1.0, 0.0, 1.0);
@@ -692,7 +744,7 @@ void main() {
   contextLayer = vec4(0.0);
   float x = gl_FragCoord.x * u_gap / u_columns;
   // The FBO's low row deliberately stores the image's top row, as does the CPU reference.
-  float y = gl_FragCoord.y;
+  float y = gl_FragCoord.y / u_pixelRatio;
   float t = x / u_gap;
   vec2 profile = u_curved ? continuousCurve(t) : vec2(t, 1.0);
   float w = profile.x;
@@ -711,7 +763,7 @@ void main() {
     float weight = reverse ? 1.0 - w : w;
     for (int a = 0; a < u_bins; ++a) {
       float b = (y / spacing - (1.0 - weight) * float(a)) / weight;
-      float radius = 0.5 / (weight * spacing);
+      float radius = 0.5 / (weight * spacing * u_pixelRatio);
       int first = max(0, int(ceil(b - radius - 1.0)));
       int last = min(u_bins - 1, int(floor(b + radius + 1.0)));
       for (int endpoint = first; endpoint <= last; ++endpoint) {
@@ -727,7 +779,7 @@ void main() {
       }
     }
     // Horizontal missing-value stubs intersect only the bins inside this pixel's footprint.
-    float radius = max(u_lineWidth * 0.5, 0.5) + 0.5;
+    float radius = max(u_lineWidth * 0.5, 0.5 / u_pixelRatio) + 0.5 / u_pixelRatio;
     int firstStub = max(0, int(ceil((y - radius) / spacing)));
     int lastStub = min(u_bins - 1, int(floor((y + radius) / spacing)));
     for (int a = firstStub; a <= lastStub; ++a) {
@@ -760,6 +812,7 @@ void main() {
 export class ContinuousWebGLEvaluator {
   private readonly program: WebGLProgram;
   private readonly textures: WebGLTexture[];
+  private readonly histograms: HistogramTextures;
   private readonly framebuffer: WebGLFramebuffer;
   private readonly image: WebGLTexture;
   private readonly contextImage: WebGLTexture;
@@ -774,7 +827,8 @@ export class ContinuousWebGLEvaluator {
       if (result === null) throw new Error("Cannot allocate continuous density texture");
       return result;
     };
-    this.textures = Array.from({ length: 5 }, texture);
+    this.textures = Array.from({ length: 3 }, texture);
+    this.histograms = new HistogramTextures(gl);
     this.image = texture();
     this.contextImage = texture();
     const framebuffer = gl.createFramebuffer();
@@ -801,6 +855,10 @@ export class ContinuousWebGLEvaluator {
     return this.gl.isContextLost();
   }
 
+  beginFrame(update: ContinuousUpdate): void {
+    this.histograms.prune(update.pairs.map((pair) => pair.histogram));
+  }
+
   evaluate(
     pair: ContinuousPair,
     frame: ContinuousRequest,
@@ -813,7 +871,7 @@ export class ContinuousWebGLEvaluator {
     if (gl.isContextLost()) throw new Error("Continuous density WebGL context lost");
     if (pair.marginal !== undefined)
       return evaluateContinuousMarginal(pair.marginal, frame, update, columns, reconstruct);
-    const height = Math.max(1, Math.ceil(frame.height));
+    const height = Math.max(1, Math.ceil(frame.height * frame.pixelRatio));
     const histogram = pair.histogram;
     const stride = histogram.bins + 1;
     const maximumTexture = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
@@ -821,24 +879,8 @@ export class ContinuousWebGLEvaluator {
     const paletteLength = update.colors.colorMapBins > 0 ? update.colors.palette.length : 1;
     if (Math.max(stride, columns, height, paletteLength) > maximumTexture)
       throw new Error("Continuous density image exceeds WebGL texture capacity");
-    const counts = new Float32Array(stride * stride * 4);
     const needsExtra = update.colors.colorMapBins === 0 || frame.colorMode !== "mean";
-    const extra = new Float32Array(needsExtra ? counts.length : 4);
-    for (const cell of histogram.occupied) {
-      const offset = cell * 4;
-      counts[offset] = histogram.selected[cell];
-      counts[offset + 1] = histogram.context[cell];
-      counts[offset + 2] = histogram.color0[cell];
-      counts[offset + 3] = histogram.color1[cell];
-      if (needsExtra) {
-        extra[offset] = histogram.color2[cell];
-        extra[offset + 1] =
-          histogram.minimum[cell] === EMPTY_COLOR_KEY ? -1 : histogram.minimum[cell];
-        extra[offset + 2] =
-          histogram.maximum[cell] === EMPTY_COLOR_KEY ? -1 : histogram.maximum[cell];
-      }
-    }
-    const layers = sparseDensityLayers(histogram);
+    const layers = sparseDensityLayers(histogram, frame.contextAlpha > 0);
     const sparse = layers.selected || layers.context;
     const spatial = sparse
       ? continuousSparseIndex(histogram, frame, pairGap(pair), columns, height, layers.cells)
@@ -871,7 +913,7 @@ export class ContinuousWebGLEvaluator {
       components: 1 | 2 = 1,
     ): void => {
       gl.activeTexture(gl.TEXTURE0 + unit);
-      gl.bindTexture(gl.TEXTURE_2D, this.textures[unit]);
+      gl.bindTexture(gl.TEXTURE_2D, this.textures[unit - 2]);
       const integer = data instanceof Uint32Array;
       gl.texImage2D(
         gl.TEXTURE_2D,
@@ -890,8 +932,9 @@ export class ContinuousWebGLEvaluator {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.uniform1i(this.uniform(name), unit);
     };
-    upload(0, "counts", stride, stride, counts);
-    upload(1, "extra", needsExtra ? stride : 1, needsExtra ? stride : 1, extra);
+    this.histograms.bind(histogram, needsExtra);
+    gl.uniform1i(this.uniform("counts"), 0);
+    gl.uniform1i(this.uniform("extra"), 1);
     upload(2, "occupied", occupiedWidth, occupiedHeight, occupied);
     upload(3, "palette", paletteLength, 1, palette);
     upload(4, "ranges", sparse ? columns : 1, spatial.tiles, spatial.ranges, 2);
@@ -908,6 +951,7 @@ export class ContinuousWebGLEvaluator {
       gl.uniform1i(this.uniform(name), value);
     for (const [name, value] of Object.entries({
       height: frame.height,
+      pixelRatio: frame.pixelRatio,
       gap: pairGap(pair),
       columns,
       lineWidth: frame.lineWidth,
@@ -982,6 +1026,7 @@ export class ContinuousWebGLEvaluator {
   }
 
   dispose(): void {
+    this.histograms.dispose();
     this.reconstruction?.dispose();
     for (const texture of this.textures) this.gl.deleteTexture(texture);
     this.gl.deleteTexture(this.image);
@@ -1089,9 +1134,12 @@ export class ContinuousDensityEvaluator {
     frame: ContinuousRequest,
     update: ContinuousUpdate,
   ): Generator<void, ContinuousImage> {
+    this.gpu?.beginFrame(update);
     const started = performance.now();
-    const width = Math.max(1, Math.ceil(frame.width));
-    const height = Math.max(1, Math.ceil(frame.height));
+    const ratio = frame.draft ? 1 : frame.pixelRatio;
+    frame = { ...frame, pixelRatio: ratio };
+    const width = Math.max(1, Math.ceil(frame.width * ratio));
+    const height = Math.max(1, Math.ceil(frame.height * ratio));
     const pixels = new Uint8ClampedArray(width * height * 4);
     const active = new Set<string>();
     let evaluatedPairs = 0;
@@ -1104,13 +1152,15 @@ export class ContinuousDensityEvaluator {
       const dense = pair.histogram.occupied.length > SPARSE_DENSITY_CELLS;
       const fraction =
         this.software && frame.draft && dense && pair.marginal === undefined ? 1 / 16 : 1;
-      let columns = pair.marginal === undefined ? Math.max(1, Math.ceil(gap * fraction)) : 1;
+      let columns =
+        pair.marginal === undefined ? Math.max(1, Math.ceil(gap * ratio * fraction)) : 1;
       const signature = JSON.stringify([
         pair.histogram.revision,
         pair.marginal?.revision,
         pair.histogram.bins,
         gap,
         frame.height,
+        ratio,
         columns,
         frame.lineWidth,
         pair.marginal === undefined && frame.curved,
@@ -1147,7 +1197,7 @@ export class ContinuousDensityEvaluator {
         evaluatedPairs++;
         evaluatedColumns += columns;
       }
-      compositePairImage(pixels, width, height, cached.image, pair.left.x, gap);
+      compositePairImage(pixels, width, height, cached.image, pair.left.x * ratio, gap * ratio);
       yield;
     }
     for (const key of this.cache.keys()) if (!active.has(key)) this.cache.delete(key);
@@ -1163,6 +1213,7 @@ export class ContinuousDensityEvaluator {
       axisBins: update.axisBins,
       evaluatedColumns,
       evaluatedPairs,
+      wasmMemoryBytes: rustMemoryBytes(),
     };
   }
 

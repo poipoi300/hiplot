@@ -5,9 +5,8 @@ import {
   type ContinuousPair,
   type ContinuousRequest,
   type ContinuousUpdate,
+  continuousAxisBins,
   EMPTY_COLOR_KEY,
-  MAX_DENSITY_BINS,
-  MIN_DENSITY_BINS,
 } from "./continuous_types";
 import type { LineColors } from "./webgl";
 
@@ -210,6 +209,8 @@ export class ContinuousKernel {
     if (!Number.isFinite(request.height) || request.height <= 0) {
       throw new Error("Continuous axis height must be finite and positive");
     }
+    if (!Number.isFinite(request.pixelRatio) || request.pixelRatio <= 0)
+      throw new Error("Continuous pixel ratio must be finite and positive");
     if (request.colors !== undefined) validateColors(colors, rows);
     const resetRows = this.selection === null || this.selection.length !== rows;
     const replacements = new Map<number, Float32Array>();
@@ -243,7 +244,7 @@ export class ContinuousKernel {
       }
     }
 
-    const bins = Math.max(MIN_DENSITY_BINS, Math.min(MAX_DENSITY_BINS, Math.ceil(request.height)));
+    const bins = continuousAxisBins(request.height);
     const resized = this.height !== request.height;
     if (resetRows) this.columns.clear();
     const activeColumns = new Set(request.axes.map((axis) => axis.column));
