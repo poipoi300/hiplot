@@ -3226,3 +3226,19 @@ byte for byte. Logs are `fast-complete.log`, `browser-complete.log`,
 The benchmark now follows renderer migrations and counts completed worker GPU
 frames even when their obsolete bitmaps are discarded. A deterministic
 regression test checks two completed GPU frames with one presented image.
+
+### Brush selection across mode switches
+
+Switching from exact worker lines to density retains the currently presented
+exact image until the replacement density image is presented. Revealing the
+retained density canvas when requesting a frame could briefly show an older
+brush selection. The browser regression test checks the pending and completed
+presentation states across two brush moves and round trips between modes.
+
+Three alternating paired loads of the previous and refreshed 10,000-row mobile
+samples at 390 × 844, DPR 3, with curved continuous density, retain brush frame
+p50/p95/max of 8/8/17 ms and zero stalls in 120 frames. Median full redraw is
+145/149 ms and release to final lines is 82/86 ms. These are desktop RTX 5090
+measurements at phone dimensions, not phone hardware measurements or a speedup
+claim. The paired report is `outputs/brush-mode-switch/phone-density.json`;
+refreshed offline samples are in `outputs/mobile-samples-brush-fix/`.

@@ -9,6 +9,58 @@ interface ExecutionWindow {
   __firstWorkerLocalDraws?: number;
 }
 
+test("switching to density after moving a brush keeps the latest exact image until density is ready", async ({
+  page,
+}) => {
+  await loadParallelBenchmark(
+    page,
+    { rows: 100, columns: 2, discrete: false, seed: 20261109 },
+    "low",
+  );
+  const result = await page.evaluate(async () => {
+    const plot = (window as unknown as ExecutionWindow).__parallelProbe.instance.parallelPlot();
+    if (!plot) throw new Error("Missing plot");
+    const idle = async () => {
+      while (plot.linesBusy || plot.continuous?.busy) await new Promise(requestAnimationFrame);
+    };
+    const switchMode = (renderQuality: "full" | "low") =>
+      new Promise<void>((resolve) => plot.setState({ renderQuality }, resolve));
+    const visibility = () => ({
+      exact: plot.exact_image_ref.current?.style.visibility,
+      direct: plot.foreground_ref.current?.style.visibility,
+    });
+    plot.renderExecution.record(51);
+    plot.renderExecution.record(51);
+    const dimension = plot.state.dimensions[1];
+    plot.setBrushes(dimension, [[plot.h * 0.1, plot.h * 0.3]]);
+    await idle();
+    const switches = [];
+    for (const [top, bottom] of [
+      [0.6, 0.8],
+      [0.2, 0.4],
+    ]) {
+      await switchMode("full");
+      await idle();
+      plot.setBrushes(dimension, [[plot.h * top, plot.h * bottom]]);
+      await idle();
+      const before = visibility();
+      const frames = plot.continuousFrame;
+      await switchMode("low");
+      const pending = visibility();
+      const pendingFrames = plot.continuousFrame - frames;
+      await idle();
+      switches.push({ before, pending, pendingFrames, after: visibility() });
+    }
+    return switches;
+  });
+  for (const transition of result) {
+    expect(transition.before).toEqual({ exact: "visible", direct: "hidden" });
+    expect(transition.pendingFrames).toBe(0);
+    expect(transition.pending).toEqual(transition.before);
+    expect(transition.after).toEqual({ exact: "hidden", direct: "visible" });
+  }
+});
+
 for (const quality of ["full", "low"] as const) {
   test(`${quality} starts locally and shares worker promotion across rendering modes`, async ({
     page,

@@ -2778,6 +2778,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
             this.foreground.clearRect(0, 0, this.w, this.h);
             this.foreground.drawImage(source, 0, 0, this.w, this.h);
           }
+          this.showDirectLines();
         },
         undefined,
         execution,
@@ -2861,7 +2862,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (this.continuousMode()) {
       this.exact?.dispose();
       this.exact = null;
-      this.showDirectLines();
       // Pace active drafts, but let a new gesture interrupt full-width refinement.
       if (
         this.interactiveFrame() &&
