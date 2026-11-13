@@ -9,18 +9,6 @@ export function continuousAxisBins(height: number): number {
   return Math.max(MIN_DENSITY_BINS, Math.min(MAX_DENSITY_BINS, Math.ceil(height)));
 }
 
-/** Fixed pair storage, excluding occupied-cell indexes, row links and raster images. */
-export function continuousHistogramMinimumBytes(axes: number, height: number): number {
-  const pairs = axes === 0 ? 0 : axes + 1;
-  const cells = (continuousAxisBins(height) + 1) ** 2;
-  // Selected/context counts, three color sums, and min/max ranks with multiplicities.
-  const bytesPerCell =
-    2 * Uint32Array.BYTES_PER_ELEMENT +
-    3 * Float64Array.BYTES_PER_ELEMENT +
-    4 * Uint32Array.BYTES_PER_ELEMENT;
-  return pairs * cells * bytesPerCell;
-}
-
 export interface ContinuousColumn {
   id: number;
   pixels: Float32Array;

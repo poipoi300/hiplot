@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { loadDemo, scrollAxesToEnd } from "./plot";
+import { loadDemo, scrollAxesToEnd, useDirectRenderer } from "./plot";
 
 interface ParallelPlotHandle {
   webgl: unknown;
@@ -65,6 +65,7 @@ test("parallel lines are drawn with WebGL when it is available", async ({ page }
 test("during a drag, frames wait for the GPU to finish the last one instead of queueing", async ({
   page,
 }) => {
+  await useDirectRenderer(page);
   await loadDemo(page);
   const draws = await page.evaluate(async () => {
     interface PacingProbe {

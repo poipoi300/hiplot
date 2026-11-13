@@ -67,7 +67,7 @@ import {
   savedBrushIntervals,
 } from "./brushes";
 import { categoryTagTexts, placeBrushTags, type TagTexts } from "./brushtags";
-import { type ContinuousImage, continuousHistogramMinimumBytes } from "./continuous_types";
+import type { ContinuousImage } from "./continuous_types";
 import { ContinuousRenderer } from "./continuous_worker";
 import { ExactRenderer } from "./exact_worker";
 import { categoryIndices, countByCategory, type FlowAxis, flowAxes } from "./flow";
@@ -77,10 +77,10 @@ import { type ColorOrientation, colorOrientation, NO_ORIENTATION } from "./orien
 import pstyle from "./parallel.module.css";
 import {
   continuousRendering,
+  DraftPolicy,
   FramePerformance,
   isRenderQuality,
   RENDER_QUALITIES,
-  RenderExecution,
   type RenderQuality,
 } from "./performance";
 import { type AxisSelection, BrushMasks } from "./selection";
@@ -453,7 +453,7 @@ const SCROLL_SETTLE_MS = 150;
 const RENDER_QUALITY_LABELS: Record<RenderQuality, { label: string; title: string }> = {
   auto: {
     label: "Automatic",
-    title: "Continuous density for large datasets or when exact frames are slow",
+    title: "Exact lines on a GPU; continuous density on software renderers with large data",
   },
   low: {
     label: "Continuous density",
@@ -462,7 +462,7 @@ const RENDER_QUALITY_LABELS: Record<RenderQuality, { label: string; title: strin
   },
   full: {
     label: "Exact lines",
-    title: "Draw individual rows, however slow",
+    title: "Draw individual rows; brushing redraws only what it changes",
   },
 };
 /** Peak opacity of the deselected-rows layer per theme. */
@@ -2612,7 +2612,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return (
       this.interacting &&
       !(this.brushGesture !== null && this.brushBlocks()) &&
-      this.renderExecution.useWorker
+      this.drafts.drafting
     );
   }
 
@@ -2717,19 +2717,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** Measures each full-quality frame on the GPU, for the "auto" quality. */
   private frameWatch: number | null = null;
   private framePerformance = new FramePerformance();
-  readonly renderExecution = new RenderExecution();
-  private localPreparationMs: number | null = null;
+  private readonly drafts = new DraftPolicy();
 
   private collectFrame(webgl: WebGLLineRenderer): boolean {
     const busy = webgl.busy;
     const finished = webgl.finishedFrame();
-    if (finished !== null) {
-      if (this.localPreparationMs !== null) {
-        this.renderExecution.record(finished.milliseconds + this.localPreparationMs);
-        this.localPreparationMs = null;
-      }
-      this.recordFrame(finished);
-    }
+    if (finished !== null) this.recordFrame(finished);
     return busy;
   }
 
@@ -2753,11 +2746,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   private recordFrame(finished: FinishedFrame): void {
-    if (
-      finished.fullQuality &&
-      !finished.fromBlocks &&
-      this.framePerformance.recordFullFrame(finished.milliseconds)
-    ) {
+    if (!finished.fullQuality || finished.fromBlocks) return;
+    this.drafts.record(finished.milliseconds);
+    // Only automatic quality on a software rasterizer switches pictures on slow frames.
+    if (this.state.renderQuality !== "auto" || !(this.webgl?.softwareRendering ?? true)) return;
+    if (this.framePerformance.recordFullFrame(finished.milliseconds)) {
       this.setState({ slowFrames: this.framePerformance.slow });
     }
   }
@@ -2807,9 +2800,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         queueMicrotask(() => this.resumeBrushMove());
       },
       () => {
+        // The worker has no WebGL2 or failed; the page draws instead, after this call returns.
         this.exact = null;
         this.exactUnavailable = true;
-        this.redrawLines();
+        queueMicrotask(() => this.redrawLines());
       },
     );
     this.exact.draw(
@@ -2865,19 +2859,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** Draws every original row; used by exact mode and its pixel-equivalence tests. */
   private drawWithWebGL(webgl: WebGLLineRenderer): void {
     this.collectFrame(webgl);
-    const started = performance.now();
     const geometry = this.geometry();
     const mask = this.selectionMask(geometry);
     const colors = this.lineColors(geometry);
     const frame = this.lineFrame(geometry, mask);
-    this.renderExecution.recordWorkingSet(
-      frame.axes.reduce((bytes, axis) => bytes + axis.pixels.byteLength, 0),
-    );
-    if (
-      this.renderExecution.useWorker &&
-      this.drawExactWorker(frame, geometry, colors, mask, this.brushFocus(geometry))
-    )
-      return;
+    if (this.drawExactWorker(frame, geometry, colors, mask, this.brushFocus(geometry))) return;
     this.exact?.dispose();
     this.exact = null;
     this.showDirectLines();
@@ -2889,21 +2875,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     );
     webgl.setColors(colors);
     webgl.setSelection(mask);
-    this.localPreparationMs = performance.now() - started;
     webgl.draw(frame);
     this.watchFrames(webgl);
   }
 
   private drawContinuous(): void {
-    this.renderExecution.recordWorkingSet(
-      continuousHistogramMinimumBytes(this.state.dimensions.length, this.h),
-    );
-    const execution =
-      this.renderExecution.useWorker && typeof Worker !== "undefined" ? "worker" : "local";
-    if (this.continuous !== null && this.continuous.execution !== execution) {
-      this.continuous.dispose();
-      this.continuous = null;
-    }
+    const execution = typeof Worker !== "undefined" ? "worker" : "local";
     if (this.continuous === null) {
       this.continuous = new ContinuousRenderer(
         (image) => {
@@ -2912,8 +2889,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
           }
           this.continuousFrame += 1;
           this.continuousMetrics = image;
-          if (execution === "local") this.renderExecution.record(image.milliseconds);
-          this.localPreparationMs = null;
           if (this.webgl !== null) {
             this.webgl.present(image.pixels, image.width, image.height);
             this.watchFrames(this.webgl);

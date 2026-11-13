@@ -3408,3 +3408,38 @@ Reproduce after `bun run build`:
 bun build bench/parallel.ts --target=node --packages=external --outfile=./node_modules/.cache/parallel-bench.mjs
 node node_modules/.cache/parallel-bench.mjs --quality full --backend hardware --rows 1000000 --reps 1 --steps 3 --out <blocks.json>
 ```
+
+### Worker from the first frame, exact lines on every GPU
+
+With brushing real-time, the maintainer decided on 2026-11-12 that lines
+render on a worker from the first frame, and that Automatic picks exact lines on
+a GPU at any size. Before, a plot drew on the page until two frames exceeded
+50 ms; a freshly opened million-row page then drew its first gesture on the page,
+hitched while moving to the worker, and only then built blocks. Automatic also
+chose continuous density above 250,000 rows on hardware, whose brushing takes
+75–150 ms per frame at 1M rows against 5–15 ms for exact blocks.
+
+Continuous density remains the software rasterizer's picture (above 6,000 rows
+or after slow frames) and the explicit "low" choice: exact lines cost about
+100 s per frame at 1M rows on SwiftShader. On a GPU, scrolling, axis drags and
+the first frame of exact lines still draw every row (about 0.25 s drafts at 1M
+rows), where continuous density composites cached pair images. Gesture drafts
+now follow full frames' cost rather than where the plot renders: two full
+frames in a row over 50 ms turn them on, one under 25 ms turns them off.
+
+Worker frames cost small plots their page-side speed. The standalone benchmark
+(RTX 5090, 1600 × 1000, machine heavily loaded, two loads per version and
+interleaved runs; ranges across runs):
+
+| Size | Version | Initial drawn ms | Full redraw ms | Brush end → lines ms |
+|---|---|---:|---:|---:|
+| 5k × 20 | Page until promoted | 326–432 | 12–14 | 1–2 |
+| 5k × 20 | Worker | 476–579 | 39 | 15 |
+| 50k × 50 | Page until promoted | 1286–1502 | 305–320 | 71–83 |
+| 50k × 50 | Worker | 1539–1689 | 336–342 | 71–72 |
+
+The worker's first frame waits for its startup, WebGL context and shaders; each
+later frame for a message round trip, completion polling and the bitmap's return.
+Worker frames first restarted their GPU batches at 128 rows, waiting for each:
+a 5k redraw took 46–47 ms and a 50k one 366–374 ms. Keeping the learned batch
+size between frames gives the figures above. Brush drags stayed at 4 ms frames.

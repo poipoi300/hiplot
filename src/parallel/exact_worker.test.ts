@@ -256,9 +256,12 @@ test("worker failures clear busy, terminate and remain visible", async () => {
       "factory",
     ] as const) {
       const worker = new WorkerDouble();
+      let unavailable = 0;
       const renderer = new ExactRenderer(
         () => {},
-        () => {},
+        () => {
+          unavailable += 1;
+        },
         async () => {
           if (failure === "factory") throw "factory failure";
           return worker.asWorker();
@@ -285,6 +288,8 @@ test("worker failures clear busy, terminate and remain visible", async () => {
           });
       }
       expect(renderer.busy).toBe(false);
+      // The plot then draws on the page; the failure stays visible.
+      expect(unavailable).toBe(1);
       expect(() => draw(renderer)).toThrow();
       expect(() => scheduled.shift()?.()).toThrow();
       renderer.dispose();
@@ -437,6 +442,7 @@ test("cooperative line batches wait for their fences and release failed fences",
     Object.assign(renderer, {
       softwareRendering: failure === null,
       blocks: null,
+      batchRows: 128,
       gl: {
         SYNC_GPU_COMMANDS_COMPLETE: 1,
         SYNC_STATUS: 2,

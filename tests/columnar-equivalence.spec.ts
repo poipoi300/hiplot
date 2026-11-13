@@ -5,6 +5,7 @@ import type { LineGeometry } from "../src/parallel/geometry";
 import type { BrushMasks } from "../src/parallel/selection";
 import type { Datapoint } from "../src/types";
 import { expect, test } from "./fixtures";
+import { useDirectRenderer } from "./plot";
 
 interface PlotProbe {
   state: { dimensions: string[] };
@@ -72,6 +73,7 @@ async function losslessImage(page: Page): Promise<string> {
 test("live WebGL brushes use typed flags and publish identical pixels and ordered rows", async ({
   page,
 }) => {
+  await useDirectRenderer(page);
   await load(page);
   const result = await page.evaluate(async () => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
@@ -154,6 +156,7 @@ test("live WebGL brushes use typed flags and publish identical pixels and ordere
 test("successive live brush moves refresh exact GPU flags even when the mask buffer is reused", async ({
   page,
 }) => {
+  await useDirectRenderer(page);
   await load(page);
   const result = await page.evaluate(() => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();

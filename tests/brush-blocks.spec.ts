@@ -115,7 +115,11 @@ for (const { name, numeric, colorMode, curved, brushes } of CASES) {
             gl.deleteTexture(texture);
             return pixels;
           };
-          let image: { pixels: Uint8Array; finished: FinishedFrame } | null = null;
+          interface RequestIds {
+            nextId: number;
+            activeId: number;
+          }
+          const images = new Map<number, { pixels: Uint8Array; finished: FinishedFrame }>();
           let observed: BlockPlot["exact"] = null;
           const geometry = plot.geometry();
           const source = plot.lineFrame(geometry, plot.selectionMask(geometry));
@@ -153,21 +157,26 @@ for (const { name, numeric, colorMode, curved, brushes } of CASES) {
               selectedCount,
               contextCount: mask.length - selectedCount,
             };
-            image = null;
             if (!plot.drawExactWorker(frame, geometry, colors, mask, focus))
               throw new Error("Missing exact worker support");
             const exact = plot.exact;
             if (exact === null) throw new Error("Missing exact renderer");
+            // The plot shares the worker: only the image of this request counts.
+            const ids = exact as unknown as RequestIds;
+            const request = ids.nextId;
             if (observed !== exact) {
               const publish = exact.onImage.bind(exact);
               exact.onImage = (bitmap, finished) => {
-                image = { pixels: readBitmap(bitmap), finished };
+                images.set(ids.activeId, { pixels: readBitmap(bitmap), finished });
                 publish(bitmap, finished);
               };
               observed = exact;
             }
-            while (exact.busy || image === null) await new Promise(requestAnimationFrame);
-            return image;
+            while (exact.busy) await new Promise(requestAnimationFrame);
+            const drawn = images.get(request);
+            images.clear();
+            if (drawn === undefined) throw new Error(`The plot superseded request ${request}`);
+            return drawn;
           };
           const comparisons: Comparison[] = [];
           // Brushes drawn from their tops: the bottom edges move, then cross back.
@@ -231,15 +240,22 @@ test("brush gestures on a GPU draw full frames from retained blocks, through rel
     "full",
   );
   await warmParallelWorker(page);
-  // The suite rasterizes on SwiftShader, whose worker reports no block frames
-  // so that plots draft; blocks are as exact there, only slower.
+  // The suite rasterizes on SwiftShader, whose worker reports no block frames;
+  // blocks are as exact there, only slower. Slow full frames turn drafts on, so
+  // a gesture without blocks would draft.
   await page.evaluate(() => {
     const plot = (
       window as unknown as {
-        __parallelProbe: { instance: { parallelPlot: () => { exact: object } } };
+        __parallelProbe: {
+          instance: {
+            parallelPlot: () => { exact: object; drafts: { record: (ms: number) => void } };
+          };
+        };
       }
     ).__parallelProbe.instance.parallelPlot();
     Object.assign(plot.exact, { blocks: true });
+    plot.drafts.record(1000);
+    plot.drafts.record(1000);
   });
   const result = await page.evaluate(async () => {
     interface GesturePlot extends BlockPlot {
@@ -373,7 +389,7 @@ test("resting on an axis's brush band draws its blocks before a gesture", async 
         __parallelProbe: { instance: { parallelPlot: () => PreparedPlot } };
       }
     ).__parallelProbe.instance.parallelPlot();
-    // As in the gesture test: the suite's SwiftShader worker otherwise drafts.
+    // As in the gesture test: the suite's SwiftShader worker reports no block frames.
     Object.assign(plot.exact, { blocks: true });
     const exact = plot.exact;
     const images: boolean[] = [];

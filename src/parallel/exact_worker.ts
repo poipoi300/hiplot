@@ -38,6 +38,7 @@ export class ExactRenderer {
 
   constructor(
     private readonly onImage: (bitmap: ImageBitmap, finished: FinishedFrame) => void,
+    /** The worker cannot draw: it has no WebGL2, or it failed, which is also rethrown. */
     private readonly onUnavailable: () => void,
     private readonly createWorker: () => Promise<Worker> = async () => {
       const { default: InlineWorker } = await import("./exact_entry?worker&inline");
@@ -205,6 +206,7 @@ export class ExactRenderer {
     setTimeout(() => {
       throw failure;
     }, 0);
+    this.onUnavailable();
   }
 
   dispose(): void {

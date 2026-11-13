@@ -1,19 +1,19 @@
 import type { Locator, Page } from "@playwright/test";
 import type { HiPlot } from "../src/component";
 
-/** Worker protocol tests supply a slow-frame observation independently of host GPU speed. */
-export async function warmParallelWorker(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const win = window as unknown as {
-      __parallelProbe?: { instance: HiPlot };
-      hiplot_last_instance?: HiPlot;
-    };
-    const plot = (win.__parallelProbe?.instance ?? win.hiplot_last_instance)?.parallelPlot();
-    if (!plot) throw new Error("Missing parallel plot");
-    plot.renderExecution.record(51);
-    plot.renderExecution.record(51);
-    plot.redrawLines();
+/**
+ * Lines draw on a worker wherever workers have canvases; without them the plot
+ * draws on its page's renderer. Tests of that renderer remove worker canvases
+ * before the page loads.
+ */
+export async function useDirectRenderer(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "OffscreenCanvas", { value: undefined, configurable: true });
   });
+}
+
+/** Waits for the plot's rendering worker, which draws from the first frame, to finish a frame. */
+export async function warmParallelWorker(page: Page): Promise<void> {
   await page.waitForFunction(() => {
     const win = window as unknown as {
       __parallelProbe?: { instance: HiPlot };

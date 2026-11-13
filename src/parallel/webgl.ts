@@ -877,6 +877,8 @@ export class WebGLLineRenderer {
   private submittedAt = 0;
   private inFlightFullQuality = false;
   private inFlightFromBlocks = false;
+  /** Rows per cooperative batch, adapted to the GPU's time per batch (see cooperate). */
+  private batchRows = 128;
   /** The last frame seen finished, until finishedFrame() reads it. */
   private finished: FinishedFrame | null = null;
 
@@ -1354,14 +1356,17 @@ export class WebGLLineRenderer {
     gl.flush();
   }
 
-  /** Runs GPU work in batches, waiting for each to finish; batches grow toward ~6 ms of GPU time. */
+  /**
+   * Runs GPU work in batches, waiting for each to finish; batches grow toward
+   * ~6 ms of GPU time. The size carries over to the next frame, whose rows cost
+   * about the same: a small plot then draws in one batch, not several waits.
+   */
   private async cooperate(work: (batchRows: () => number) => Generator<void>): Promise<void> {
     const gl = this.gl;
-    let batchRows = 128;
     let started = performance.now();
     const poller = new TaskPoller(this.softwareRendering);
     try {
-      for (const _ of work(() => batchRows)) {
+      for (const _ of work(() => this.batchRows)) {
         const fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
         if (fence === null) throw new Error("Could not fence an exact line batch");
         gl.flush();
@@ -1379,7 +1384,10 @@ export class WebGLLineRenderer {
         }
         // Host task delays are not GPU work. Charge only time known to precede completion.
         const elapsed = Math.max(1, performance.now() - started - lastWait);
-        batchRows = Math.max(1, Math.min(32768, Math.floor(batchRows * Math.min(2, 6 / elapsed))));
+        this.batchRows = Math.max(
+          1,
+          Math.min(32768, Math.floor(this.batchRows * Math.min(2, 6 / elapsed))),
+        );
         started = performance.now();
       }
     } finally {
