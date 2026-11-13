@@ -85,7 +85,14 @@ import {
 } from "./performance";
 import { type AxisSelection, BrushMasks } from "./selection";
 import { monotoneSlope, SPLINE_HANDLE, splineParameter, splineY } from "./spline";
-import { type FinishedFrame, type LineColors, type LineFrame, WebGLLineRenderer } from "./webgl";
+import {
+  type FinishedFrame,
+  type LineColors,
+  type LineFocus,
+  type LineFrame,
+  WebGLLineRenderer,
+} from "./webgl";
+import { blockLayerBytes, blocksFit } from "./webgl_blocks";
 
 interface ParallelPlotState {
   height: number;
@@ -922,6 +929,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       throw new Error("A brush gesture started outside the brush band");
     }
     this.interacting = true;
+    this.focusDimension = dimension;
     this.clearHover();
     this.props.context_menu_ref?.current?.hide();
     const origin = Math.max(0, Math.min(this.h, event.y));
@@ -1160,15 +1168,31 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
     this.brushMoveFrame = requestAnimationFrame(() => {
       this.brushMoveFrame = null;
-      if (
-        this.linesBusy ||
-        (this.continuous?.busy && !(this.interacting && this.continuous.refining))
-      ) {
+      if (this.brushMoveBlocked()) {
         this.scheduleBrushFrame();
         return;
       }
       this.pplot?.brush(false);
     });
+  }
+
+  /** Whether a brush move waits for the renderer to finish its frame. */
+  private brushMoveBlocked(): boolean {
+    return (
+      this.linesBusy ||
+      Boolean(this.continuous?.busy && !(this.interacting && this.continuous.refining))
+    );
+  }
+
+  /**
+   * Runs a brush move waiting for the renderer when a finished image frees it,
+   * rather than at the next animation frame: the image of the latest pointer
+   * position then arrives up to a display frame sooner.
+   */
+  private resumeBrushMove(): void {
+    if (this.brushMoveFrame === null || this.brushMoveBlocked()) return;
+    this.cancelBrushMove();
+    this.pplot?.brush(false);
   }
   cancelBrushMove(): void {
     if (this.brushMoveFrame !== null) {
@@ -2558,9 +2582,58 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return { r: parsed.r, g: parsed.g, b: parsed.b };
   }
 
-  /** Gesture previews omit anti-aliasing; accumulation precision never changes. */
+  /**
+   * Gesture previews omit anti-aliasing; accumulation precision never
+   * changes. Brush gestures with retained blocks draw full frames instead.
+   */
   draftFrame(): boolean {
-    return this.interacting && this.renderExecution.useWorker;
+    return (
+      this.interacting &&
+      !(this.brushGesture !== null && this.brushBlocks()) &&
+      this.renderExecution.useWorker
+    );
+  }
+
+  /**
+   * Whether brushing sums retained blocks (see LineFocus): the exact worker
+   * has float targets on a GPU, and enough of the blocks fit in their memory
+   * at this size. A software rasterizer would draw the first frame of every
+   * gesture in full and read every layer of every pixel each frame on the CPU,
+   * and a few large blocks leave about every row to draw: both slower than
+   * draft frames.
+   */
+  private brushBlocks(): boolean {
+    if (this.exact?.blockFrames !== true) return false;
+    const numeric = this.props.color_binning.legend.kind === "numeric";
+    const pixels =
+      Math.max(1, Math.round(this.w * this.pixelRatio)) *
+      Math.max(1, Math.round(this.h * this.pixelRatio));
+    return blocksFit(pixels, blockLayerBytes(numeric, numeric && this.props.color_mode !== "mean"));
+  }
+
+  /** The axis of the latest brush gesture, whose blocks the exact worker retains. */
+  private focusDimension: string | null = null;
+
+  /** The latest brushed axis and the rows the other axes' brushes pass, for brush selections. */
+  private brushFocus(geometry: LineGeometry): LineFocus | null {
+    const dimension = this.focusDimension;
+    const masks = this.masks;
+    if (
+      dimension === null ||
+      !this.brushBlocks() ||
+      masks === null ||
+      masks.rows !== geometry.rows ||
+      this.liveBrushMask?.rows !== geometry.rows
+    ) {
+      return null;
+    }
+    const axis = this.state.dimensions.indexOf(dimension);
+    if (axis === -1) return null;
+    return {
+      axis,
+      rows: masks.passingExcept(dimension),
+      active: this.brushGesture?.dimension === dimension,
+    };
   }
 
   /** Whether a frame is drawn during a gesture: a brush or axis drag, or a scroll. */
@@ -2617,7 +2690,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   private recordFrame(finished: FinishedFrame): void {
-    if (finished.fullQuality && this.framePerformance.recordFullFrame(finished.milliseconds)) {
+    if (
+      finished.fullQuality &&
+      !finished.fromBlocks &&
+      this.framePerformance.recordFullFrame(finished.milliseconds)
+    ) {
       this.setState({ slowFrames: this.framePerformance.slow });
     }
   }
@@ -2640,6 +2717,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     geometry: LineGeometry,
     colors: LineColors,
     mask: Uint8Array,
+    focus: LineFocus | null = null,
   ): boolean {
     if (
       this.exactUnavailable ||
@@ -2662,6 +2740,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         canvas.style.visibility = "visible";
         mounted(this.foreground_ref).style.visibility = "hidden";
         this.recordFrame(finished);
+        // After the renderer has released this image; then a waiting brush move goes on at once.
+        queueMicrotask(() => this.resumeBrushMove());
       },
       () => {
         this.exact = null;
@@ -2669,8 +2749,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         this.redrawLines();
       },
     );
-    this.exact.draw(frame, colors, mask, geometry.order, () =>
-      geometry.colorOrder(colors.bins, colors.colorMapBins, frame.colorMode),
+    this.exact.draw(
+      frame,
+      colors,
+      mask,
+      geometry.order,
+      () => geometry.colorOrder(colors.bins, colors.colorMapBins, frame.colorMode),
+      focus,
     );
     return true;
   }
@@ -2721,7 +2806,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.renderExecution.recordWorkingSet(
       frame.axes.reduce((bytes, axis) => bytes + axis.pixels.byteLength, 0),
     );
-    if (this.renderExecution.useWorker && this.drawExactWorker(frame, geometry, colors, mask))
+    if (
+      this.renderExecution.useWorker &&
+      this.drawExactWorker(frame, geometry, colors, mask, this.brushFocus(geometry))
+    )
       return;
     this.exact?.dispose();
     this.exact = null;

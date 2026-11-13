@@ -76,6 +76,7 @@ export class BrushMasks {
   private disposed = false;
   private failure: Error | null = null;
   private workerWasmBytes = 0;
+  private passing: { dimension: string; key: string; rows: Uint8Array } | null = null;
 
   get wasmMemoryBytes(): number {
     return this.workerWasmBytes;
@@ -380,6 +381,32 @@ export class BrushMasks {
       this.visitRejected(axis, 1);
     }
     return this.selected;
+  }
+
+  /**
+   * Flags of the rows inside the brushes of every active axis but `dimension`,
+   * as of the last `select`. Asked again for the same axis, it returns the
+   * same array until the other axes' brushes change: brushing `dimension`
+   * alone keeps it. Asking for another axis replaces it.
+   */
+  passingExcept(dimension: string): Uint8Array {
+    this.assertUsable();
+    const others = JSON.stringify(
+      Array.from(this.axes, ([name, axis]) =>
+        name === dimension || !axis.active ? null : [name, axis.key],
+      ),
+    );
+    if (this.passing?.dimension === dimension && this.passing.key === others) {
+      return this.passing.rows;
+    }
+    const own = this.axes.get(dimension);
+    const rows = new Uint8Array(this.failures.length);
+    for (let row = 0; row < rows.length; ++row) {
+      const ownFailure = own?.active === true && own.mask[row] === 0 ? 1 : 0;
+      rows[row] = this.failures[row] === ownFailure ? 1 : 0;
+    }
+    this.passing = { dimension, key: others, rows };
+    return rows;
   }
 
   /** The selected rows, in their original order. Materializing rows is O(rows). */

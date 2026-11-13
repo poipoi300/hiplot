@@ -1,5 +1,5 @@
 import type { ExactReply, ExactRequest } from "./exact_types";
-import type { FinishedFrame, LineColors, LineFrame } from "./webgl";
+import type { FinishedFrame, LineColors, LineFocus, LineFrame } from "./webgl";
 import { WorkerFrameCache } from "./worker_payload";
 
 interface PendingFrame {
@@ -9,12 +9,14 @@ interface PendingFrame {
   selection: Uint8Array;
   order: Uint32Array;
   fallbackOrder: () => Uint32Array;
+  focus: LineFocus | null;
 }
 
 /** One worker owns the GPU work; only a completed, current image reaches the page. */
 export class ExactRenderer {
   private worker: Worker | null = null;
   private density: boolean | null = null;
+  private blocks = false;
   private starting = false;
   private running = false;
   private disposed = false;
@@ -25,6 +27,14 @@ export class ExactRenderer {
   private readonly frameCache = new WorkerFrameCache();
   private order: Uint32Array | null = null;
   private drawOrder: Uint32Array | null = null;
+  /**
+   * A selection buffer the worker returned: brush moves send a selection per
+   * frame, and reusing their buffers keeps a megabyte per move from piling
+   * up as garbage for the worker's collector.
+   */
+  private spareSelection: Uint8Array | null = null;
+  /** The focus rows the worker holds, by identity (see LineFocus). */
+  private focusRows: Uint8Array | null = null;
 
   constructor(
     private readonly onImage: (bitmap: ImageBitmap, finished: FinishedFrame) => void,
@@ -39,17 +49,24 @@ export class ExactRenderer {
     return this.starting || this.running || this.pending !== null;
   }
 
+  /** Whether the started worker sums brush frames from retained blocks (see LineFocus). */
+  get blockFrames(): boolean {
+    return this.blocks;
+  }
+
   draw(
     frame: LineFrame,
     colors: LineColors,
     selection: Uint8Array,
     order: Uint32Array,
     fallbackOrder: () => Uint32Array,
+    focus: LineFocus | null = null,
   ): void {
     if (this.disposed) throw new Error("Cannot draw with a disposed exact renderer");
     if (this.failure !== null) throw this.failure;
     if (
       selection.length !== order.length ||
+      (focus !== null && focus.rows.length !== order.length) ||
       colors.bins.length !== order.length ||
       frame.axes.some((axis) => axis.pixels.length !== order.length)
     ) {
@@ -63,9 +80,10 @@ export class ExactRenderer {
         contextColor: { ...frame.contextColor },
       },
       colors,
-      selection: selection.slice(),
+      selection: this.selectionCopy(selection),
       order,
       fallbackOrder,
+      focus,
     };
     if (this.worker !== null) {
       if (!this.running && this.density !== null) this.dispatchPending();
@@ -81,6 +99,20 @@ export class ExactRenderer {
       .catch((error: unknown) => {
         if (!this.disposed) this.fail(error);
       });
+  }
+
+  /** A copy of `selection` in a returned or superseded buffer when one fits. */
+  private selectionCopy(selection: Uint8Array): Uint8Array {
+    const spare =
+      this.pending?.selection.length === selection.length
+        ? this.pending.selection
+        : this.spareSelection?.length === selection.length
+          ? this.spareSelection
+          : null;
+    if (spare === this.spareSelection) this.spareSelection = null;
+    if (spare === null) return selection.slice();
+    spare.set(selection);
+    return spare;
   }
 
   private connect(worker: Worker): void {
@@ -102,9 +134,11 @@ export class ExactRenderer {
           return;
         }
         this.density = data.density;
+        this.blocks = data.blocks;
         this.dispatchPending();
         return;
       }
+      this.spareSelection = data.selection;
       if (data.id !== this.activeId || !this.running) {
         data.bitmap.close();
         this.fail(new Error("Exact worker returned an unexpected frame"));
@@ -126,14 +160,20 @@ export class ExactRenderer {
     const pending = this.pending;
     if (pending === null || this.worker === null) return;
     this.pending = null;
-    const { id, frame, colors, selection, order, fallbackOrder } = pending;
+    const { id, frame, colors, selection, order, fallbackOrder, focus } = pending;
     const transfer: Transferable[] = [selection.buffer];
     const request: ExactRequest = {
       ...frame,
       id,
       ...this.frameCache.encode(frame.axes, colors, transfer),
       selection,
+      focus: focus === null ? null : { axis: focus.axis, active: focus.active },
     };
+    if (focus !== null && request.focus !== null && focus.rows !== this.focusRows) {
+      request.focus.rows = focus.rows.slice();
+      transfer.push(request.focus.rows.buffer);
+      this.focusRows = focus.rows;
+    }
     const drawOrder = this.density ? order : fallbackOrder();
     if (this.order !== order) {
       request.order = order.slice();
@@ -175,6 +215,7 @@ export class ExactRenderer {
     this.frameCache.clear();
     this.order = null;
     this.drawOrder = null;
+    this.focusRows = null;
     this.worker?.terminate();
     this.worker = null;
   }

@@ -287,6 +287,8 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
         const input = inputAt;
         probe.samples.push({ stage: "gpu", milliseconds: finished.milliseconds });
         publish(bitmap, finished);
+        if (input !== null)
+          probe.samples.push({ stage: "inputToImage", milliseconds: performance.now() - input });
         probe.draws++;
         probe.pending++;
         requestAnimationFrame(() =>
@@ -467,6 +469,8 @@ export async function measureParallelBenchmark(page: Page, steps: number) {
   });
   await settle(page);
   const release = await takeSamples(page);
+  const drag = await measureBrushDrag(page, "move");
+  const dragEdge = await measureBrushDrag(page, "top");
   // The real d3 handlers move the SVG and reorder axes when neighbors cross.
   await page.evaluate(() => {
     const probe = (window as unknown as ProbeWindow).__parallelProbe;
@@ -568,7 +572,64 @@ export async function measureParallelBenchmark(page: Page, steps: number) {
     await settle(page);
   }
   const scroll = await takeSamples(page);
-  return { full, recompute, brush, release, axis, scroll };
+  return { full, recompute, brush, release, drag, dragEdge, axis, scroll };
+}
+
+/** Frames of continuous brush input: one pointer move per animation frame. */
+const DRAG_FRAMES = 120;
+
+/**
+ * Drags the brush left by the settled steps, by its body ("move") or its top
+ * edge, one move per animation frame across a fifth of the axis and back, as
+ * a hand does. Each image is timed from the latest input it shows to its
+ * arrival on the page ("inputToImage"); "dragFrame" holds the animation
+ * frame intervals and "dragInputs" counts the moves.
+ */
+export async function measureBrushDrag(page: Page, part: "move" | "top"): Promise<Sample[]> {
+  await settle(page);
+  await takeSamples(page);
+  await page.evaluate(
+    async ({ part, frames }) => {
+      const probe = (window as unknown as ProbeWindow).__parallelProbe;
+      const pp = probe.instance.parallelPlot() as unknown as ProbePlot;
+      const dimension = pp.state.dimensions[1];
+      const axis = Array.from(document.querySelectorAll<SVGGElement>("g.dimension")).find(
+        (node) => (node as SVGGElement & { __data__: string }).__data__ === dimension,
+      );
+      const band = axis?.querySelector<SVGElement>("[data-brush-id]");
+      const target =
+        part === "move" ? band : band?.querySelector<SVGElement>(`[data-edge="${part}"]`);
+      if (!band || !target) throw new Error(`No ${part} target on the benchmark brush`);
+      const span = (
+        pp as unknown as { brushSpans: (dimension: string) => { top: number; bottom: number }[] }
+      ).brushSpans(dimension)[0];
+      if (span === undefined) throw new Error("The benchmark axis has no brush");
+      const origin = part === "move" ? (span.top + span.bottom) / 2 : span.top;
+      pp.startBrushGesture({ sourceEvent: { target }, y: origin }, dimension);
+      let previous = await new Promise<number>(requestAnimationFrame);
+      for (let frame = 0; frame < frames; ++frame) {
+        const now = await new Promise<number>(requestAnimationFrame);
+        probe.samples.push({ stage: "dragFrame", milliseconds: now - previous });
+        previous = now;
+        const phase = frame / (frames - 1);
+        const offset = pp.h * 0.2 * (phase < 0.5 ? 2 * phase : 2 - 2 * phase);
+        pp.continueBrushGesture(origin - offset);
+        probe.samples.push({ stage: "dragInputs", milliseconds: 1 });
+      }
+    },
+    { part, frames: DRAG_FRAMES },
+  );
+  await settle(page);
+  const samples = await takeSamples(page);
+  await page.evaluate(() => {
+    const pp = (
+      window as unknown as ProbeWindow
+    ).__parallelProbe.instance.parallelPlot() as unknown as ProbePlot;
+    pp.endBrushGesture();
+  });
+  await settle(page);
+  await takeSamples(page);
+  return samples;
 }
 
 function summarize(samples: Sample[]) {

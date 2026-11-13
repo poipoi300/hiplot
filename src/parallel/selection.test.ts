@@ -379,3 +379,37 @@ describe("incremental indexed brushes", () => {
     masks.dispose();
   });
 });
+
+describe("BrushMasks.passingExcept", () => {
+  test("flags rows inside every other axis's brushes and keeps them while only that axis moves", () => {
+    const masks = new BrushMasks(rows);
+    masks.select(
+      new Map([
+        ["x", [xRange(0, 6)]],
+        ["c", [cRange("a", "b")]],
+      ]),
+    );
+    expect(Array.from(masks.passingExcept("c"))).toEqual([1, 1, 0, 0, 0, 0]);
+    const exceptX = masks.passingExcept("x");
+    expect(Array.from(exceptX)).toEqual([1, 1, 0, 0, 1, 0]);
+    masks.select(
+      new Map([
+        ["x", [xRange(4, 10)]],
+        ["c", [cRange("a", "b")]],
+      ]),
+    );
+    expect(masks.passingExcept("x")).toBe(exceptX);
+    masks.select(new Map([["c", [cRange("a", "b")]]]));
+    expect(masks.passingExcept("x")).toBe(exceptX);
+    masks.select(
+      new Map([
+        ["x", [xRange(4, 10)]],
+        ["c", [cValues(["c"])]],
+      ]),
+    );
+    const changed = masks.passingExcept("x");
+    expect(changed).not.toBe(exceptX);
+    expect(Array.from(changed)).toEqual([0, 0, 0, 1, 0, 0]);
+    masks.dispose();
+  });
+});

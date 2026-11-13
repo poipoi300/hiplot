@@ -522,8 +522,10 @@ its actual unmasked GL renderer (never infer hardware from requested flags).
 Both use a 1,000 × 700 viewport and device pixel ratio 1. The scroll phase narrows
 the viewport to 360 × 700 so even short integer tick labels overflow. Forced
 full quality disables row sampling/resolution reduction, but brushing and axis
-dragging retain the existing plain-line draft path above 20,000 rows. Release,
-initial and standalone redraw frames are full-quality anti-aliased frames.
+dragging retained the plain-line draft path above 20,000 rows when these
+measurements were taken. Brushing on a GPU now sums retained blocks instead
+(see **Real-time exact brushing from retained blocks**). Release, initial and
+standalone redraw frames are full-quality anti-aliased frames.
 
 Per-step samples include brush callback CPU time, filtering, object selection
 materialization, cached selection flags, per-column geometry/color lookup,
@@ -3242,3 +3244,123 @@ p50/p95/max of 8/8/17 ms and zero stalls in 120 frames. Median full redraw is
 measurements at phone dimensions, not phone hardware measurements or a speedup
 claim. The paired report is `outputs/brush-mode-switch/phone-density.json`;
 refreshed offline samples are in `outputs/mobile-samples-brush-fix/`.
+
+## Real-time exact brushing from retained blocks
+
+Measured 2026-11-12 from `56ad6da` on the RTX 5090 (ANGLE D3D11), 1M × 10
+seeded benchmark rows, 1000 × 700 viewport, device pixel ratio 1, exact
+(`full`) mode. The goal is a completed exact frame for every brush move
+within one 60 Hz frame (16.6 ms), with no draft, sampling or resolution
+reduction.
+
+### Method
+
+During a brush gesture only the brushed axis's selection changes. Rows that
+fail another axis's brushes stay deselected; the others switch between
+selected and deselected in long runs when sorted by the brushed axis. The
+exact renderer therefore:
+
+- ranks the rows passing the other axes (`BrushMasks.passingExcept`) by their
+  pixel on the brushed axis, a linear two-pass radix sort of the Float32
+  pixels, and groups them in near-equal blocks; rows outside the focus form one
+  more block. A block keeps the plot's draw order: consecutive rows of a sorted
+  block all start at the same pixels of the brushed axis, and blending one
+  pixel back to back serializes the GPU (about 10% slower partial draws);
+- draws each block once, every row as if selected, into a layer of float array
+  textures with the density targets' own layout: sums, a categorical coverage
+  sum, the "lowest"/"highest" line on top. This build is one full-quality pass
+  over every row, in the existing fenced batches;
+- per frame, counts selected rows per block from the rows whose flags changed
+  (a word-at-a-time comparison), redraws only partly selected blocks, and sums
+  every other layer as selected or deselected into the density targets, then
+  runs the unchanged tone map;
+- keeps up to four partly selected blocks drawn in slots, each split into its
+  selected and its deselected rows in two layers of the same format. A slot is
+  redrawn only when its rows' flags change, so a fixed brush edge costs nothing.
+  One 16-byte target per fragment halves blending compared with the line pass's
+  two targets: two partial blocks took 5.4 ms with two targets, 2.9 ms with one.
+
+A frame never subtracts a row's contribution: per-pixel peaks and the line on
+top are maxima, which have no inverse (see **Incremental density subtraction:
+rejected**). Blocks are classified from the actual selection, so the picture
+does not depend on the focus flags; flags that disagree with the brushes only
+leave more rows to draw one by one, and a frame with more than half the rows
+partly selected draws every row instead. Overflowing slots draw directly into
+the density targets.
+
+The layers take at most 1 GiB (`BLOCK_MEMORY_BYTES`): 153 layers of
+944 × 465 RGBA32F at device pixel ratio 1, 143 blocks of about 7,000 rows.
+When fewer than 16 focus blocks fit, as at device pixel ratio 2 on a large
+plot, and on software rasterizers, brushing keeps its draft frames. Blocks stay
+allocated while the plot can reuse them (the next gesture on the same axis, the
+release frame); the first frame that cannot use them frees them.
+
+Three host-side costs also mattered once GPU work fell to a few milliseconds:
+
+- Worker fence polling created a `MessageChannel` per poll, about 400 per
+  frame. Every ~20 frames a collection stalled the worker for 10–13 ms, seen
+  as single 10–13 ms gaps between polls. One channel per wait removes them.
+- Timers nested this deeply wait at least 4 ms; the earlier `setTimeout`
+  completion wait added up to 4 ms per frame.
+- A brush move arriving while a frame renders waited for the next animation
+  frame; it now runs as soon as the image arrives.
+
+### Picture equivalence
+
+`tests/brush-blocks.spec.ts` compares block frames with full frames of the same
+selection, byte for byte, on the worker's premultiplied RGBA8 output (read back
+through a texture: a 2D canvas's unpremultiplied readback rounds by up to half
+a level). Cases cover numeric mean/highest/lowest and categorical colors,
+curved and straight lines, missing values on both axes, a second brushed axis,
+three brushes on the brushed axis (six edges, more than the slots), and focus
+flags that disagree with the brushes. Every frame differs by at most one 8-bit
+level, in 2–52 of about 1.5 million channels: float summation order. A real
+brush gesture draws no drafts and reuses the blocks through release.
+
+At 1M rows the release frame from blocks against a full redraw:
+
+| Data / shape | Max difference | Differing channels / 1,755,840 |
+|---|---:|---:|
+| Continuous / curved | 1 | 57 |
+| Continuous / straight | 1 | 77 |
+| Integer / curved | 1 | 683 |
+| Integer / straight | 1 | 189 |
+
+### Measurements
+
+`measureParallelBenchmark` gained two phases after the settled brush steps:
+`drag` moves the brush by its body (both edges move) and `dragEdge` its top
+edge, one move per animation frame for 120 frames across a fifth of the axis
+and back. `inputToImage` is brush input to the image arriving on the page,
+without the two extra animation frames of `inputToVisible`. The display ran
+at 120 Hz, so a frame slower than 8.3 ms also delays the next input: the
+measured latency is stricter than one 60 Hz frame. One load per variant:
+
+| Data / shape | Move input → image p50 / p95 / max | Edge p50 / p95 / max | Release | First gesture frame |
+|---|---|---|---:|---:|
+| Before, every variant | draft frames, 254–264 ms | same | ~500 ms | 254–264 ms |
+| Continuous / curved | 10.3–11.8 / 14.7–16.6 / 16.3–19.8 | 6.3–6.5 / 9.2–10.1 / 10.8–12.7 | 2.7 | 451–616 |
+| Continuous / straight | 7.5 / 10.7 / 12.0 | 5.9 / 8.9 / 13.5 | 2.9 | 437 |
+| Integer / curved | 3.9 / 7.9 / 10.5 | 3.3 / 6.3 / 7.8 | 3.4 | 432 |
+| Integer / straight | 3.3 / 6.8 / 10.6 | 3.2 / 6.5 / 7.5 | 2.1 | 434 |
+
+The continuous curved rows give the range of three loads. Every drag delivered
+111–119 images for 120 inputs. Brush frames are now full-quality anti-aliased
+frames, not drafts.
+
+Limitations, not hidden by the steady-state numbers:
+
+- The first frame of a gesture on a newly brushed axis builds the blocks: about
+  0.43–0.62 s, slower than the 0.25 s draft it replaces. Later gestures on the
+  same axis, while the other axes' brushes stay, start at once.
+- Moving a whole brush on continuous curved data redraws two blocks a frame
+  and sits at the 16.6 ms bound (p95 14.7–16.6 ms in three loads).
+- Up to 1 GiB of GPU memory stays allocated between gestures.
+- These are one workstation's measurements at device pixel ratio 1.
+
+Reproduce after `bun run build`:
+
+```bash
+bun build bench/parallel.ts --target=node --packages=external --outfile=./node_modules/.cache/parallel-bench.mjs
+node node_modules/.cache/parallel-bench.mjs --quality full --backend hardware --rows 1000000 --reps 1 --steps 3 --out <blocks.json>
+```

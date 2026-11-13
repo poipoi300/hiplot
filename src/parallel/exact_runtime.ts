@@ -1,5 +1,5 @@
 import type { ExactReply, ExactRequest } from "./exact_types";
-import { type LineColors, WebGLLineRenderer } from "./webgl";
+import { type LineColors, type LineFocus, TaskPoller, WebGLLineRenderer } from "./webgl";
 
 export interface ExactWorkerScope {
   onmessage: ((event: MessageEvent<ExactRequest>) => Promise<void>) | null;
@@ -18,6 +18,7 @@ export interface ExactSurface {
     | "drawCooperative"
     | "busy"
     | "finishedFrame"
+    | "softwareRendering"
   >;
 }
 
@@ -41,13 +42,21 @@ export function connectExactWorker(
     fail(error);
     return;
   }
-  scope.postMessage({ kind: "ready", density: surface?.renderer.densityRendering ?? null }, []);
+  scope.postMessage(
+    {
+      kind: "ready",
+      density: surface?.renderer.densityRendering ?? null,
+      blocks: surface?.renderer.densityRendering === true && !surface.renderer.softwareRendering,
+    },
+    [],
+  );
   if (surface === null) return;
   const { canvas, renderer } = surface;
   let columns = new Map<number, Float32Array>();
   let colors: LineColors | null = null;
   let order: Uint32Array | null = null;
   let drawOrder: Uint32Array | null = null;
+  let focusRows: Uint8Array | null = null;
   scope.onmessage = async ({ data }) => {
     try {
       colors = data.colors ?? colors;
@@ -73,12 +82,26 @@ export function connectExactWorker(
       renderer.setDrawOrder(drawOrder);
       renderer.setColors(colors);
       renderer.setSelection(data.selection);
-      await renderer.drawCooperative({ ...data, axes });
-      while (renderer.busy) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      focusRows = data.focus?.rows ?? focusRows;
+      let focus: LineFocus | null = null;
+      if (data.focus !== null) {
+        if (focusRows === null) throw new Error("Exact worker needs the rows of a brush focus");
+        focus = { ...data.focus, rows: focusRows };
+      }
+      await renderer.drawCooperative({ ...data, axes }, focus);
+      const poller = new TaskPoller(renderer.softwareRendering);
+      try {
+        while (renderer.busy) await poller.next();
+      } finally {
+        poller.close();
+      }
       const finished = renderer.finishedFrame();
       if (finished === null) throw new Error("Exact worker did not finish its frame");
       const bitmap = canvas.transferToImageBitmap();
-      scope.postMessage({ kind: "frame", id: data.id, bitmap, finished }, [bitmap]);
+      scope.postMessage(
+        { kind: "frame", id: data.id, bitmap, finished, selection: data.selection },
+        [bitmap, data.selection.buffer],
+      );
     } catch (error) {
       fail(error);
     }

@@ -9,6 +9,21 @@ import type { ColorMode, RGB } from "../lib/colors";
 import { linkProgram } from "../lib/webgl";
 import { SPLINE_HANDLE } from "./spline";
 import {
+  BlockLayers,
+  type BlockPartition,
+  BlockPasses,
+  BlockSelection,
+  blockCountFor,
+  blockLayerBytes,
+  blocksFit,
+  LAYER_CONTEXT,
+  LAYER_SELECTED,
+  LAYER_SKIPPED,
+  PARTIAL_SLOTS,
+  PartialSlots,
+  partitionRows,
+} from "./webgl_blocks";
+import {
   encodePixelColumn,
   MISSING_THRESHOLD,
   padUint8,
@@ -65,11 +80,75 @@ export interface LineFrame {
   colorMode: ColorMode;
 }
 
+/**
+ * The axis a brush gesture changes: frames sum retained blocks of its rows
+ * instead of drawing every row (see webgl_blocks.ts).
+ */
+export interface LineFocus {
+  /** Index of the brushed axis in the frame's axes. */
+  axis: number;
+  /**
+   * Per row, 1 when it passes the brushes of every other axis. The blocks are
+   * drawn for this array: a new one, even with equal flags, draws them again.
+   * Frames are exact whatever the flags; flags that do not match the brushes
+   * only leave more rows to draw one by one.
+   */
+  rows: Uint8Array;
+  /** While the gesture runs, missing blocks are drawn; afterwards only matching ones are used. */
+  active: boolean;
+}
+
+/** Blocks of a focus's rows, and what their layers were drawn from (see `matchingBlocks`). */
+interface RetainedBlocks {
+  layers: BlockLayers;
+  partition: BlockPartition;
+  /** Per layer, how the latest frame took it: the blocks, then two per partial slot. */
+  states: Uint8Array;
+  /** The first slot layer, after the blocks. */
+  slotLayer: number;
+  selection: BlockSelection;
+  slots: PartialSlots;
+  /** `partition.order`, as the line pass reads it. */
+  order: WebGLTexture;
+  /** The rows of the slots a frame draws, selected then deselected, and the texture the line pass reads them from. */
+  slotRows: Uint32Array;
+  slotOrder: WebGLTexture;
+  focusRows: Uint8Array;
+  focusAxis: number;
+  rowsOrder: Uint32Array | null;
+  bins: Uint32Array | null;
+  palette: ReadonlyArray<RGB> | null;
+  colorMapBins: number;
+  style: string;
+  axes: ReadonlyArray<RenderAxis>;
+}
+
+/** Everything but the axes, rows and colors that the pixels of a block layer depend on. */
+function blockStyle(frame: LineFrame, width: number, height: number): string {
+  return JSON.stringify([
+    width,
+    height,
+    frame.width,
+    frame.height,
+    frame.lineWidth,
+    frame.pixelRatio,
+    frame.curved,
+    frame.resolution,
+    frame.colorMode,
+  ]);
+}
+
 /** A frame the GPU finished drawing. */
 export interface FinishedFrame {
   milliseconds: number;
-  /** Neither a draft nor reduced in resolution: what slow frames are judged on. */
+  /** Neither a draft nor reduced in resolution. */
   fullQuality: boolean;
+  /**
+   * Summed from a brush gesture's retained blocks (see LineFocus): the same
+   * picture without drawing every row, so its time says nothing of how slowly
+   * this machine draws full frames.
+   */
+  fromBlocks: boolean;
 }
 
 /** How rows are colored: a palette color per row, by bin. */
@@ -155,6 +234,8 @@ uniform int u_rowsPerColumn;
 uniform int u_colorMapBins;
 uniform int u_samples;
 uniform int u_keep;
+/** Draws every row as selected: a block layer of the brushed-axis cache (see webgl_blocks.ts). */
+uniform bool u_allSelected;
 uniform bool u_curved;
 uniform bool u_antialiased;
 uniform vec2 u_deviceScale;
@@ -289,7 +370,7 @@ void main() {
   int line = gl_InstanceID / segments;
   int segment = gl_InstanceID - line * segments;
   int row = int(texelFetch(u_order, at(line + u_rowOffset), 0).r);
-  bool selected = texelFetch(u_selected, at(row), 0).r > 0u;
+  bool selected = u_allSelected || texelFetch(u_selected, at(row), 0).r > 0u;
   bool kept = u_keep == ${DRAW_ALL} || (u_keep == ${DRAW_SELECTED}) == selected;
 
   Segment current = segmentOf(segment, row);
@@ -425,10 +506,10 @@ const COLOR_MODE_CODES: Record<ColorMode, number> = { mean: 0, lowest: 1, highes
  * modes, kept by MAX blending as one float: 1 + rank * levels + coverage,
  * the rank being the color map bin counted toward the end on top (0 to 255)
  * and the coverage quantized to `levels` steps, the most that keeps every
- * key an exact integer in the target's format. The highest rank wins, then
+ * key an exact integer in a single float. The highest rank wins, then
  * the highest coverage; 0 means no line.
  */
-const ON_TOP_COVERAGE_LEVELS = { half: 8, single: 1024 } as const;
+const ON_TOP_COVERAGE_LEVELS = 1024;
 
 /**
  * Accumulates line density into three targets (see `draw`), which add up
@@ -675,6 +756,49 @@ export function densityReference(lineCount: number, plotHeight: number): number 
   return Math.max(2, (12 * lineCount) / Math.max(1, plotHeight));
 }
 
+/**
+ * Yields to later tasks, for polling GPU completion from a worker. Timers
+ * nested this deeply wait at least 4 ms, longer than a whole brush frame's GPU
+ * work; a message is delivered at once. One channel serves a whole wait, which
+ * polls hundreds of times a frame: a channel per poll leaves enough native
+ * garbage for collections that stall the worker by a frame. Software
+ * rasterization shares CPU time with the polling worker, so it polls with
+ * timers. Close the poller when the wait is over.
+ */
+export class TaskPoller {
+  private channel: MessageChannel | null = null;
+  private waiting: (() => void) | null = null;
+
+  constructor(private readonly softwareRendering: boolean) {}
+
+  next(): Promise<void> {
+    if (this.waiting !== null) throw new Error("A task poller waits for one task at a time");
+    return new Promise<void>((resolve) => {
+      if (this.softwareRendering) {
+        setTimeout(resolve, 0);
+        return;
+      }
+      if (this.channel === null) {
+        this.channel = new MessageChannel();
+        this.channel.port1.onmessage = () => {
+          const waiting = this.waiting;
+          this.waiting = null;
+          waiting?.();
+        };
+      }
+      this.waiting = resolve;
+      this.channel.port2.postMessage(null);
+    });
+  }
+
+  close(): void {
+    this.channel?.port1.close();
+    this.channel?.port2.close();
+    this.channel = null;
+    this.waiting = null;
+  }
+}
+
 /** A linked program and its uniform locations, looked up by name once. */
 class Program {
   readonly program: WebGLProgram;
@@ -723,6 +847,9 @@ export class WebGLLineRenderer {
   /** Alpha-blended lines, the fallback without float render targets. */
   private readonly directProgram: Program;
   private density: DensityTargets | null = null;
+  /** The retained blocks of the latest brush gesture's axis, kept for the next gesture on it. */
+  private blocks: RetainedBlocks | null = null;
+  private blockPasses: BlockPasses | null = null;
   private imageProgram: Program | null = null;
   private imageTexture: WebGLTexture | null = null;
   private readonly textures: Record<SamplerName, WebGLTexture>;
@@ -739,12 +866,16 @@ export class WebGLLineRenderer {
   private uploadedBins: Uint32Array | null = null;
   private uploadedPalette: ReadonlyArray<RGB> | null = null;
   private colorMapBins = 0;
+  /** The selection texture's texels, kept to compare and upload without allocating per move. */
+  private selectionTexels: Uint8Array | null = null;
+  /** The uploaded per-row flags: a view of `selectionTexels` without the padding. */
   private uploadedSelection: Uint8Array | null = null;
   /** Signals when the GPU has finished the last frame drawn. */
   private inFlight: WebGLSync | null = null;
   /** When the frame in flight was submitted, and whether it was drawn at full quality. */
   private submittedAt = 0;
   private inFlightFullQuality = false;
+  private inFlightFromBlocks = false;
   /** The last frame seen finished, until finishedFrame() reads it. */
   private finished: FinishedFrame | null = null;
 
@@ -814,6 +945,7 @@ export class WebGLLineRenderer {
     if (rowCount === this.rowCount && order === this.rowsOrder) {
       return;
     }
+    this.disposeBlocks();
     this.rowCount = rowCount;
     this.rowsOrder = order;
     this.layout = textureLayout(rowCount, this.maxTextureSize);
@@ -823,6 +955,7 @@ export class WebGLLineRenderer {
     this.uploadedBins = null;
     // Laid out at the width of the row textures, which follows the row count.
     this.uploadedPalette = null;
+    this.selectionTexels = null;
     this.uploadedSelection = null;
     this.setDrawOrder(order);
   }
@@ -956,18 +1089,32 @@ export class WebGLLineRenderer {
 
   /** Per-row selection flags (1 = drawn): the only upload a brush move needs. */
   setSelection(selected: Uint8Array): void {
-    // Indexed brushes reuse live buffers; cache the uploaded values, not their identity.
-    if (this.uploadedSelection?.length === selected.length) {
-      let unchanged = true;
-      for (let row = 0; row < selected.length; ++row) {
-        if (selected[row] !== this.uploadedSelection[row]) {
-          unchanged = false;
-          break;
-        }
-      }
-      if (unchanged) return;
+    if (selected.length !== this.rowCount) {
+      throw new Error(`A selection of ${selected.length} rows for ${this.rowCount} rows`);
     }
     const gl = this.gl;
+    // Indexed brushes reuse live buffers; cache the uploaded values, not their identity.
+    let texels = this.selectionTexels;
+    if (texels !== null) {
+      let row = 0;
+      while (row < selected.length && selected[row] === texels[row]) ++row;
+      if (row === selected.length) return;
+      texels.set(selected);
+      this.bind("u_selected");
+      gl.texSubImage2D(
+        gl.TEXTURE_2D,
+        0,
+        0,
+        0,
+        this.layout.width,
+        this.layout.rowsPerColumn,
+        gl.RED_INTEGER,
+        gl.UNSIGNED_BYTE,
+        texels,
+      );
+      return;
+    }
+    texels = padUint8(selected, this.layout);
     this.bind("u_selected");
     gl.texImage2D(
       gl.TEXTURE_2D,
@@ -978,9 +1125,10 @@ export class WebGLLineRenderer {
       0,
       gl.RED_INTEGER,
       gl.UNSIGNED_BYTE,
-      padUint8(selected, this.layout),
+      texels,
     );
-    this.uploadedSelection = selected.slice();
+    this.selectionTexels = texels;
+    this.uploadedSelection = texels.subarray(0, this.rowCount);
   }
 
   /** Releases the GPU resources; the renderer is unusable afterwards. */
@@ -1006,6 +1154,7 @@ export class WebGLLineRenderer {
     this.finished = {
       milliseconds: performance.now() - this.submittedAt,
       fullQuality: this.inFlightFullQuality,
+      fromBlocks: this.inFlightFromBlocks,
     };
     return false;
   }
@@ -1118,6 +1267,7 @@ export class WebGLLineRenderer {
       program.uniform("u_halfWidth"),
       frame.draft ? 0.5 : (frame.lineWidth * frame.pixelRatio) / 2,
     );
+    gl.uniform1i(program.uniform("u_allSelected"), 0);
     return samples;
   }
 
@@ -1127,10 +1277,28 @@ export class WebGLLineRenderer {
     samples: number,
     batchRows: () => number,
   ): Generator<void> {
+    yield* this.drawRows(
+      program,
+      frame,
+      samples,
+      0,
+      Math.min(frame.drawnRows, this.rowCount),
+      batchRows,
+    );
+  }
+
+  /** Lines of the rows at positions `[start, end)` of the bound order texture, in batches. */
+  private *drawRows(
+    program: Program,
+    frame: LineFrame,
+    samples: number,
+    start: number,
+    end: number,
+    batchRows: () => number,
+  ): Generator<void> {
     const gl = this.gl;
-    const rows = Math.min(frame.drawnRows, this.rowCount);
-    for (let offset = 0; offset < rows; ) {
-      const count = Math.min(batchRows(), rows - offset);
+    for (let offset = start; offset < end; ) {
+      const count = Math.min(batchRows(), end - offset);
       gl.uniform1i(program.uniform("u_rowOffset"), offset);
       gl.bindVertexArray(this.vertexArray);
       gl.drawArraysInstanced(
@@ -1145,49 +1313,346 @@ export class WebGLLineRenderer {
     }
   }
 
-  /** Worker-only batches leave the compositor time to present input between GPU submissions. */
-  async drawCooperative(frame: LineFrame): Promise<void> {
+  /**
+   * Worker-only batches leave the compositor time to present input between GPU
+   * submissions. With a focus (a brush gesture on one axis), the frame is
+   * summed from the focus's retained blocks (see webgl_blocks.ts), first
+   * drawing them in batches if the cached ones do not match the frame.
+   */
+  async drawCooperative(frame: LineFrame, focus: LineFocus | null = null): Promise<void> {
     const gl = this.gl;
     this.submittedAt = performance.now();
     this.inFlightFullQuality = !frame.draft && frame.resolution === 1;
-    let batchRows = 128;
-    let started = performance.now();
-    for (const _ of this.drawFrame(frame, () => batchRows)) {
-      const fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
-      if (fence === null) throw new Error("Could not fence an exact line batch");
-      gl.flush();
-      let lastWait = 0;
-      try {
-        do {
-          // Always yield, including on software GPUs which may finish during flush.
-          const waitingAt = performance.now();
-          await new Promise<void>((resolve) => {
-            // Software rasterization shares CPU time with this polling worker.
-            if (this.softwareRendering) {
-              setTimeout(resolve, 0);
-              return;
-            }
-            const channel = new MessageChannel();
-            channel.port1.onmessage = () => {
-              channel.port1.close();
-              channel.port2.close();
-              resolve();
-            };
-            channel.port2.postMessage(null);
-          });
-          lastWait = performance.now() - waitingAt;
-          if (gl.isContextLost()) throw new Error("Exact line worker lost its WebGL context");
-        } while (gl.getSyncParameter(fence, gl.SYNC_STATUS) !== gl.SIGNALED);
-      } finally {
-        gl.deleteSync(fence);
+    this.inFlightFromBlocks = false;
+    const layout = this.blockLayout(frame);
+    if (
+      focus !== null &&
+      this.densityPrograms !== null &&
+      !frame.draft &&
+      blocksFit(layout.width * layout.height, layout.layerBytes)
+    ) {
+      if (frame.drawnRows !== this.rowCount) {
+        throw new Error(`Brush blocks sum every row, not ${frame.drawnRows} of ${this.rowCount}`);
       }
-      // Host task delays are not GPU work. Charge only time known to precede completion.
-      const elapsed = Math.max(1, performance.now() - started - lastWait);
-      batchRows = Math.max(1, Math.min(32768, Math.floor(batchRows * Math.min(2, 6 / elapsed))));
-      started = performance.now();
+      const blocks =
+        this.matchingBlocks(frame, focus) ??
+        (focus.active ? await this.buildBlocks(frame, focus) : null);
+      if (blocks !== null && this.drawBlockFrame(frame, blocks)) {
+        this.inFlightFromBlocks = true;
+        this.inFlight = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        gl.flush();
+        return;
+      }
+      if (blocks === null) this.disposeBlocks();
+    } else {
+      // A frame that cannot use the blocks frees their memory.
+      this.disposeBlocks();
     }
+    await this.cooperate((batchRows) => this.drawFrame(frame, batchRows));
     this.inFlight = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
     gl.flush();
+  }
+
+  /** Runs GPU work in batches, waiting for each to finish; batches grow toward ~6 ms of GPU time. */
+  private async cooperate(work: (batchRows: () => number) => Generator<void>): Promise<void> {
+    const gl = this.gl;
+    let batchRows = 128;
+    let started = performance.now();
+    const poller = new TaskPoller(this.softwareRendering);
+    try {
+      for (const _ of work(() => batchRows)) {
+        const fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if (fence === null) throw new Error("Could not fence an exact line batch");
+        gl.flush();
+        let lastWait = 0;
+        try {
+          do {
+            // Always yield, including on software GPUs which may finish during flush.
+            const waitingAt = performance.now();
+            await poller.next();
+            lastWait = performance.now() - waitingAt;
+            if (gl.isContextLost()) throw new Error("Exact line worker lost its WebGL context");
+          } while (gl.getSyncParameter(fence, gl.SYNC_STATUS) !== gl.SIGNALED);
+        } finally {
+          gl.deleteSync(fence);
+        }
+        // Host task delays are not GPU work. Charge only time known to precede completion.
+        const elapsed = Math.max(1, performance.now() - started - lastWait);
+        batchRows = Math.max(1, Math.min(32768, Math.floor(batchRows * Math.min(2, 6 / elapsed))));
+        started = performance.now();
+      }
+    } finally {
+      poller.close();
+    }
+  }
+
+  /** The retained blocks, if they were drawn from this frame's geometry, colors and focus. */
+  private matchingBlocks(frame: LineFrame, focus: LineFocus): RetainedBlocks | null {
+    const blocks = this.blocks;
+    if (
+      blocks === null ||
+      blocks.focusRows !== focus.rows ||
+      blocks.focusAxis !== focus.axis ||
+      blocks.rowsOrder !== this.rowsOrder ||
+      blocks.bins !== this.uploadedBins ||
+      blocks.palette !== this.uploadedPalette ||
+      blocks.colorMapBins !== this.colorMapBins ||
+      blocks.style !== blockStyle(frame, this.gl.drawingBufferWidth, this.gl.drawingBufferHeight) ||
+      blocks.axes.length !== frame.axes.length ||
+      blocks.axes.some(
+        (axis, index) => axis.x !== frame.axes[index].x || axis.pixels !== frame.axes[index].pixels,
+      )
+    ) {
+      return null;
+    }
+    return blocks;
+  }
+
+  /**
+   * Draws the focus rows block by block, each into its own layer as if all
+   * were selected, in batches (see `cooperate`). Replaces the previous blocks,
+   * whose memory is released first.
+   */
+  private async buildBlocks(frame: LineFrame, focus: LineFocus): Promise<RetainedBlocks> {
+    const gl = this.gl;
+    const programs = this.densityPrograms;
+    if (programs === null) throw new Error("Brush blocks need float render targets");
+    if (!(focus.axis >= 0 && focus.axis < frame.axes.length)) {
+      throw new Error(`No focus axis ${focus.axis} of ${frame.axes.length}`);
+    }
+    if (focus.rows.length !== this.rowCount) {
+      throw new Error(`A focus of ${focus.rows.length} rows for ${this.rowCount} rows`);
+    }
+    if (this.uploadedOrder === null) throw new Error("Brush blocks need a draw order");
+    this.disposeBlocks();
+    const { width, height, valueColors, withOnTop, layerBytes } = this.blockLayout(frame);
+    let focused = 0;
+    for (let row = 0; row < focus.rows.length; ++row) focused += focus.rows[row] === 0 ? 0 : 1;
+    const blockCount = blockCountFor(
+      focused,
+      width * height,
+      layerBytes,
+      gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number,
+    );
+    const partition = partitionRows(
+      frame.axes[focus.axis].pixels,
+      focus.rows,
+      this.uploadedOrder,
+      blockCount,
+    );
+    // Every block, the rows outside the focus last, then two layers per partial slot.
+    const slotLayer = partition.starts.length - 1;
+    const states = new Uint8Array(slotLayer + 2 * PARTIAL_SLOTS);
+    let slotBlockRows = 0;
+    for (let block = 0; block + 1 < slotLayer; ++block) {
+      slotBlockRows = Math.max(
+        slotBlockRows,
+        partition.starts[block + 1] - partition.starts[block],
+      );
+    }
+    const slotRows = new Uint32Array(
+      this.layout.width *
+        Math.max(1, Math.ceil((PARTIAL_SLOTS * slotBlockRows) / this.layout.width)),
+    );
+    this.blockPasses ??= new BlockPasses(gl);
+    const textures: WebGLTexture[] = [];
+    let layers: BlockLayers | null = null;
+    let blocks: RetainedBlocks;
+    try {
+      const order = this.rowTexture(padUint32(partition.order, this.layout));
+      textures.push(order);
+      const slotOrder = this.rowTexture(slotRows);
+      textures.push(slotOrder);
+      layers = new BlockLayers(gl, width, height, states.length, valueColors, withOnTop);
+      blocks = {
+        layers,
+        partition,
+        states,
+        slotLayer,
+        selection: new BlockSelection(partition),
+        slots: new PartialSlots(slotBlockRows),
+        order,
+        slotRows,
+        slotOrder,
+        focusRows: focus.rows,
+        focusAxis: focus.axis,
+        rowsOrder: this.rowsOrder,
+        bins: this.uploadedBins,
+        palette: this.uploadedPalette,
+        colorMapBins: this.colorMapBins,
+        style: blockStyle(frame, gl.drawingBufferWidth, gl.drawingBufferHeight),
+        axes: frame.axes.map(({ x, pixels }) => ({ x, pixels })),
+      };
+      const passes = this.blockPasses;
+      await this.cooperate((batchRows) =>
+        this.drawBlockLayers(frame, blocks, passes, programs.lines, batchRows),
+      );
+    } catch (error) {
+      layers?.dispose();
+      for (const texture of textures) gl.deleteTexture(texture);
+      throw error;
+    }
+    this.blocks = blocks;
+    return blocks;
+  }
+
+  /** A per-row unsigned integer texture in the row layout, for the line pass's order. */
+  private rowTexture(rows: Uint32Array): WebGLTexture {
+    const gl = this.gl;
+    const texture = gl.createTexture();
+    if (texture === null) throw new Error("Could not create a block order texture");
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.R32UI,
+      this.layout.width,
+      rows.length / this.layout.width,
+      0,
+      gl.RED_INTEGER,
+      gl.UNSIGNED_INT,
+      rows,
+    );
+    return texture;
+  }
+
+  /** The size and format of a frame's block layers (see BlockLayers). */
+  private blockLayout(frame: LineFrame) {
+    const gl = this.gl;
+    const valueColors = this.colorMapBins > 0;
+    const withOnTop = valueColors && frame.colorMode !== "mean";
+    return {
+      width: Math.max(1, Math.ceil(gl.drawingBufferWidth * frame.resolution)),
+      height: Math.max(1, Math.ceil(gl.drawingBufferHeight * frame.resolution)),
+      valueColors,
+      withOnTop,
+      layerBytes: blockLayerBytes(valueColors, withOnTop),
+    };
+  }
+
+  private *drawBlockLayers(
+    frame: LineFrame,
+    blocks: RetainedBlocks,
+    passes: BlockPasses,
+    lines: Program,
+    batchRows: () => number,
+  ): Generator<void> {
+    const gl = this.gl;
+    const { layers, partition } = blocks;
+    this.uploadAxes(frame);
+    const samples = this.startLinePass(lines, frame, layers, true);
+    gl.activeTexture(gl.TEXTURE0 + UNITS.u_order);
+    gl.bindTexture(gl.TEXTURE_2D, blocks.order);
+    for (let block = 0; block < blocks.slotLayer; ++block) {
+      passes.bindLayer(layers, block);
+      yield* this.drawRows(
+        lines,
+        frame,
+        samples,
+        partition.starts[block],
+        partition.starts[block + 1],
+        batchRows,
+      );
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.disable(gl.BLEND);
+  }
+
+  /**
+   * Draws a frame from retained blocks: the partly selected ones row by row,
+   * into slots or directly, then every layer as selected or deselected, then
+   * the usual tone mapping. Returns false, drawing nothing, when so many rows
+   * are partly selected that drawing every row is cheaper.
+   */
+  private drawBlockFrame(frame: LineFrame, blocks: RetainedBlocks): boolean {
+    const gl = this.gl;
+    const programs = this.densityPrograms;
+    const selection = this.uploadedSelection;
+    const passes = this.blockPasses;
+    if (programs === null || selection === null || passes === null) {
+      throw new Error("Brush blocks need float targets, a selection and their passes");
+    }
+    const blockStates = blocks.states.subarray(0, blocks.slotLayer);
+    const partialRows = blocks.selection.update(selection, blockStates);
+    if (partialRows > this.rowCount / 2) return false;
+    const plan = blocks.slots.plan(blocks.partition, selection, blockStates);
+    for (let slot = 0; slot < PARTIAL_SLOTS; ++slot) {
+      const used = ((plan.used >> slot) & 1) !== 0;
+      blocks.states[blocks.slotLayer + 2 * slot] = used ? LAYER_SELECTED : LAYER_SKIPPED;
+      blocks.states[blocks.slotLayer + 2 * slot + 1] = used ? LAYER_CONTEXT : LAYER_SKIPPED;
+    }
+    const { order, starts } = blocks.partition;
+    const drawOnce = (samples: number, start: number, end: number): void => {
+      for (const _ of this.drawRows(programs.lines, frame, samples, start, end, () => end)) {
+        // One submission: partly selected blocks are a small share of the rows.
+      }
+    };
+    this.uploadAxes(frame);
+    if (plan.draw.length > 0) {
+      // Each drawn slot's selected rows, then its deselected ones.
+      const ranges: [number, number, number, number][] = [];
+      let at = 0;
+      for (const { block, slot, pattern } of plan.draw) {
+        const begin = at;
+        for (let i = 0; i < pattern.length; ++i) {
+          if (pattern[i] === 1) blocks.slotRows[at++] = order[starts[block] + i];
+        }
+        const middle = at;
+        for (let i = 0; i < pattern.length; ++i) {
+          if (pattern[i] === 0) blocks.slotRows[at++] = order[starts[block] + i];
+        }
+        ranges.push([slot, begin, middle, at]);
+      }
+      gl.activeTexture(gl.TEXTURE0 + UNITS.u_order);
+      gl.bindTexture(gl.TEXTURE_2D, blocks.slotOrder);
+      const texelRows = Math.ceil(at / this.layout.width);
+      gl.texSubImage2D(
+        gl.TEXTURE_2D,
+        0,
+        0,
+        0,
+        this.layout.width,
+        texelRows,
+        gl.RED_INTEGER,
+        gl.UNSIGNED_INT,
+        blocks.slotRows.subarray(0, texelRows * this.layout.width),
+      );
+      const samples = this.startLinePass(programs.lines, frame, blocks.layers, true);
+      gl.activeTexture(gl.TEXTURE0 + UNITS.u_order);
+      gl.bindTexture(gl.TEXTURE_2D, blocks.slotOrder);
+      for (const [slot, begin, middle, end] of ranges) {
+        passes.bindLayer(blocks.layers, blocks.slotLayer + 2 * slot);
+        drawOnce(samples, begin, middle);
+        passes.bindLayer(blocks.layers, blocks.slotLayer + 2 * slot + 1);
+        drawOnce(samples, middle, end);
+      }
+    }
+    const targets = this.densityTargets(
+      blocks.layers.width,
+      blocks.layers.height,
+      this.densityPrecision(),
+    );
+    this.bindDensityTargets(frame, targets);
+    const samples = this.startLinePass(programs.lines, frame, targets, false);
+    if (plan.overflow.length > 0) {
+      gl.activeTexture(gl.TEXTURE0 + UNITS.u_order);
+      gl.bindTexture(gl.TEXTURE_2D, blocks.order);
+      for (const block of plan.overflow) drawOnce(samples, starts[block], starts[block + 1]);
+    }
+    passes.accumulate(blocks.layers, blocks.states);
+    gl.disable(gl.BLEND);
+    this.composite(frame, targets, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    return true;
+  }
+
+  private disposeBlocks(): void {
+    if (this.blocks === null) return;
+    this.blocks.layers.dispose();
+    this.gl.deleteTexture(this.blocks.order);
+    this.gl.deleteTexture(this.blocks.slotOrder);
+    this.blocks = null;
   }
 
   /** Draws a frame and marks it in flight until the GPU has finished it (see `busy`). */
@@ -1195,6 +1660,7 @@ export class WebGLLineRenderer {
     const gl = this.gl;
     this.submittedAt = performance.now();
     this.inFlightFullQuality = !frame.draft && frame.resolution === 1;
+    this.inFlightFromBlocks = false;
     for (const _ of this.drawFrame(frame)) {
       // The synchronous path submits one complete pass without waiting between rows.
     }
@@ -1210,6 +1676,7 @@ export class WebGLLineRenderer {
     const gl = this.gl;
     this.submittedAt = performance.now();
     this.inFlightFullQuality = false;
+    this.inFlightFromBlocks = false;
     this.imageProgram ??= new Program(gl, COMPOSITE_VERTEX_SHADER, IMAGE_FRAGMENT_SHADER);
     this.imageTexture ??= gl.createTexture();
     if (this.imageTexture === null) {
@@ -1248,24 +1715,7 @@ export class WebGLLineRenderer {
     batchRows: () => number = () => Math.max(1, this.rowCount),
   ): Generator<void> {
     const gl = this.gl;
-    const slots = this.slotsFor(frame.axes.map((axis) => axis.pixels));
-    const axesTexels = new Float32Array(Math.max(1, frame.axes.length) * 4);
-    frame.axes.forEach((axis, index) => {
-      axesTexels.set([axis.x, slots[index], 0, 0], index * 4);
-    });
-    this.bind("u_axes");
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA32F,
-      Math.max(1, frame.axes.length),
-      1,
-      0,
-      gl.RGBA,
-      gl.FLOAT,
-      axesTexels,
-    );
-
+    this.uploadAxes(frame);
     const width = gl.drawingBufferWidth;
     const height = gl.drawingBufferHeight;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -1310,13 +1760,41 @@ export class WebGLLineRenderer {
       Math.max(1, Math.ceil(height * frame.resolution)),
       this.densityPrecision(),
     );
-    const { lines, composite } = this.densityPrograms;
-    const onTopLevels =
-      ON_TOP_COVERAGE_LEVELS[targets.precision.onTop === gl.RGBA32F ? "single" : "half"];
-    const valueColors = this.colorMapBins > 0;
-    const colorMode = COLOR_MODE_CODES[frame.colorMode];
+    const { lines } = this.densityPrograms;
+    this.bindDensityTargets(frame, targets);
+    const samples = this.startLinePass(lines, frame, targets, false);
+    yield* this.drawLines(lines, frame, samples, batchRows);
+    gl.disable(gl.BLEND);
+    this.composite(frame, targets, width, height);
+  }
+
+  /** Uploads the axes texture: each axis's x and the texture slot of its pixel column. */
+  private uploadAxes(frame: LineFrame): void {
+    const gl = this.gl;
+    const slots = this.slotsFor(frame.axes.map((axis) => axis.pixels));
+    const axesTexels = new Float32Array(Math.max(1, frame.axes.length) * 4);
+    frame.axes.forEach((axis, index) => {
+      axesTexels.set([axis.x, slots[index], 0, 0], index * 4);
+    });
+    this.bind("u_axes");
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA32F,
+      Math.max(1, frame.axes.length),
+      1,
+      0,
+      gl.RGBA,
+      gl.FLOAT,
+      axesTexels,
+    );
+  }
+
+  /** Binds and clears the density targets, the line on top only in the modes that show it. */
+  private bindDensityTargets(frame: LineFrame, targets: DensityTargets): void {
+    const gl = this.gl;
     // The line on top only matters in the modes that show it; others skip its bandwidth.
-    const withOnTop = valueColors && frame.colorMode !== "mean";
+    const withOnTop = this.colorMapBins > 0 && frame.colorMode !== "mean";
     gl.bindFramebuffer(gl.FRAMEBUFFER, targets.framebuffer);
     gl.drawBuffers([
       gl.COLOR_ATTACHMENT0,
@@ -1329,19 +1807,46 @@ export class WebGLLineRenderer {
     if (withOnTop) {
       gl.clearBufferfv(gl.COLOR, 2, [0, 0, 0, 0]);
     }
-    // Colors add up and alphas keep the maximum, in every target.
+  }
+
+  /**
+   * Sets up a density pass of the line program into the bound targets, of
+   * `target`'s size: colors add up and alphas keep the maximum, in every
+   * target. Returns the points per segment.
+   */
+  private startLinePass(
+    program: Program,
+    frame: LineFrame,
+    target: { width: number; height: number },
+    allSelected: boolean,
+  ): number {
+    const gl = this.gl;
+    gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE);
     gl.blendEquationSeparate(gl.FUNC_ADD, gl.MAX);
-    const samples = this.prepareLines(lines, frame, targets);
-    gl.uniform1i(lines.uniform("u_keep"), DRAW_ALL);
-    gl.uniform1i(lines.uniform("u_valueColors"), valueColors ? 1 : 0);
-    gl.uniform1i(lines.uniform("u_colorMode"), colorMode);
-    gl.uniform1f(lines.uniform("u_onTopLevels"), onTopLevels);
-    yield* this.drawLines(lines, frame, samples, batchRows);
+    const samples = this.prepareLines(program, frame, target);
+    gl.uniform1i(program.uniform("u_keep"), DRAW_ALL);
+    gl.uniform1i(program.uniform("u_valueColors"), this.colorMapBins > 0 ? 1 : 0);
+    gl.uniform1i(program.uniform("u_colorMode"), COLOR_MODE_CODES[frame.colorMode]);
+    gl.uniform1f(program.uniform("u_onTopLevels"), ON_TOP_COVERAGE_LEVELS);
+    gl.uniform1i(program.uniform("u_allSelected"), allSelected ? 1 : 0);
+    return samples;
+  }
 
+  /** Tone-maps the density targets onto the canvas (see COMPOSITE_FRAGMENT_SHADER). */
+  private composite(
+    frame: LineFrame,
+    targets: DensityTargets,
+    width: number,
+    height: number,
+  ): void {
+    const gl = this.gl;
+    const programs = this.densityPrograms;
+    if (programs === null) throw new Error("Compositing needs float render targets");
+    const { composite } = programs;
+    const valueColors = this.colorMapBins > 0;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, width, height);
-    gl.disable(gl.BLEND);
     // biome-ignore lint/correctness/useHookAtTopLevel: WebGL2RenderingContext.useProgram, not a React hook.
     gl.useProgram(composite.program);
     for (const name of ["selectedSums", "coverageSums", "onTop"] as const) {
@@ -1354,8 +1859,8 @@ export class WebGLLineRenderer {
     gl.uniform1i(composite.uniform("u_paletteWidth"), this.layout.width);
     gl.uniform1i(composite.uniform("u_valueColors"), valueColors ? 1 : 0);
     gl.uniform1i(composite.uniform("u_colorMapBins"), this.colorMapBins);
-    gl.uniform1i(composite.uniform("u_colorMode"), colorMode);
-    gl.uniform1f(composite.uniform("u_onTopLevels"), onTopLevels);
+    gl.uniform1i(composite.uniform("u_colorMode"), COLOR_MODE_CODES[frame.colorMode]);
+    gl.uniform1f(composite.uniform("u_onTopLevels"), ON_TOP_COVERAGE_LEVELS);
     gl.uniform1f(
       composite.uniform("u_selectedReference"),
       densityReference(frame.selectedCount, frame.height),
@@ -1364,7 +1869,12 @@ export class WebGLLineRenderer {
       composite.uniform("u_contextReference"),
       densityReference(frame.contextCount, frame.height),
     );
-    gl.uniform3f(composite.uniform("u_contextColor"), ...contextColor);
+    gl.uniform3f(
+      composite.uniform("u_contextColor"),
+      frame.contextColor.r / 255,
+      frame.contextColor.g / 255,
+      frame.contextColor.b / 255,
+    );
     gl.uniform1f(composite.uniform("u_contextAlpha"), frame.contextAlpha);
     gl.uniform1f(composite.uniform("u_resolution"), targets.width / width);
     gl.bindVertexArray(this.vertexArray);

@@ -4,7 +4,7 @@ import type { ExactReply, ExactRequest } from "./exact_types";
 import { ExactRenderer } from "./exact_worker";
 import { type LineColors, type LineFrame, WebGLLineRenderer } from "./webgl";
 
-const finished = { milliseconds: 12, fullQuality: true };
+const finished = { milliseconds: 12, fullQuality: true, fromBlocks: false };
 const ready = async () => {
   await Promise.resolve();
   await Promise.resolve();
@@ -63,7 +63,13 @@ class WorkerDouble {
         closed = true;
       },
     } as ImageBitmap;
-    this.reply({ kind: "frame", id: this.requests[index].id, bitmap, finished });
+    this.reply({
+      kind: "frame",
+      id: this.requests[index].id,
+      bitmap,
+      finished,
+      selection: this.requests[index].selection,
+    });
     return closed;
   }
   asWorker() {
@@ -94,7 +100,7 @@ test("exact requests wait for capability discovery and transfer owned row snapsh
   await ready();
   expect(renderer.busy).toBe(true);
   expect(worker.requests).toHaveLength(0);
-  worker.reply({ kind: "ready", density: true });
+  worker.reply({ kind: "ready", density: true, blocks: false });
   const first = worker.requests[0];
   expect(first.selection).toEqual(new Uint8Array([1, 0, 1]));
   expect(first.columns).toHaveLength(1);
@@ -131,7 +137,7 @@ test("exact bursts publish only the latest complete image and preserve busy duri
   );
   draw(renderer, input);
   await ready();
-  worker.reply({ kind: "ready", density: true });
+  worker.reply({ kind: "ready", density: true, blocks: false });
   draw(renderer, { ...input, frame: { ...input.frame, width: 20 } });
   draw(renderer, { ...input, frame: { ...input.frame, width: 30 } });
   expect(worker.requests).toHaveLength(1);
@@ -159,7 +165,7 @@ test("worker capability selects sorted alpha order and dropped columns are retra
   input.fallback = () => sorted;
   draw(renderer, input);
   await ready();
-  worker.reply({ kind: "ready", density: false });
+  worker.reply({ kind: "ready", density: false, blocks: false });
   expect(worker.requests[0].drawOrder).toEqual(sorted);
   worker.finish(0);
   draw(renderer, { ...input, frame: { ...input.frame, axes: [] } });
@@ -186,7 +192,7 @@ test("unsupported worker WebGL falls back and disposed workers close late bitmap
   draw(renderer);
   draw(renderer);
   await ready();
-  worker.reply({ kind: "ready", density: null });
+  worker.reply({ kind: "ready", density: null, blocks: false });
   expect(unavailable).toBe(true);
   expect(renderer.busy).toBe(false);
   expect(worker.terminated).toBe(true);
@@ -200,9 +206,10 @@ test("unsupported worker WebGL falls back and disposed workers close late bitmap
       },
     } as ImageBitmap,
     finished,
+    selection: new Uint8Array(0),
   });
   expect(closed).toBe(true);
-  worker.reply({ kind: "ready", density: true });
+  worker.reply({ kind: "ready", density: true, blocks: false });
   const earlyWorker = new WorkerDouble();
   const early = new ExactRenderer(
     () => {},
@@ -264,12 +271,18 @@ test("worker failures clear busy, terminate and remain visible", async () => {
       draw(renderer);
       await ready();
       if (failure !== "factory") {
-        worker.reply({ kind: "ready", density: true });
+        worker.reply({ kind: "ready", density: true, blocks: false });
         if (failure === "message") worker.reply({ kind: "error", message: "render failed" });
         if (failure === "event") worker.onerror?.({ message: "failed" } as ErrorEvent);
         if (failure === "unreadable") worker.onmessageerror?.();
         if (failure === "unexpected")
-          worker.reply({ kind: "frame", id: 999, bitmap: { close() {} } as ImageBitmap, finished });
+          worker.reply({
+            kind: "frame",
+            id: 999,
+            bitmap: { close() {} } as ImageBitmap,
+            finished,
+            selection: new Uint8Array(0),
+          });
       }
       expect(renderer.busy).toBe(false);
       expect(() => draw(renderer)).toThrow();
@@ -292,6 +305,7 @@ function request(): ExactRequest {
     order: input.order,
     drawOrder: input.order,
     selection: input.selection,
+    focus: null,
   };
 }
 
@@ -320,6 +334,7 @@ test("worker retains immutable columns and publishes only after cooperative rend
     canvas: { width: 1, height: 1, transferToImageBitmap: () => bitmap },
     renderer: {
       densityRendering: true,
+      softwareRendering: false,
       setRows() {},
       setDrawOrder() {},
       setColors() {},
@@ -337,13 +352,20 @@ test("worker retains immutable columns and publishes only after cooperative rend
     },
   };
   const worker = runtime(() => surface);
-  const work = worker.send(request());
+  const first = request();
+  const work = worker.send(first);
   expect(worker.replies).toHaveLength(1);
   expect(surface.canvas.width).toBe(20);
   expect(surface.canvas.height).toBe(16);
   complete?.();
   await work;
-  expect(worker.replies[1]).toEqual({ kind: "frame", id: 1, bitmap, finished });
+  expect(worker.replies[1]).toEqual({
+    kind: "frame",
+    id: 1,
+    bitmap,
+    finished,
+    selection: first.selection,
+  });
   expect(seen[0].axes[0].pixels).toBe(seen[0].axes[1].pixels);
   const next = request();
   delete next.colors;
@@ -358,7 +380,7 @@ test("worker retains immutable columns and publishes only after cooperative rend
 });
 
 test("worker reports unavailable contexts, initialization and frame failures", async () => {
-  expect(runtime(() => null).replies).toEqual([{ kind: "ready", density: null }]);
+  expect(runtime(() => null).replies).toEqual([{ kind: "ready", density: null, blocks: false }]);
   expect(
     runtime(() => {
       throw new Error("init failed");
@@ -368,6 +390,7 @@ test("worker reports unavailable contexts, initialization and frame failures", a
     canvas: { width: 20, height: 16, transferToImageBitmap: () => ({}) as ImageBitmap },
     renderer: {
       densityRendering: false,
+      softwareRendering: true,
       setRows() {},
       setDrawOrder() {},
       setColors() {},
@@ -413,6 +436,7 @@ test("cooperative line batches wait for their fences and release failed fences",
     const renderer = Object.create(WebGLLineRenderer.prototype) as WebGLLineRenderer;
     Object.assign(renderer, {
       softwareRendering: failure === null,
+      blocks: null,
       gl: {
         SYNC_GPU_COMMANDS_COMPLETE: 1,
         SYNC_STATUS: 2,
