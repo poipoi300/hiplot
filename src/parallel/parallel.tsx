@@ -309,6 +309,12 @@ const BRUSH_HANDLE_PIXELS = 6;
  * brush; elsewhere on the axis, every brush of the axis.
  */
 const BRUSH_CLICK_PIXELS = 2;
+/**
+ * A pointer resting this long on an axis's brush band is likely to brush it
+ * next: its blocks are drawn ahead (see prepareBrushFocus). Shorter, a
+ * pointer crossing several axes on its way would draw each one's blocks.
+ */
+const BRUSH_PREPARE_MS = 120;
 /** Brushes on one axis this close merge when a gesture ends. */
 const BRUSH_TOUCH_PIXELS = 1;
 /** Where the plot keeps its brushes in the persistent state. */
@@ -737,6 +743,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.webgl = null;
     this.props.context_menu_ref?.current?.removeCallbacks(this);
     this.cancelBrushMove();
+    this.cancelBrushPreparation();
     this.sendBrushExtents.cancel();
     this.fitTickLabelsAfterTransition.cancel();
     if (this.scrollFrame !== null) {
@@ -930,6 +937,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
     this.interacting = true;
     this.focusDimension = dimension;
+    this.cancelBrushPreparation();
     this.clearHover();
     this.props.context_menu_ref?.current?.hide();
     const origin = Math.max(0, Math.min(this.h, event.y));
@@ -1833,6 +1841,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         .append("title")
         .text("Drag up or down to add a brush on this axis; click to remove all its brushes");
       brushBands.call(me.brushDrag);
+      brushBands
+        .on("pointerenter", (_event: PointerEvent, dimension: string) =>
+          me.prepareBrushFocus(dimension),
+        )
+        .on("pointerleave", () => me.cancelBrushPreparation());
       me.drawBrushes();
       me.fitTickLabels();
     }
@@ -2572,14 +2585,23 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return mask;
   }
 
-  /** The theme's color for deselected lines, read from the --hip-context-line token. */
+  /**
+   * The theme's color for deselected lines, read from the --hip-context-line
+   * token once per theme: reading computed style after a brush moved its SVG
+   * recalculates styles, which a brush frame cannot afford.
+   */
+  private contextColorMemo: { dark: boolean; color: RGB } | null = null;
   private contextColor(): RGB {
+    const memo = this.contextColorMemo;
+    if (memo !== null && memo.dark === this.props.dark) return memo.color;
     const token = getComputedStyle(mounted(this.root_ref)).getPropertyValue("--hip-context-line");
     const parsed = d3.color(token.trim())?.rgb();
     if (!parsed) {
       throw new Error(`--hip-context-line is not a color: "${token}"`);
     }
-    return { r: parsed.r, g: parsed.g, b: parsed.b };
+    const color = { r: parsed.r, g: parsed.g, b: parsed.b };
+    this.contextColorMemo = { dark: this.props.dark, color };
+    return color;
   }
 
   /**
@@ -2613,6 +2635,47 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   /** The axis of the latest brush gesture, whose blocks the exact worker retains. */
   private focusDimension: string | null = null;
+  /** The axis whose blocks the next frame draws ahead of a gesture (see prepareBrushFocus). */
+  private preparedDimension: string | null = null;
+  private brushPreparation: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * After the pointer rests on an axis's brush band for BRUSH_PREPARE_MS,
+   * readies a brush gesture on it: builds and sorts its selection column, and
+   * draws the current brush selection once more from its blocks, drawing them
+   * if the worker lacks them. The gesture's first move then reads neither
+   * every row nor draws every line.
+   */
+  private prepareBrushFocus(dimension: string): void {
+    this.cancelBrushPreparation();
+    if (this.interactiveFrame()) return;
+    this.brushPreparation = setTimeout(() => {
+      this.brushPreparation = null;
+      // Gestures and scrolls draw their own frames; a removed axis has nothing to brush.
+      if (this.interactiveFrame() || !this.state.dimensions.includes(dimension)) return;
+      const whole = brushRange(dimension, scale_pixels_range(this.yscale[dimension], [0, this.h]));
+      if (whole !== null) this.brushMasks().warm([whole]);
+      if (!this.brushBlocks()) return;
+      const previous = this.focusDimension;
+      this.focusDimension = dimension;
+      this.preparedDimension = dimension;
+      try {
+        // Without a brush selection to focus, the redraw would draw every row for nothing.
+        if (this.brushFocus(this.geometry()) === null) {
+          this.focusDimension = previous;
+          return;
+        }
+        this.redrawLines();
+      } finally {
+        this.preparedDimension = null;
+      }
+    }, BRUSH_PREPARE_MS);
+  }
+
+  private cancelBrushPreparation(): void {
+    if (this.brushPreparation !== null) clearTimeout(this.brushPreparation);
+    this.brushPreparation = null;
+  }
 
   /** The latest brushed axis and the rows the other axes' brushes pass, for brush selections. */
   private brushFocus(geometry: LineGeometry): LineFocus | null {
@@ -2632,7 +2695,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return {
       axis,
       rows: masks.passingExcept(dimension),
-      active: this.brushGesture?.dimension === dimension,
+      active: this.brushGesture?.dimension === dimension || this.preparedDimension === dimension,
     };
   }
 
@@ -2767,8 +2830,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   private lineFrame(geometry: LineGeometry, mask: Uint8Array): LineFrame {
     let selectedCount = 0;
-    for (let i = 0; i < mask.length; ++i) {
-      selectedCount += mask[i];
+    if (this.masks?.isLive(mask)) {
+      selectedCount = this.masks.selectedCount;
+    } else {
+      for (let i = 0; i < mask.length; ++i) {
+        selectedCount += mask[i];
+      }
     }
     return {
       axes: this.state.dimensions.map((dimension) => ({

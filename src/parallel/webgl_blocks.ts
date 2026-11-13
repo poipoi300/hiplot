@@ -196,27 +196,48 @@ interface SlotEntry {
   pattern: Uint8Array;
 }
 
-/** A partly selected block to draw into a slot, and its rows' selection flags in partition order. */
-export interface SlotDraw {
-  block: number;
+/** The selected rows of a slot's block, in its first layer, or its deselected ones, in its second. */
+export const SELECTED_HALF = 0;
+export const DESELECTED_HALF = 1;
+
+/** Rows a frame draws into one half of a slot. */
+export interface HalfDraw {
   slot: number;
-  pattern: Uint8Array;
+  half: typeof SELECTED_HALF | typeof DESELECTED_HALF;
+  block: number;
+  /** Positions of the rows in their block, in partition order. */
+  positions: number[];
+  /**
+   * Whether the half is cleared first. Rows that joined a half since its last
+   * frame are added onto what it holds: sums add and peaks keep the maximum.
+   * A half that lost rows is drawn again, since neither can be taken back.
+   */
+  clear: boolean;
 }
 
 /** What a frame does with its partly selected blocks (see PartialSlots.plan). */
 export interface SlotPlan {
-  /** Blocks to draw into slots, which then hold them. */
-  draw: SlotDraw[];
+  /** Rows to draw into the halves of slots, which then hold their blocks. */
+  draw: HalfDraw[];
   /** Bit `i` set when slot `i` holds a block of this frame. */
   used: number;
   /** Partly selected blocks beyond the slots, drawn directly into the frame. */
   overflow: number[];
 }
 
+/** Positions in `pattern` whose flag is `flag`, and, given `previous`, was not. */
+function positionsOf(pattern: Uint8Array, flag: number, previous: Uint8Array | null): number[] {
+  const positions: number[] = [];
+  for (let at = 0; at < pattern.length; ++at) {
+    if (pattern[at] === flag && (previous === null || previous[at] !== flag)) positions.push(at);
+  }
+  return positions;
+}
+
 /**
- * Assigns partly selected blocks to slots, reusing a slot whose block's
- * selection is unchanged. Slots take blocks of at most `maxRows` rows: the
- * focus blocks, not a large block of rows outside the focus.
+ * Assigns partly selected blocks to slots, drawing only what changed in a
+ * slot already holding the block. Slots take blocks of at most `maxRows`
+ * rows: the focus blocks, not a large block of rows outside the focus.
  */
 export class PartialSlots {
   private readonly entries: (SlotEntry | null)[] = Array.from(
@@ -242,9 +263,8 @@ export class PartialSlots {
         pattern[at] = selection[partition.order[start + at]];
       }
       const slot = this.entries.findIndex((entry) => entry?.block === block);
-      const held = slot === -1 ? null : this.entries[slot];
-      if (held !== null && equalFlags(held.pattern, pattern)) plan.used |= 1 << slot;
-      else waiting.push([block, pattern]);
+      if (slot !== -1) plan.used |= 1 << slot;
+      waiting.push([block, pattern]);
     }
     for (const [block, pattern] of waiting) {
       if (pattern.length > this.maxRows) {
@@ -253,6 +273,7 @@ export class PartialSlots {
       }
       // The slot already holding this block, else any slot this frame leaves unused.
       let slot = this.entries.findIndex((entry) => entry?.block === block);
+      const held = slot === -1 ? null : this.entries[slot];
       if (slot === -1) {
         slot = this.entries.findIndex((_, index) => (plan.used & (1 << index)) === 0);
       }
@@ -260,18 +281,31 @@ export class PartialSlots {
         plan.overflow.push(block);
         continue;
       }
-      this.entries[slot] = { block, pattern };
       plan.used |= 1 << slot;
-      plan.draw.push({ block, slot, pattern });
+      this.entries[slot] = { block, pattern };
+      const previous = held?.pattern ?? null;
+      const joined = [
+        previous === null ? [] : positionsOf(pattern, 1, previous),
+        previous === null ? [] : positionsOf(pattern, 0, previous),
+      ];
+      for (const half of [SELECTED_HALF, DESELECTED_HALF] as const) {
+        const flag = half === SELECTED_HALF ? 1 : 0;
+        const lost = previous === null || joined[1 - half].length > 0;
+        if (lost) {
+          plan.draw.push({
+            slot,
+            half,
+            block,
+            positions: positionsOf(pattern, flag, null),
+            clear: true,
+          });
+        } else if (joined[half].length > 0) {
+          plan.draw.push({ slot, half, block, positions: joined[half], clear: false });
+        }
+      }
     }
     return plan;
   }
-}
-
-function equalFlags(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; ++i) if (a[i] !== b[i]) return false;
-  return true;
 }
 
 /** GPU memory the layers of one brushed axis may take, partial slots included. */
@@ -495,8 +529,11 @@ export class BlockPasses {
     );
   }
 
-  /** Binds layer `layer` as the line pass's targets, cleared, for drawing rows as if all were selected. */
-  bindLayer(layers: BlockLayers, layer: number): void {
+  /**
+   * Binds layer `layer` as the line pass's targets, for drawing rows as if all
+   * were selected: onto what it holds, or with `clear`, from nothing.
+   */
+  bindLayer(layers: BlockLayers, layer: number, clear: boolean): void {
     const gl = this.gl;
     if (!(layer >= 0 && layer < layers.layers)) {
       throw new Error(`No block layer ${layer} of ${layers.layers}`);
@@ -511,6 +548,7 @@ export class BlockPasses {
       layers.onTop === null ? gl.NONE : gl.COLOR_ATTACHMENT2,
     ]);
     gl.viewport(0, 0, layers.width, layers.height);
+    if (!clear) return;
     gl.clearBufferfv(gl.COLOR, 0, [0, 0, 0, 0]);
     if (layers.coverage !== null) gl.clearBufferfv(gl.COLOR, 1, [0, 0, 0, 0]);
     if (layers.onTop !== null) gl.clearBufferfv(gl.COLOR, 2, [0, 0, 0, 0]);

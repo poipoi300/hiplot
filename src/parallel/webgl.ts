@@ -16,6 +16,7 @@ import {
   blockCountFor,
   blockLayerBytes,
   blocksFit,
+  type HalfDraw,
   LAYER_CONTEXT,
   LAYER_SELECTED,
   LAYER_SKIPPED,
@@ -1546,7 +1547,7 @@ export class WebGLLineRenderer {
     gl.activeTexture(gl.TEXTURE0 + UNITS.u_order);
     gl.bindTexture(gl.TEXTURE_2D, blocks.order);
     for (let block = 0; block < blocks.slotLayer; ++block) {
-      passes.bindLayer(layers, block);
+      passes.bindLayer(layers, block, true);
       yield* this.drawRows(
         lines,
         frame,
@@ -1591,19 +1592,15 @@ export class WebGLLineRenderer {
     };
     this.uploadAxes(frame);
     if (plan.draw.length > 0) {
-      // Each drawn slot's selected rows, then its deselected ones.
-      const ranges: [number, number, number, number][] = [];
+      // The rows of every half drawn, one after another.
+      const ranges: [HalfDraw, number, number][] = [];
       let at = 0;
-      for (const { block, slot, pattern } of plan.draw) {
+      for (const draw of plan.draw) {
         const begin = at;
-        for (let i = 0; i < pattern.length; ++i) {
-          if (pattern[i] === 1) blocks.slotRows[at++] = order[starts[block] + i];
+        for (const position of draw.positions) {
+          blocks.slotRows[at++] = order[starts[draw.block] + position];
         }
-        const middle = at;
-        for (let i = 0; i < pattern.length; ++i) {
-          if (pattern[i] === 0) blocks.slotRows[at++] = order[starts[block] + i];
-        }
-        ranges.push([slot, begin, middle, at]);
+        ranges.push([draw, begin, at]);
       }
       gl.activeTexture(gl.TEXTURE0 + UNITS.u_order);
       gl.bindTexture(gl.TEXTURE_2D, blocks.slotOrder);
@@ -1622,11 +1619,9 @@ export class WebGLLineRenderer {
       const samples = this.startLinePass(programs.lines, frame, blocks.layers, true);
       gl.activeTexture(gl.TEXTURE0 + UNITS.u_order);
       gl.bindTexture(gl.TEXTURE_2D, blocks.slotOrder);
-      for (const [slot, begin, middle, end] of ranges) {
-        passes.bindLayer(blocks.layers, blocks.slotLayer + 2 * slot);
-        drawOnce(samples, begin, middle);
-        passes.bindLayer(blocks.layers, blocks.slotLayer + 2 * slot + 1);
-        drawOnce(samples, middle, end);
+      for (const [{ slot, half, clear }, begin, end] of ranges) {
+        passes.bindLayer(blocks.layers, blocks.slotLayer + 2 * slot + half, clear);
+        drawOnce(samples, begin, end);
       }
     }
     const targets = this.densityTargets(

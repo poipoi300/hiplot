@@ -338,3 +338,87 @@ test("brush gestures on a GPU draw full frames from retained blocks, through rel
   expect(result.fromBlocks).toEqual([true, true, true, true, false]);
   expect(result.maximum).toBeLessThanOrEqual(1);
 });
+
+test("resting on an axis's brush band draws its blocks before a gesture", async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 480 });
+  await loadParallelBenchmark(
+    page,
+    { rows: 6000, columns: 4, discrete: false, seed: 20261109 },
+    "full",
+  );
+  await warmParallelWorker(page);
+  const result = await page.evaluate(async () => {
+    interface PreparedPlot {
+      h: number;
+      state: { dimensions: string[] };
+      exact: {
+        busy: boolean;
+        onImage: (bitmap: ImageBitmap, finished: FinishedFrame) => void;
+      };
+      startBrushGesture: (
+        event: { sourceEvent: { target: Element }; y: number },
+        dimension: string,
+      ) => void;
+      continueBrushGesture: (y: number) => void;
+      endBrushGesture: () => void;
+    }
+    const plot = (
+      window as unknown as {
+        __parallelProbe: { instance: { parallelPlot: () => PreparedPlot } };
+      }
+    ).__parallelProbe.instance.parallelPlot();
+    // As in the gesture test: the suite's SwiftShader worker otherwise drafts.
+    Object.assign(plot.exact, { blocks: true });
+    const exact = plot.exact;
+    const images: boolean[] = [];
+    const publish = exact.onImage.bind(exact);
+    exact.onImage = (bitmap, finished) => {
+      images.push(finished.fromBlocks);
+      publish(bitmap, finished);
+    };
+    const settled = async (): Promise<void> => {
+      do await new Promise(requestAnimationFrame);
+      while (exact.busy);
+    };
+    const dimension = plot.state.dimensions[2];
+    const band = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
+      .find((node) => (node as SVGGElement & { __data__: string }).__data__ === dimension)
+      ?.querySelector<SVGGElement>(".pplot-brush");
+    const overlay = band?.querySelector(".overlay");
+    if (!band || !overlay) throw new Error("Missing brush band");
+    band.dispatchEvent(new PointerEvent("pointerenter"));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await settled();
+    const prepared = [...images];
+    // Leaving before the rest is long enough prepares nothing.
+    const other = plot.state.dimensions[1];
+    const passing = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
+      .find((node) => (node as SVGGElement & { __data__: string }).__data__ === other)
+      ?.querySelector<SVGGElement>(".pplot-brush");
+    passing?.dispatchEvent(new PointerEvent("pointerenter"));
+    passing?.dispatchEvent(new PointerEvent("pointerleave"));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await settled();
+    const afterPassing = images.length;
+    // Without a brush selection to focus (as after a lasso), a rest draws nothing.
+    const live = (plot as unknown as { liveBrushMask: unknown }).liveBrushMask;
+    Object.assign(plot, { liveBrushMask: null });
+    band.dispatchEvent(new PointerEvent("pointerleave"));
+    passing?.dispatchEvent(new PointerEvent("pointerenter"));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await settled();
+    passing?.dispatchEvent(new PointerEvent("pointerleave"));
+    const unfocused = images.length - afterPassing;
+    Object.assign(plot, { liveBrushMask: live });
+    plot.startBrushGesture({ sourceEvent: { target: overlay }, y: plot.h * 0.2 }, dimension);
+    plot.continueBrushGesture(plot.h * 0.5);
+    await settled();
+    plot.endBrushGesture();
+    await settled();
+    return { prepared, afterPassing, unfocused, all: images };
+  });
+  expect(result.prepared).toEqual([true]);
+  expect(result.afterPassing).toBe(1);
+  expect(result.unfocused).toBe(0);
+  expect(result.all.slice(1)).toEqual([true, true]);
+});

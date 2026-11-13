@@ -412,4 +412,48 @@ describe("BrushMasks.passingExcept", () => {
     expect(Array.from(changed)).toEqual([0, 0, 0, 1, 0, 0]);
     masks.dispose();
   });
+
+  test("warming a column changes no selection", () => {
+    const masks = new BrushMasks(rows);
+    const before = Array.from(masks.select(new Map([["c", [cRange("a", "b")]]])));
+    masks.warm([xRange(0, 10)]);
+    expect(Array.from(masks.select(new Map([["c", [cRange("a", "b")]]])))).toEqual(before);
+    expect(select(masks, [["x", [xRange(0, 6)]]])).toEqual(["0", "1"]);
+    masks.dispose();
+  });
+
+  test("keeps the rows while the axis gets its first brush", () => {
+    const masks = new BrushMasks(rows);
+    masks.select(new Map([["c", [cRange("a", "b")]]]));
+    const exceptX = masks.passingExcept("x");
+    masks.select(
+      new Map([
+        ["c", [cRange("a", "b")]],
+        ["x", [xRange(0, 6)]],
+      ]),
+    );
+    expect(masks.passingExcept("x")).toBe(exceptX);
+    masks.dispose();
+  });
+});
+
+test("the live mask's selected count follows every brush change", () => {
+  const masks = new BrushMasks(rows);
+  const count = (mask: Uint8Array) => mask.reduce((total, flag) => total + flag, 0);
+  for (const selections of [
+    new Map<string, AxisSelection>(),
+    new Map([["x", [xRange(0, 6)]]]),
+    new Map([
+      ["x", [xRange(0, 10, true)]],
+      ["c", [cRange("a", "b")]],
+    ]),
+    new Map([["c", [cValues(["c"])]]]),
+    new Map<string, AxisSelection>(),
+  ]) {
+    const mask = masks.select(selections);
+    expect(masks.isLive(mask)).toBe(true);
+    expect(masks.selectedCount).toBe(count(mask));
+  }
+  expect(masks.isLive(new Uint8Array(rows.length))).toBe(false);
+  masks.dispose();
 });

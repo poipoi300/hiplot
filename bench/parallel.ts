@@ -471,6 +471,8 @@ export async function measureParallelBenchmark(page: Page, steps: number) {
   const release = await takeSamples(page);
   const drag = await measureBrushDrag(page, "move");
   const dragEdge = await measureBrushDrag(page, "top");
+  const drag60 = await measureBrushDrag(page, "move", 60);
+  const dragEdge60 = await measureBrushDrag(page, "top", 60);
   // The real d3 handlers move the SVG and reorder axes when neighbors cross.
   await page.evaluate(() => {
     const probe = (window as unknown as ProbeWindow).__parallelProbe;
@@ -572,24 +574,30 @@ export async function measureParallelBenchmark(page: Page, steps: number) {
     await settle(page);
   }
   const scroll = await takeSamples(page);
-  return { full, recompute, brush, release, drag, dragEdge, axis, scroll };
+  return { full, recompute, brush, release, drag, dragEdge, drag60, dragEdge60, axis, scroll };
 }
 
-/** Frames of continuous brush input: one pointer move per animation frame. */
-const DRAG_FRAMES = 120;
+/** How long a brush drag lasts: across a fifth of the axis and back. */
+const DRAG_MS = 1000;
 
 /**
  * Drags the brush left by the settled steps, by its body ("move") or its top
- * edge, one move per animation frame across a fifth of the axis and back, as
- * a hand does. Each image is timed from the latest input it shows to its
- * arrival on the page ("inputToImage"); "dragFrame" holds the animation
- * frame intervals and "dragInputs" counts the moves.
+ * edge, across a fifth of the axis and back over DRAG_MS, as a hand does.
+ * Moves come on animation frames: every one, or at most `inputHz` times a
+ * second, as a 60 Hz pointer would on a faster display. Each image is timed
+ * from the latest input it shows to its arrival on the page ("inputToImage");
+ * "dragFrame" holds the animation frame intervals and "dragInputs" counts the
+ * moves.
  */
-export async function measureBrushDrag(page: Page, part: "move" | "top"): Promise<Sample[]> {
+export async function measureBrushDrag(
+  page: Page,
+  part: "move" | "top",
+  inputHz: number | null = null,
+): Promise<Sample[]> {
   await settle(page);
   await takeSamples(page);
   await page.evaluate(
-    async ({ part, frames }) => {
+    async ({ part, duration, inputHz }) => {
       const probe = (window as unknown as ProbeWindow).__parallelProbe;
       const pp = probe.instance.parallelPlot() as unknown as ProbePlot;
       const dimension = pp.state.dimensions[1];
@@ -606,18 +614,25 @@ export async function measureBrushDrag(page: Page, part: "move" | "top"): Promis
       if (span === undefined) throw new Error("The benchmark axis has no brush");
       const origin = part === "move" ? (span.top + span.bottom) / 2 : span.top;
       pp.startBrushGesture({ sourceEvent: { target }, y: origin }, dimension);
-      let previous = await new Promise<number>(requestAnimationFrame);
-      for (let frame = 0; frame < frames; ++frame) {
-        const now = await new Promise<number>(requestAnimationFrame);
+      // A frame within a millisecond of the input period still takes the move.
+      const period = inputHz === null ? 0 : 1000 / inputHz - 1;
+      const start = await new Promise<number>(requestAnimationFrame);
+      let previous = start;
+      let input = Number.NEGATIVE_INFINITY;
+      for (let now = start; now - start < duration; ) {
+        now = await new Promise<number>(requestAnimationFrame);
         probe.samples.push({ stage: "dragFrame", milliseconds: now - previous });
         previous = now;
-        const phase = frame / (frames - 1);
+        // The last frame always moves, back to where the drag started.
+        if (now - input < period && now - start < duration) continue;
+        input = now;
+        const phase = Math.min(1, (now - start) / duration);
         const offset = pp.h * 0.2 * (phase < 0.5 ? 2 * phase : 2 - 2 * phase);
         pp.continueBrushGesture(origin - offset);
         probe.samples.push({ stage: "dragInputs", milliseconds: 1 });
       }
     },
-    { part, frames: DRAG_FRAMES },
+    { part, duration: DRAG_MS, inputHz },
   );
   await settle(page);
   const samples = await takeSamples(page);

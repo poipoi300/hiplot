@@ -3275,10 +3275,15 @@ exact renderer therefore:
   every other layer as selected or deselected into the density targets, then
   runs the unchanged tone map;
 - keeps up to four partly selected blocks drawn in slots, each split into its
-  selected and its deselected rows in two layers of the same format. A slot is
-  redrawn only when its rows' flags change, so a fixed brush edge costs nothing.
+  selected and its deselected rows in two layers of the same format. A slot
+  draws only what its rows' flags changed: rows that joined a half are drawn
+  onto it, and only a half that lost rows is drawn again, so a fixed brush edge
+  costs nothing and an edge moving within its block redraws the rows beyond it.
   One 16-byte target per fragment halves blending compared with the line pass's
   two targets: two partial blocks took 5.4 ms with two targets, 2.9 ms with one.
+  GPU timer queries at 1M rows put an edge drag's slot drawing at a median
+  1.37 ms rather than 3.1–3.3 ms for whole halves. A brush moving 1.5 pixels a
+  frame enters a fresh block every second frame, which still draws whole.
 
 A frame never subtracts a row's contribution: per-pixel peaks and the line on
 top are maxima, which have no inverse (see **Incremental density subtraction:
@@ -3295,7 +3300,17 @@ plot, and on software rasterizers, brushing keeps its draft frames. Blocks stay
 allocated while the plot can reuse them (the next gesture on the same axis, the
 release frame); the first frame that cannot use them frees them.
 
-Three host-side costs also mattered once GPU work fell to a few milliseconds:
+Building a fresh axis's blocks costs a full frame, so the plot prepares the
+axis a brush is likely to start on: after the pointer rests 120 ms on an axis's
+brush band, it builds and sorts that axis's selection column
+(`BrushMasks.warm`) and redraws the same selection with that axis as an active
+focus, which builds its blocks in the worker: the same selection, within the
+summation-order difference above. A pointer only crossing the band prepares
+nothing, nor does a plot without a brush selection to focus or one mid-gesture.
+A build cannot be interrupted: a press on another axis right after a rest
+waits for the rested axis's build before its own.
+
+Host-side costs mattered once GPU work fell to a few milliseconds:
 
 - Worker fence polling created a `MessageChannel` per poll, about 400 per
   frame. Every ~20 frames a collection stalled the worker for 10–13 ms, seen
@@ -3304,6 +3319,10 @@ Three host-side costs also mattered once GPU work fell to a few milliseconds:
   completion wait added up to 4 ms per frame.
 - A brush move arriving while a frame renders waited for the next animation
   frame; it now runs as soon as the image arrives.
+- Each brush frame read the theme's context color with `getComputedStyle`,
+  forcing a style recalculation after the brush's SVG changed, and counted the
+  million selection flags; the color is now kept per theme and the brush masks
+  count selected rows as flags change. Brush CPU fell from about 1.3 to 0.6 ms.
 
 ### Picture equivalence
 
@@ -3328,13 +3347,17 @@ At 1M rows the release frame from blocks against a full redraw:
 
 ### Measurements
 
-`measureParallelBenchmark` gained two phases after the settled brush steps:
+`measureParallelBenchmark` gained four phases after the settled brush steps:
 `drag` moves the brush by its body (both edges move) and `dragEdge` its top
-edge, one move per animation frame for 120 frames across a fifth of the axis
-and back. `inputToImage` is brush input to the image arriving on the page,
-without the two extra animation frames of `inputToVisible`. The display ran
-at 120 Hz, so a frame slower than 8.3 ms also delays the next input: the
-measured latency is stricter than one 60 Hz frame. One load per variant:
+edge, across a fifth of the axis and back in one second, a move on every
+animation frame; `drag60` and `dragEdge60` move at most 60 times a second, as
+a 60 Hz pointer. `inputToImage` is brush input to the image arriving on the
+page, without the two extra animation frames of `inputToVisible`. The display
+ran at 120 Hz, so in the every-frame phases a frame slower than 8.3 ms also
+delays the next input: stricter than one 60 Hz frame.
+
+First measurements, before incremental halves and the host-side trims, one
+load per variant:
 
 | Data / shape | Move input → image p50 / p95 / max | Edge p50 / p95 / max | Release | First gesture frame |
 |---|---|---|---:|---:|
@@ -3348,14 +3371,35 @@ The continuous curved rows give the range of three loads. Every drag delivered
 111–119 images for 120 inputs. Brush frames are now full-quality anti-aliased
 frames, not drafts.
 
+The final round ran while the workstation was heavily loaded by other work: the
+same block build took 0.67–0.76 s instead of 0.43–0.48 s, and these wall-clock
+figures are about 40% slower than the table above; they are retained as
+measured, to be repeated on an idle machine. Input → image p50 / p95, one load
+per variant (two for continuous curved):
+
+| Data / shape | `drag60` | `dragEdge60` | `drag` | `dragEdge` |
+|---|---|---|---|---|
+| Continuous / curved | 9.8–10.3 / 13.8–14.7 | 6.9–7.3 / 11.3–11.9 | 12.6–13.0 / 18.6–19.2 | 6.3–6.7 / 10.5–10.6 |
+| Continuous / straight | 10.9 / 14.5 | 8.0 / 10.5 | 12.8 / 19.4 | 7.1 / 11.1 |
+| Integer / curved | 4.7 / 9.8 | 4.5 / 7.8 | 4.8 / 10.0 | 4.7 / 10.2 |
+| Integer / straight | 4.8 / 9.2 | 4.3 / 8.4 | 5.1 / 10.8 | 4.8 / 9.8 |
+
+The first move on a fresh axis, under the same load: 0.66–0.76 s without
+preparation, 34–43 ms after resting on its brush band. Of the latter, 21–34 ms
+is the selection's first update of a newly active axis, which counts every
+rejected row (about 700,000 here).
+
 Limitations, not hidden by the steady-state numbers:
 
-- The first frame of a gesture on a newly brushed axis builds the blocks: about
-  0.43–0.62 s, slower than the 0.25 s draft it replaces. Later gestures on the
-  same axis, while the other axes' brushes stay, start at once.
-- Moving a whole brush on continuous curved data redraws two blocks a frame
-  and sits at the 16.6 ms bound (p95 14.7–16.6 ms in three loads).
-- Up to 1 GiB of GPU memory stays allocated between gestures.
+- Without a rest on the brush band, the first frame of a gesture on a newly
+  brushed axis builds the blocks: about 0.43–0.62 s on an idle machine, slower
+  than the 0.25 s draft it replaces. Later gestures on the same axis, while
+  the other axes' brushes stay, start at once.
+- Moving a whole brush on continuous data with a move every 120 Hz frame
+  exceeds 16.6 ms at p95 under load (18.6–19.4 ms); at 60 Hz input it stays
+  below (13.8–14.7 ms).
+- Up to 1 GiB of GPU memory stays allocated between gestures, and resting on a
+  brush band allocates it too.
 - These are one workstation's measurements at device pixel ratio 1.
 
 Reproduce after `bun run build`:

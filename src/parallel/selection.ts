@@ -69,6 +69,7 @@ export class BrushMasks {
   private readonly axes = new Map<string, AxisState>();
   private readonly failures: Uint32Array;
   private readonly selected: Uint8Array;
+  private selectedTotal: number;
   private readonly pending = new Map<number, PendingIndex>();
   private worker: Promise<Worker | null> | null = null;
   private connected: Worker | null = null;
@@ -89,6 +90,7 @@ export class BrushMasks {
     this.rows = rows;
     this.failures = new Uint32Array(rows.length);
     this.selected = new Uint8Array(rows.length).fill(1);
+    this.selectedTotal = rows.length;
   }
 
   private assertUsable(): void {
@@ -201,6 +203,16 @@ export class BrushMasks {
     return state.ready;
   }
 
+  /**
+   * Builds the columns these ranges brush and starts sorting them, without
+   * changing any selection or waiting: an axis's first brush then skips
+   * reading every row. Failures surface from the next selection.
+   */
+  warm(selection: AxisSelection): void {
+    this.assertUsable();
+    for (const range of selection) void this.prepareColumn(this.column(range));
+  }
+
   /** Warm the columns named by these ranges, without changing any selection. */
   async prepare(selections: ReadonlyMap<string, AxisSelection>): Promise<void> {
     this.assertUsable();
@@ -268,7 +280,19 @@ export class BrushMasks {
 
   private changeFailure(row: number, delta: number): void {
     this.failures[row] += delta;
-    this.selected[row] = Number(this.failures[row] === 0);
+    const selected = Number(this.failures[row] === 0);
+    this.selectedTotal += selected - this.selected[row];
+    this.selected[row] = selected;
+  }
+
+  /** Rows the live mask `select` returns holds, counted as its flags change. */
+  get selectedCount(): number {
+    return this.selectedTotal;
+  }
+
+  /** Whether `mask` is the live mask `select` returns, whose rows `selectedCount` counts. */
+  isLive(mask: Uint8Array): boolean {
+    return mask === this.selected;
   }
 
   private updateAxis(dimension: string, selection: AxisSelection): AxisState {
@@ -392,9 +416,9 @@ export class BrushMasks {
   passingExcept(dimension: string): Uint8Array {
     this.assertUsable();
     const others = JSON.stringify(
-      Array.from(this.axes, ([name, axis]) =>
-        name === dimension || !axis.active ? null : [name, axis.key],
-      ),
+      Array.from(this.axes)
+        .filter(([name, axis]) => name !== dimension && axis.active)
+        .map(([name, axis]) => [name, axis.key]),
     );
     if (this.passing?.dimension === dimension && this.passing.key === others) {
       return this.passing.rows;

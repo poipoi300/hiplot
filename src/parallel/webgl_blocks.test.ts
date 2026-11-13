@@ -4,6 +4,7 @@ import {
   BlockSelection,
   blockCountFor,
   blocksFit,
+  DESELECTED_HALF,
   LAYER_CONTEXT,
   LAYER_SELECTED,
   LAYER_SKIPPED,
@@ -12,6 +13,8 @@ import {
   PARTIAL_SLOTS,
   PartialSlots,
   partitionRows,
+  SELECTED_HALF,
+  type SlotPlan,
 } from "./webgl_blocks";
 
 /** A seeded linear congruential generator in [0, 1). */
@@ -194,20 +197,51 @@ describe("PartialSlots", () => {
     Uint8Array.from({ length: blocks }, (_, block) =>
       partial.includes(block) ? LAYER_SKIPPED : LAYER_CONTEXT,
     );
+  const halves = (plan: SlotPlan) =>
+    plan.draw.map(({ slot, half, block, positions, clear }) => ({
+      slot,
+      half,
+      block,
+      positions,
+      clear,
+    }));
 
-  test("redraws a partial block only when its rows' selection changes", () => {
+  test("draws a new partial block's two halves, then nothing while its selection holds", () => {
     const slots = new PartialSlots(5);
     const selection = Uint8Array.from(pixels, (y) => Number(y < 7));
     const first = slots.plan(partition, selection, statesFor([1]));
-    expect(first.draw.map(({ block, slot }) => [block, slot])).toEqual([[1, 0]]);
-    expect(Array.from(first.draw[0].pattern)).toEqual([1, 1, 0, 0, 0]);
+    expect(halves(first)).toEqual([
+      { slot: 0, half: SELECTED_HALF, block: 1, positions: [0, 1], clear: true },
+      { slot: 0, half: DESELECTED_HALF, block: 1, positions: [2, 3, 4], clear: true },
+    ]);
     expect(first.used).toBe(1);
     const unchanged = slots.plan(partition, selection, statesFor([1]));
     expect(unchanged.draw).toEqual([]);
     expect(unchanged.used).toBe(1);
+  });
+
+  test("adds rows that join a half and draws again the half they left", () => {
+    const slots = new PartialSlots(5);
+    const selection = Uint8Array.from(pixels, (y) => Number(y < 7));
+    slots.plan(partition, selection, statesFor([1]));
     selection[7] = 1;
-    const moved = slots.plan(partition, selection, statesFor([1]));
-    expect(moved.draw.map(({ block, slot }) => [block, slot])).toEqual([[1, 0]]);
+    expect(halves(slots.plan(partition, selection, statesFor([1])))).toEqual([
+      { slot: 0, half: SELECTED_HALF, block: 1, positions: [2], clear: false },
+      { slot: 0, half: DESELECTED_HALF, block: 1, positions: [3, 4], clear: true },
+    ]);
+    selection[6] = 0;
+    selection[7] = 0;
+    expect(halves(slots.plan(partition, selection, statesFor([1])))).toEqual([
+      { slot: 0, half: SELECTED_HALF, block: 1, positions: [0], clear: true },
+      { slot: 0, half: DESELECTED_HALF, block: 1, positions: [1, 2], clear: false },
+    ]);
+    // Rows that both join and leave the selection draw both halves again.
+    selection[5] = 0;
+    selection[6] = 1;
+    expect(halves(slots.plan(partition, selection, statesFor([1])))).toEqual([
+      { slot: 0, half: SELECTED_HALF, block: 1, positions: [1], clear: true },
+      { slot: 0, half: DESELECTED_HALF, block: 1, positions: [0, 2, 3, 4], clear: true },
+    ]);
   });
 
   test("keeps a block's slot while it is whole, and reuses it when it is partial again", () => {
@@ -220,12 +254,51 @@ describe("PartialSlots", () => {
     expect(again.used).toBe(3);
   });
 
+  test("clears both halves of a slot handed to another block", () => {
+    const slots = new PartialSlots(5);
+    const partial = Array.from({ length: PARTIAL_SLOTS }, (_, block) => block);
+    const selection = Uint8Array.from(pixels, (y) => Number(y % 5 === 0));
+    slots.plan(partition, selection, statesFor(partial));
+    // Block 0 is whole now; its slot goes to block PARTIAL_SLOTS.
+    selection.fill(1, 0, 5);
+    selection[PARTIAL_SLOTS * 5] = 1;
+    const handed = halves(
+      slots.plan(partition, selection, statesFor([...partial.slice(1), PARTIAL_SLOTS])),
+    );
+    expect(handed).toEqual([
+      { slot: 0, half: SELECTED_HALF, block: PARTIAL_SLOTS, positions: [0], clear: true },
+      {
+        slot: 0,
+        half: DESELECTED_HALF,
+        block: PARTIAL_SLOTS,
+        positions: [1, 2, 3, 4],
+        clear: true,
+      },
+    ]);
+  });
+
+  test("updates a block partial again from what its slot drew before it was whole", () => {
+    const slots = new PartialSlots(5);
+    const selection = Uint8Array.from(pixels, (y) => Number(y < 7));
+    slots.plan(partition, selection, statesFor([1]));
+    selection.fill(0, 5, 10);
+    expect(slots.plan(partition, selection, statesFor([])).draw).toEqual([]);
+    selection.fill(1, 5, 9);
+    // Rows 5 and 6 were drawn selected; rows 7 and 8 join them.
+    expect(halves(slots.plan(partition, selection, statesFor([1])))).toEqual([
+      { slot: 0, half: SELECTED_HALF, block: 1, positions: [2, 3], clear: false },
+      { slot: 0, half: DESELECTED_HALF, block: 1, positions: [4], clear: true },
+    ]);
+  });
+
   test("draws blocks beyond the slots, or larger than slots take, directly", () => {
     const slots = new PartialSlots(5);
     const selection = Uint8Array.from(pixels, (y) => Number(y % 5 === 0));
     const partial = Array.from({ length: PARTIAL_SLOTS + 2 }, (_, block) => block);
     const plan = slots.plan(partition, selection, statesFor(partial));
-    expect(plan.draw.map(({ block }) => block)).toEqual(partial.slice(0, PARTIAL_SLOTS));
+    expect(new Set(plan.draw.map(({ block }) => block))).toEqual(
+      new Set(partial.slice(0, PARTIAL_SLOTS)),
+    );
     expect(plan.overflow).toEqual(partial.slice(PARTIAL_SLOTS));
     expect(plan.used).toBe((1 << PARTIAL_SLOTS) - 1);
     const narrow = new PartialSlots(4);
