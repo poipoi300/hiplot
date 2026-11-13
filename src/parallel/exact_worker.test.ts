@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { connectExactWorker, type ExactSurface, type ExactWorkerScope } from "./exact_runtime";
 import type { ExactReply, ExactRequest } from "./exact_types";
 import { ExactRenderer } from "./exact_worker";
-import { type LineColors, type LineFrame, WebGLLineRenderer } from "./webgl";
+import { type LineColors, type LineFocus, type LineFrame, WebGLLineRenderer } from "./webgl";
 
 const finished = { milliseconds: 12, fullQuality: true, fromBlocks: false };
 const ready = async () => {
@@ -472,4 +472,46 @@ test("cooperative line batches wait for their fences and release failed fences",
       expect(deleted).toBe(failure === "context" ? 1 : 0);
     }
   }
+});
+
+test("the worker keeps a brush focus's rows until new ones arrive, and needs them first", async () => {
+  const focuses: (LineFocus | null)[] = [];
+  const surface: ExactSurface = {
+    canvas: { width: 1, height: 1, transferToImageBitmap: () => ({}) as ImageBitmap },
+    renderer: {
+      densityRendering: true,
+      softwareRendering: false,
+      setRows() {},
+      setDrawOrder() {},
+      setColors() {},
+      setSelection() {},
+      drawCooperative: async (_frame, focus) => {
+        focuses.push(focus ?? null);
+      },
+      busy: false,
+      finishedFrame: () => finished,
+    },
+  };
+  const worker = runtime(() => surface);
+  expect(worker.replies[0]).toEqual({ kind: "ready", density: true, blocks: true });
+  const missing = request();
+  missing.focus = { axis: 1, active: true };
+  await worker.send(missing);
+  expect(worker.replies[worker.replies.length - 1]).toEqual({
+    kind: "error",
+    message: "Exact worker needs the rows of a brush focus",
+  });
+  const rows = new Uint8Array(request().selection.length).fill(1);
+  const first = request();
+  first.focus = { axis: 1, active: true, rows };
+  await worker.send(first);
+  const next = request();
+  next.focus = { axis: 1, active: false };
+  await worker.send(next);
+  await worker.send(request());
+  expect(focuses).toEqual([
+    { axis: 1, active: true, rows },
+    { axis: 1, active: false, rows },
+    null,
+  ]);
 });

@@ -1,7 +1,13 @@
 import { loadParallelBenchmark } from "../bench/parallel";
 import type { ColorMode } from "../src/lib/colors";
 import type { LineGeometry } from "../src/parallel/geometry";
-import type { FinishedFrame, LineColors, LineFocus, LineFrame } from "../src/parallel/webgl";
+import type {
+  FinishedFrame,
+  LineColors,
+  LineFocus,
+  LineFrame,
+  WebGLLineRenderer,
+} from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
 import { warmParallelWorker } from "./plot";
 
@@ -422,3 +428,152 @@ test("resting on an axis's brush band draws its blocks before a gesture", async 
   expect(result.unfocused).toBe(0);
   expect(result.all.slice(1)).toEqual([true, true]);
 });
+
+for (const { name, numeric, colorMode } of [
+  { name: "numeric mean", numeric: true, colorMode: "mean" as ColorMode },
+  { name: "numeric highest", numeric: true, colorMode: "highest" as ColorMode },
+  { name: "categorical", numeric: false, colorMode: "mean" as ColorMode },
+]) {
+  test(`the page's own renderer sums block frames equal to full frames: ${name}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 640, height: 480 });
+    await loadParallelBenchmark(
+      page,
+      { rows: 6000, columns: 4, discrete: false, seed: 20261109 },
+      "full",
+    );
+    const results = await page.evaluate(
+      async ({ numeric, colorMode }) => {
+        interface PagePlot {
+          webgl: Pick<
+            WebGLLineRenderer,
+            | "setRows"
+            | "setDrawOrder"
+            | "setColors"
+            | "setSelection"
+            | "drawCooperative"
+            | "draw"
+            | "busy"
+          >;
+          geometry: () => LineGeometry;
+          selectionMask: (geometry: LineGeometry) => Uint8Array;
+          lineFrame: (geometry: LineGeometry, mask: Uint8Array) => LineFrame;
+        }
+        const plot = (
+          window as unknown as {
+            __parallelProbe: { instance: { parallelPlot: () => PagePlot } };
+          }
+        ).__parallelProbe.instance.parallelPlot();
+        const { webgl } = plot;
+        // Which pass drew the frame in flight; the plot's own frame watcher reads finished frames.
+        const internals = webgl as unknown as {
+          gl: WebGL2RenderingContext;
+          inFlightFromBlocks: boolean;
+        };
+        const gl = internals.gl;
+        const geometry = plot.geometry();
+        const source = plot.lineFrame(geometry, plot.selectionMask(geometry));
+        const colors: LineColors = {
+          bins: Uint32Array.from(geometry.order, (_, row) => row % 13),
+          palette: Array.from({ length: 13 }, (_, bin) => ({
+            r: (bin * 79) % 256,
+            g: (bin * 37) % 256,
+            b: (bin * 113) % 256,
+          })),
+          colorMapBins: numeric ? 12 : 0,
+        };
+        webgl.setRows(geometry.rows.length, geometry.order);
+        webgl.setDrawOrder(geometry.order);
+        webgl.setColors(colors);
+        const height = source.height;
+        const pixels = source.axes[1].pixels;
+        const others = Uint8Array.from(source.axes[2].pixels, (y) => Number(y < 0.7 * height));
+        // The default framebuffer is read in the task that drew it, before it is presented.
+        const read = (): Uint8Array => {
+          const out = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+          gl.readPixels(
+            0,
+            0,
+            gl.drawingBufferWidth,
+            gl.drawingBufferHeight,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            out,
+          );
+          return out;
+        };
+        const idle = async (): Promise<void> => {
+          while (webgl.busy) await new Promise(requestAnimationFrame);
+        };
+        const frameFor = (mask: Uint8Array): LineFrame => {
+          let selectedCount = 0;
+          for (const flag of mask) selectedCount += flag;
+          return {
+            ...source,
+            colorMode,
+            draft: false,
+            selectedCount,
+            contextCount: mask.length - selectedCount,
+          };
+        };
+        const steps: { tops: number[]; extent: number; rows: Uint8Array }[] = [
+          // One brush whose bottom edge moves down, then back up.
+          { tops: [0.2], extent: 0.15, rows: others },
+          { tops: [0.2], extent: 0.2, rows: others },
+          { tops: [0.2], extent: 0.17, rows: others },
+          // Three brushes: six edges, more than the partial slots.
+          { tops: [0.05, 0.35, 0.65], extent: 0.08, rows: others },
+          // Flags blind to the other axis mix every block's rows: drawing every row is cheaper.
+          { tops: [0], extent: 1, rows: new Uint8Array(others.length).fill(1) },
+        ];
+        const results: { maximum: number; ink: number; fromBlocks: boolean }[] = [];
+        for (const { tops, extent, rows } of steps) {
+          const mask = Uint8Array.from(pixels, (y, row) =>
+            Number(
+              others[row] === 1 &&
+                tops.some((top) => y >= top * height && y <= (top + extent) * height),
+            ),
+          );
+          const frame = frameFor(mask);
+          await idle();
+          webgl.setSelection(mask);
+          await webgl.drawCooperative(frame, { axis: 1, rows, active: true });
+          const blocks = read();
+          const fromBlocks = internals.inFlightFromBlocks;
+          await idle();
+          webgl.draw(frame);
+          const full = read();
+          await idle();
+          let maximum = 0;
+          let ink = 0;
+          for (let i = 0; i < blocks.length; ++i) {
+            if (i % 4 === 3) ink += blocks[i];
+            maximum = Math.max(maximum, Math.abs(blocks[i] - full[i]));
+          }
+          results.push({ maximum, ink, fromBlocks });
+        }
+        // A frame without a focus frees the blocks and draws every row.
+        const mask = frameFor(new Uint8Array(others.length).fill(1));
+        webgl.setSelection(new Uint8Array(others.length).fill(1));
+        await webgl.drawCooperative(mask, null);
+        results.push({ maximum: 0, ink: 1, fromBlocks: internals.inFlightFromBlocks });
+        await idle();
+        return results;
+      },
+      { numeric, colorMode },
+    );
+    expect(results.map(({ fromBlocks }) => fromBlocks)).toEqual([
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+    ]);
+    for (const [step, { maximum, ink }] of results.entries()) {
+      expect(ink, `step ${step}`).toBeGreaterThan(0);
+      expect(maximum, `step ${step}`).toBeLessThanOrEqual(1);
+    }
+  });
+}
