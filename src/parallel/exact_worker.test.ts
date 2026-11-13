@@ -2,9 +2,16 @@ import { expect, spyOn, test } from "bun:test";
 import { connectExactWorker, type ExactSurface, type ExactWorkerScope } from "./exact_runtime";
 import type { ExactReply, ExactRequest } from "./exact_types";
 import { ExactRenderer } from "./exact_worker";
-import { type LineColors, type LineFocus, type LineFrame, WebGLLineRenderer } from "./webgl";
+import {
+  BatchSize,
+  type LineBatch,
+  type LineColors,
+  type LineFocus,
+  type LineFrame,
+  WebGLLineRenderer,
+} from "./webgl";
 
-const finished = { milliseconds: 12, fullQuality: true, fromBlocks: false };
+const finished = { milliseconds: 12, fullQuality: true, fromBlocks: false, drewEveryRow: true };
 const ready = async () => {
   await Promise.resolve();
   await Promise.resolve();
@@ -23,6 +30,7 @@ function source() {
     lineWidth: 1,
     curved: false,
     draft: false,
+    transient: false,
     resolution: 1,
     drawnRows: 3,
     selectedCount: 2,
@@ -433,16 +441,61 @@ test("worker reports unavailable contexts, initialization and frame failures", a
   });
 });
 
-test("cooperative line batches wait for their fences and release failed fences", async () => {
+test("a batch size scales a full batch's own rows toward 6 ms, at most twofold, within 1 and 32768", () => {
+  const size = new BatchSize(5);
+  const full = (rows: number) => ({ size, rows, drawn: rows, full: true });
+  size.adapt(full(100), 0.1);
+  expect(size.rows).toBe(200);
+  size.adapt(full(100), 12);
+  expect(size.rows).toBe(50);
+  size.adapt(full(1000), 6);
+  expect(size.rows).toBe(1000);
+  size.adapt(full(100), 6000);
+  expect(size.rows).toBe(1);
+  size.adapt(full(30000), 1);
+  expect(size.rows).toBe(32768);
+  // Fewer rows of every segment than asked, by rounding a shorter run's rows: still full.
+  size.adapt({ size, rows: 15, drawn: 14.999999999999998, full: true }, 3);
+  expect(size.rows).toBe(30);
+});
+
+test("a short batch shrinks its size only when it overran 6 ms", () => {
+  const size = new BatchSize(1000);
+  const short = (drawn: number) => ({ size, rows: 1000, drawn, full: false });
+  size.adapt(short(10), 1);
+  expect(size.rows).toBe(1000);
+  size.adapt(short(300), 12);
+  expect(size.rows).toBe(150);
+  // Never grows from a short batch, however fast.
+  size.adapt(short(900), 6.5);
+  expect(size.rows).toBe(150);
+});
+
+test("cooperative batches keep one queued, adapt every sized batch including the last, and release failed fences", async () => {
   for (const failure of [null, "context", "fence"] as const) {
     let signaled = false,
       deleted = 0,
       batches = 0;
+    const lines = new BatchSize(128);
+    const strips = new BatchSize(64);
+    const adapted: [BatchSize, LineBatch][] = [];
+    for (const size of [lines, strips]) {
+      size.adapt = (batch) => {
+        adapted.push([size, batch]);
+      };
+    }
+    // Two kinds of draws, unsized work between them, and a short batch at the end of a range.
+    const submitted: LineBatch[] = [
+      { size: lines, rows: 128, drawn: 128, full: true },
+      { size: null, rows: 0, drawn: 0, full: true },
+      { size: strips, rows: 64, drawn: 64, full: true },
+      { size: lines, rows: 256, drawn: 10, full: false },
+      { size: lines, rows: 256, drawn: 256, full: true },
+    ];
     const renderer = Object.create(WebGLLineRenderer.prototype) as WebGLLineRenderer;
     Object.assign(renderer, {
       softwareRendering: failure === null,
       blocks: null,
-      batchRows: 128,
       gl: {
         SYNC_GPU_COMMANDS_COMPLETE: 1,
         SYNC_STATUS: 2,
@@ -458,24 +511,31 @@ test("cooperative line batches wait for their fences and release failed fences",
           deleted++;
         },
       },
-      *drawFrame(_frame: LineFrame, size: () => number) {
-        for (let i = 0; i < 3; i++) {
-          expect(size()).toBeGreaterThan(0);
-          expect(size()).toBeLessThanOrEqual(32768);
-          expect(deleted).toBe(i);
+      *drawFrame(_frame: LineFrame, batched: boolean) {
+        expect(batched).toBe(true);
+        for (const [i, batch] of submitted.entries()) {
+          // One batch stays queued behind the one in flight.
+          expect(deleted).toBe(Math.max(0, i - 1));
           batches++;
-          yield;
+          yield batch;
         }
       },
     });
     const work = renderer.drawCooperative(source().frame);
     if (failure === null) {
       await work;
-      expect(batches).toBe(3);
-      expect(deleted).toBe(3);
+      expect(batches).toBe(5);
+      expect(deleted).toBe(5);
+      expect(adapted).toEqual([
+        [lines, submitted[0]],
+        [strips, submitted[2]],
+        [lines, submitted[3]],
+        [lines, submitted[4]],
+      ]);
     } else {
       await expect(work).rejects.toThrow(failure === "context" ? "lost" : "fence");
-      expect(deleted).toBe(failure === "context" ? 1 : 0);
+      // A lost context releases the awaited fence and the one queued behind it.
+      expect(deleted).toBe(failure === "context" ? 2 : 0);
     }
   }
 });

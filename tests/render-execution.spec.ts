@@ -103,7 +103,7 @@ for (const quality of ["full", "low"] as const) {
   });
 }
 
-test("gestures draft exact lines while full frames are slow, ignoring frames from blocks", async ({
+test("gestures draft exact lines while full frames are slow, judged by frames of every row", async ({
   page,
 }) => {
   await loadParallelBenchmark(
@@ -119,6 +119,7 @@ test("gestures draft exact lines while full frames are slow, ignoring frames fro
         milliseconds: number;
         fullQuality: boolean;
         fromBlocks: boolean;
+        drewEveryRow: boolean;
       }) => void;
     }
     const plot = (
@@ -127,13 +128,25 @@ test("gestures draft exact lines while full frames are slow, ignoring frames fro
     // An axis drag: interacting without a brush gesture.
     plot.interacting = true;
     const full = (milliseconds: number) =>
-      plot.recordFrame({ milliseconds, fullQuality: true, fromBlocks: false });
+      plot.recordFrame({ milliseconds, fullQuality: true, fromBlocks: false, drewEveryRow: true });
     const states = [plot.draftFrame()];
     full(200);
     full(200);
     states.push(plot.draftFrame());
-    plot.recordFrame({ milliseconds: 1, fullQuality: true, fromBlocks: true });
-    plot.recordFrame({ milliseconds: 1, fullQuality: false, fromBlocks: false });
+    // Frames from blocks or moved density, and drafts, say nothing of full frames' cost.
+    plot.recordFrame({ milliseconds: 1, fullQuality: true, fromBlocks: true, drewEveryRow: false });
+    plot.recordFrame({
+      milliseconds: 1,
+      fullQuality: true,
+      fromBlocks: false,
+      drewEveryRow: false,
+    });
+    plot.recordFrame({
+      milliseconds: 1,
+      fullQuality: false,
+      fromBlocks: false,
+      drewEveryRow: true,
+    });
     states.push(plot.draftFrame());
     full(1);
     states.push(plot.draftFrame());

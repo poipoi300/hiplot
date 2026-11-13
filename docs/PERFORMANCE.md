@@ -3443,3 +3443,90 @@ later frame for a message round trip, completion polling and the bitmap's return
 Worker frames first restarted their GPU batches at 128 rows, waiting for each:
 a 5k redraw took 46–47 ms and a 50k one 366–374 ms. Keeping the learned batch
 size between frames gives the figures above. Brush drags stayed at 4 ms frames.
+
+### Scrolling by moving the previous density
+
+A horizontal scroll moves every axis by the same offset. Frames drawn while
+scrolling are marked transient. When a transient frame's offset is a whole
+number of target pixels, the renderer copies its previous frame's float density
+targets moved by it into spare targets, draws into the exposed columns only the
+run of segments whose lines, stubs and corners can reach them
+(`segmentsCovering`, under a scissor, in the usual cooperative batches), and
+tone-maps as usual; a transient frame identical to the previous one only
+tone-maps. The renderer records what its targets hold (geometry, rows, draw
+order, colors, selection revision, style), so any other change draws every row,
+as does a move whose exposed columns need every segment. The redraw when the
+scroll settles ends the scroll itself rather than waiting for the clock, so it
+is never transient and draws every row: the picture at rest is always a full
+frame. Moved frames report that they did not draw every row, so their time does
+not turn gesture drafts off. The spare targets (48 bytes per pixel) are kept
+through the scroll and freed by the next settled frame.
+
+Exposed columns are drawn exactly as a full frame draws them: zero differing
+channels in every test. Moved columns keep the earlier frame's picture, which
+differs from a full frame at the new offset: vertex positions are float32
+(curve evaluation, normals, corners, normalized device coordinates), which a
+whole-pixel move does not translate exactly, so fragments at line joins can
+fall in or out. `tests/scroll-shift.spec.ts` measures, against full frames:
+
+| Plot | Max difference, levels | Differing channels |
+|---|---:|---:|
+| 4,000 rows, curved | 2 | 628–739 of 1,086,240 |
+| 4,000 rows, straight | 2–3 | 164–272 of 1,086,240 |
+| 3,000 rows, device pixel ratio 2, missing values | 2 | 3,001 of 4,344,960 |
+| 30 rows, curved | 7–8 | 78–217 of 1,086,240 |
+
+With few lines, a fragment that falls in or out carries a whole line's
+coverage, hence the sparse plot's larger differences. They last only while the
+scroll moves; the settled frame removes them. A move that is not a whole number
+of target pixels draws every row; at a fractional device pixel ratio, where a
+CSS pixel is not a whole number of target pixels, that is most moves.
+
+Cooperative batches (about 6 ms of GPU time each) used to wait for each batch
+to finish before submitting the next, so the GPU idled for every completion
+round trip. One batch now stays queued behind the one in flight. Each finished
+batch adapts the size it was drawn with from its own rows and time; a short last
+batch of a range only shrinks it, after an overrun. Scrolled strips keep their
+own size, since their scissored rows skip most fragment work and a size learned
+on them would make the next full frame's first batches too long; a strip's copy
+pass is a batch of its own, so its time is not charged to the strip's rows. At
+1M rows, one load per run (machine loaded by other work):
+
+| Batching | First brush frame (block build) ms | Brush move input → image p95 ms | Brush edge input → image p95 ms |
+|---|---:|---:|---:|
+| One batch at a time (2 runs) | 451.5–467.1 | 12.4–13.4 | 8.1–9.8 |
+| One queued behind (2 runs) | 355.7–358.5 | 9.9–10.5 | 6.6–7.4 |
+
+At 1M rows on the RTX 5090, 40 scroll steps of 7 CSS pixels, one per animation
+frame, in a scroller 344 pixels wide (a 304-pixel canvas); the settle frame is
+not counted:
+
+| Version | Images for 40 steps | Input → image p50 / p95 ms | Worker frame p50 / p95 ms |
+|---|---:|---:|---:|
+| Full frames | 1 | 217.5 / 217.5 | 153.3 / 212.3 |
+| Moved density, one batch at a time (2 runs) | 4 | 48.8–50.1 / 63.2–65.2 | 41.0–41.1 / 57.7–60.2 |
+| Moved density, one queued behind (2 runs) | 9–13 | 5.7–26.8 / 40.7–60.1 | 0.9–11.9 / 35.6–55.1 |
+
+Scroll runs vary more than these ranges: nine runs of builds that queue a
+batch behind the one in flight, during this work, gave 7–13 images with p95
+38.5–62.3 ms. Scrolling at 1M rows is faster but not real-time. Frames whose exposed columns
+fall past the last axis only copy and tone-map (about 1 ms); the others draw
+every row through the segments that reach the strip. Worker batch logs show
+those strips are GPU-bound, not wait-bound: a frame takes 20–47 ms in batches
+of about 5 ms each, growing with the strip's width and its segments (two
+segments cost about twice one). Slow frames widen the next strip, because the
+inputs that arrive meanwhile add up to one larger move: strips of 42–70 pixels,
+a sixth to a quarter of this canvas, at 1M rows. Drawing only the curve points
+whose strip pieces reach the exposed columns (a curve's x depends on t alone)
+did not change these numbers and was not kept: the strips here lay near axes,
+where stubs of rows with missing values need almost every point. Strip batches
+reached the 32,768-row cap at about 5 ms, so their own batch size does not
+speed them up either. Scrolling invalidates the brushed axis's retained
+blocks, so the next brush gesture builds them again unless the pointer rests on
+a brush band first.
+
+Axis drags remain full frames. Dragging axis k changes only segments k and
+k + 1, and with curves also k - 1 and k + 2 through their neighbors' slopes, so
+a frame could keep the rest of the density and redraw that region. It would
+still draw those segments for every row: about 2/11 (straight) to 4/11 (curved)
+of a full frame, roughly 50–200 ms at 1M rows, not real-time.

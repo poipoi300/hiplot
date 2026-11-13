@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import type { FinishedFrame } from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
 import { warmParallelWorker } from "./plot";
 
@@ -16,7 +17,7 @@ interface QualityProbe {
     mask: Uint8Array,
   ) => DrawnFrame & { selectedCount: number; contextCount: number };
   drawWithWebGL: (renderer: QualityProbe["webgl"]) => void;
-  recordFrame: (frame: { milliseconds: number; fullQuality: boolean }) => void;
+  recordFrame: (frame: FinishedFrame) => void;
   webgl: {
     draw: (frame: DrawnFrame) => void;
     drawCooperative: (frame: DrawnFrame, isCurrent?: () => boolean) => Promise<void>;
@@ -200,7 +201,8 @@ test("slow exact frames engage automatic binning and the menu can force exact li
     const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot();
     if (!pp) throw new Error("No parallel plot");
     const recordFrame = pp.recordFrame.bind(pp);
-    pp.recordFrame = () => recordFrame({ milliseconds: 200, fullQuality: true });
+    pp.recordFrame = () =>
+      recordFrame({ milliseconds: 200, fullQuality: true, fromBlocks: false, drewEveryRow: true });
     for (let i = 0; i < 5; ++i) {
       pp.redrawLines();
       do {

@@ -51,6 +51,7 @@ for (const kind of ["isolated", "left-stub", "right-stub"] as const) {
                 pixelRatio: 1,
                 curved: false,
                 draft,
+                transient: false,
                 resolution: 1,
                 drawnRows: left.length,
                 selectedCount: 1,

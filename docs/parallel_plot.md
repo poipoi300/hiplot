@@ -57,9 +57,12 @@ rendering control selects:
 - **Exact lines**: render every original row with WebGL density accumulation,
   or Canvas 2D where WebGL2 is unavailable. On a GPU, brushing one axis sums
   retained blocks of rows and redraws only the rows it changes, so a million
-  rows brush in real time; scrolling, axis drags and the first frame still draw
-  every row, as drafts during gestures when full frames are slow. Software
-  rasterizers draw every row each frame, which is very slow on large data.
+  rows brush in real time. While scrolling, a move by a whole number of canvas
+  pixels moves the previous frame's density and draws only the segments that
+  reach the exposed columns; the frame after the scroll settles draws every
+  row. Axis drags and the first frame still draw every row, as drafts during
+  gestures when full frames are slow. Software rasterizers draw every row each
+  frame, which is very slow on large data.
 
 Continuous density stays active after a gesture. Both rendering modes default
 to **Curved**; **Straight** is a manual choice. Older saved automatic line shapes

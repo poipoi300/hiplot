@@ -31,7 +31,7 @@ interface BlockPlot {
 interface Comparison {
   step: number;
   fromBlocks: boolean;
-  referenceFromBlocks: boolean;
+  referenceDrewEveryRow: boolean;
   maximum: number;
   differing: number;
   ink: number;
@@ -206,7 +206,7 @@ for (const { name, numeric, colorMode, curved, brushes } of CASES) {
             comparisons.push({
               step,
               fromBlocks: blocks.finished.fromBlocks,
-              referenceFromBlocks: reference.finished.fromBlocks,
+              referenceDrewEveryRow: reference.finished.drewEveryRow,
               maximum,
               differing,
               ink,
@@ -219,7 +219,7 @@ for (const { name, numeric, colorMode, curved, brushes } of CASES) {
       for (const comparison of comparisons) {
         const label = `step ${comparison.step}`;
         expect(comparison.ink, label).toBeGreaterThan(0);
-        expect(comparison.referenceFromBlocks, label).toBe(false);
+        expect(comparison.referenceDrewEveryRow, label).toBe(true);
         if (matchingFocus) expect(comparison.fromBlocks, label).toBe(true);
         expect(comparison.maximum, label).toBeLessThanOrEqual(1);
       }
@@ -302,10 +302,14 @@ test("brush gestures on a GPU draw full frames from retained blocks, through rel
       drafts.push(frame.draft);
       request(frame, ...rest);
     };
-    const images: { pixels: Uint8Array; fromBlocks: boolean }[] = [];
+    const images: { pixels: Uint8Array; fromBlocks: boolean; drewEveryRow: boolean }[] = [];
     const publish = exact.onImage.bind(exact);
     exact.onImage = (bitmap, finished) => {
-      images.push({ pixels: readBitmap(bitmap), fromBlocks: finished.fromBlocks });
+      images.push({
+        pixels: readBitmap(bitmap),
+        fromBlocks: finished.fromBlocks,
+        drewEveryRow: finished.drewEveryRow,
+      });
       publish(bitmap, finished);
     };
     const settled = async (): Promise<void> => {
@@ -347,6 +351,7 @@ test("brush gestures on a GPU draw full frames from retained blocks, through rel
       drafts,
       gestureImages,
       fromBlocks: images.map((image) => image.fromBlocks),
+      referenceDrewEveryRow: reference.drewEveryRow,
       maximum,
       selected,
       rows: mask.length,
@@ -358,6 +363,7 @@ test("brush gestures on a GPU draw full frames from retained blocks, through rel
   expect(result.gestureImages).toBe(3);
   // Gesture images and the release reuse the blocks; only the reference draws every row.
   expect(result.fromBlocks).toEqual([true, true, true, true, false]);
+  expect(result.referenceDrewEveryRow).toBe(true);
   expect(result.maximum).toBeLessThanOrEqual(1);
 });
 
@@ -486,6 +492,7 @@ for (const { name, numeric, colorMode } of [
         const internals = webgl as unknown as {
           gl: WebGL2RenderingContext;
           inFlightFromBlocks: boolean;
+          inFlightDrewEveryRow: boolean;
         };
         const gl = internals.gl;
         const geometry = plot.geometry();
@@ -560,6 +567,7 @@ for (const { name, numeric, colorMode } of [
           await idle();
           webgl.draw(frame);
           const full = read();
+          if (!internals.inFlightDrewEveryRow) throw new Error("The full frame reused density");
           await idle();
           let maximum = 0;
           let ink = 0;

@@ -57,6 +57,7 @@ for (const [draft, numeric] of [
           pixelRatio: 1,
           curved: false,
           draft,
+          transient: false,
           resolution: 1,
           drawnRows: rows,
           selectedCount: rows,

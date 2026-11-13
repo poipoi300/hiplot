@@ -12,6 +12,7 @@ test("obsolete refinement yields after one pair and the next image uses current 
     pixelRatio: 1,
     curved: false,
     draft: false,
+    transient: false,
     resolution: 1,
     drawnRows: 3,
     selectedCount: 3,

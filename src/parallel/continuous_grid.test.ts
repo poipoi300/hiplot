@@ -28,6 +28,7 @@ function request(overrides: Partial<ContinuousRequest> = {}): ContinuousRequest 
     pixelRatio: 1,
     curved: false,
     draft: false,
+    transient: false,
     resolution: 1,
     drawnRows: 0,
     selectedCount: 0,

@@ -17,6 +17,7 @@ function request(): ContinuousRequest {
     pixelRatio: 1,
     curved: true,
     draft: false,
+    transient: false,
     resolution: 1,
     drawnRows: 4,
     selectedCount: 3,

@@ -2439,7 +2439,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     );
   }
   private scrollFrame: number | null = null;
-  /** Scrolling counts as a gesture until this time (see interactiveFrame). */
+  /** Scrolling counts as a gesture until this time or its settle redraw, whichever is first (see interactiveFrame). */
   private scrollingUntil = 0;
   private scrollSettle: ReturnType<typeof setTimeout> | null = null;
   /** Horizontal wheel and trackpad gestures, or shift+wheel, scroll the axes. */
@@ -2465,9 +2465,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (this.scrollSettle !== null) {
       clearTimeout(this.scrollSettle);
     }
-    // Once scrolling stops, the picture is drawn at full quality.
+    // Once scrolling stops, the picture is drawn at full quality. The scroll
+    // ends here, not by the clock: a timer and performance.now() need not agree.
     this.scrollSettle = setTimeout(() => {
       this.scrollSettle = null;
+      this.scrollingUntil = 0;
       this.redrawLines();
     }, SCROLL_SETTLE_MS);
     if (this.scrollFrame === null) {
@@ -2746,7 +2748,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   private recordFrame(finished: FinishedFrame): void {
-    if (!finished.fullQuality || finished.fromBlocks) return;
+    if (!finished.fullQuality || !finished.drewEveryRow) return;
     this.drafts.record(finished.milliseconds);
     // Only automatic quality on a software rasterizer switches pictures on slow frames.
     if (this.state.renderQuality !== "auto" || !(this.webgl?.softwareRendering ?? true)) return;
@@ -2846,6 +2848,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       pixelRatio: this.pixelRatio,
       curved: this.curvedLines(),
       draft: this.draftFrame(),
+      transient: this.interactiveFrame(),
       resolution: 1,
       drawnRows: geometry.rows.length,
       selectedCount,

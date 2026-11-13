@@ -58,6 +58,7 @@ function source(): { frame: LineFrame; colors: LineColors; selection: Uint8Array
       pixelRatio: 1,
       curved: true,
       draft: false,
+      transient: false,
       resolution: 1,
       drawnRows: 2,
       selectedCount: 2,

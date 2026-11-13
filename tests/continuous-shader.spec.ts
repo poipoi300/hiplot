@@ -121,6 +121,7 @@ for (const {
       pixelRatio: 1,
       curved,
       draft,
+      transient: false,
       resolution: 1,
       drawnRows: rows,
       selectedCount: selection.reduce((sum, value) => sum + value, 0),
