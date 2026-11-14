@@ -24,7 +24,14 @@ import LogoSVGW from "../hiplot/static/logo-w.svg";
 import { ContextMenu } from "./contextmenu";
 import { type HiPlotDataControlProps, SelectedCountProgressBar } from "./controls";
 import { StaticDataProvider } from "./dataproviders/static";
-import { apply_filter, apply_filters, type Filter, FilterType, isFilter } from "./filters";
+import {
+  apply_filter,
+  apply_filters,
+  type Filter,
+  FilterType,
+  isFilter,
+  rowsExcept,
+} from "./filters";
 import { HeaderBar } from "./header";
 import style from "./hiplot.module.css";
 import { infertypes, type ParamDef, type ParamDefMap } from "./infertypes";
@@ -909,7 +916,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     this.setState((state) => {
       const new_filtered = keep
         ? state.rows_selected
-        : _.difference(state.rows_filtered, state.rows_selected);
+        : rowsExcept(state.rows_filtered, state.rows_selected);
       const selection = state.rows_selected_filter;
       // A selection that no filter describes still filters the rows; it just cannot be
       // replayed from the saved state.

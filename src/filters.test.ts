@@ -10,6 +10,7 @@ import {
   isLassoSelection,
   lassoFilter,
   parseColumnCondition,
+  rowsExcept,
 } from "./filters";
 import { type Datapoint, ParamType } from "./types";
 
@@ -75,6 +76,28 @@ describe("filters", () => {
     expect(uids(kept)).toEqual(["b"]);
     expect(input).toEqual(table);
   });
+});
+
+describe("excluding rows", () => {
+  test("rows are left in their order, compared by identity", () => {
+    const twin = { ...table[1] };
+    expect(uids(rowsExcept(table, [table[2], table[0], twin]))).toEqual(["b", "d"]);
+    expect(rowsExcept(table, [])).toEqual(table);
+    expect(rowsExcept(table, table)).toEqual([]);
+  });
+
+  // The timeout fails a search of the excluded rows per row, which takes tens of seconds here.
+  test("half of 300,000 rows are excluded in one pass", () => {
+    const rows = Array.from({ length: 300_000 }, (_, index) => ({
+      uid: String(index),
+      from_uid: null,
+    }));
+    const excluded = rows.filter((_, index) => index % 2 === 0);
+    const left = rowsExcept(rows, excluded);
+    expect(left).toHaveLength(150_000);
+    expect(left[0]).toBe(rows[1]);
+    expect(left[149_999]).toBe(rows[299_999]);
+  }, 2000);
 });
 
 describe("filter validation", () => {

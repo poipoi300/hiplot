@@ -210,6 +210,15 @@ export function anyOfRanges(ranges: ReadonlyArray<FilterRange>): Filter {
   };
 }
 
+/** `rows` without the `excluded` ones, in their order: what Exclude leaves. */
+export function rowsExcept(
+  rows: ReadonlyArray<Datapoint>,
+  excluded: Iterable<Datapoint>,
+): Array<Datapoint> {
+  const removed = new Set(excluded);
+  return rows.filter((row) => !removed.has(row));
+}
+
 export function apply_filter(rows: ReadonlyArray<Datapoint>, filter: Filter): Array<Datapoint> {
   return rows.filter(filter_predicate(filter));
 }
