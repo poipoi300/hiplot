@@ -543,8 +543,9 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** The brushes' selection over the filtered rows, computed on the brush worker. */
   private masks: BrushSelection | null = null;
   /**
-   * Incremented when a selection made elsewhere replaces the brushes' one:
-   * brush selections requested before then are dropped when they arrive.
+   * Incremented when a selection made elsewhere replaces the brushes' one,
+   * or other rows are plotted: brush selections requested before then are
+   * dropped when they arrive.
    */
   private selectionEpoch = 0;
   /** The rows every brushed axis but the focus passes, from the latest brush selection. */
@@ -791,8 +792,19 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
   }
   componentDidUpdate(prevProps: ParallelPlotData, prevState: ParallelPlotState) {
-    if (prevProps.rows_filtered !== this.props.rows_filtered) {
+    // A selection made elsewhere (table search, Keep/Exclude, a lasso) or a
+    // change of the plotted rows replaces the drawn selection, whose rows may
+    // not be plotted anymore. This comes first: everything below draws the
+    // selection, and a brush selection requested below must carry the new
+    // epoch to be shown. Our own brush selections are drawn when published.
+    const selectionChanged =
+      prevProps.rows_selected !== this.props.rows_selected &&
+      this.props.rows_selected !== this.publishedSelection;
+    if (selectionChanged || prevProps.rows_filtered !== this.props.rows_filtered) {
+      this.selectionEpoch += 1;
       this.liveBrushMask = null;
+      this.maskMemo = null;
+      this.drawnSelection = this.props.rows_selected;
     }
     if (prevState.height !== this.state.height || prevState.width !== this.state.width) {
       this.on_resize?.();
@@ -904,19 +916,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.update_ticks();
       this.cancelDrawing();
     }
-    // A selection made elsewhere (table search, Keep/Exclude, a lasso): draw
-    // it. Our own brush selections are already drawn when they are published.
-    const selectionChanged =
-      prevProps.rows_selected !== this.props.rows_selected &&
-      this.props.rows_selected !== this.publishedSelection;
-    if (selectionChanged) {
-      this.selectionEpoch += 1;
-      this.liveBrushMask = null;
-      this.maskMemo = null;
-      this.drawnSelection = this.props.rows_selected;
-      if (isLassoSelection(this.props.rows_selected_filter) && this.brushes.size > 0) {
-        this.dropBrushesReplacedByLasso();
-      }
+    if (
+      selectionChanged &&
+      isLassoSelection(this.props.rows_selected_filter) &&
+      this.brushes.size > 0
+    ) {
+      this.dropBrushesReplacedByLasso();
     }
     if (
       selectionChanged ||

@@ -924,6 +924,8 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
         selection === null ? [] : [keep ? selection : { type: FilterType.Not, data: selection }];
       return {
         rows_filtered: new_filtered,
+        // Every row left is selected: displays are never handed selected rows that were filtered out.
+        rows_selected: new_filtered,
         params_def: this.createNewParamsDef(new_filtered),
         rows_selected_filter: null,
         rows_filtered_filters: state.rows_filtered_filters.concat(applied),
