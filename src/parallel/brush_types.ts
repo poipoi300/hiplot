@@ -20,7 +20,12 @@ export type BrushMessage =
       spare: Uint8Array | null;
     }
   /** Replies once the columns these axes brush are sorted. */
-  | { kind: "prepare"; id: number; axes: BrushedAxes };
+  | { kind: "prepare"; id: number; axes: BrushedAxes }
+  /**
+   * The render worker's port, as channel `link`: each selection is sent there
+   * too, as a delta (see SelectionDelta), starting with the current one.
+   */
+  | { kind: "render"; port: MessagePort; link: number };
 
 export type BrushReply =
   | {
@@ -30,6 +35,8 @@ export type BrushReply =
       count: number;
       /** The rows every axis but the request's focus passes; null if unchanged since sent. */
       passing: Uint8Array | null;
+      /** The link the render worker received this selection on, as version `id`, before this reply. */
+      link: number | null;
       wasmMemoryBytes: number;
     }
   | { kind: "prepared"; id: number; wasmMemoryBytes: number }

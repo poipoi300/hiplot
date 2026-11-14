@@ -1,4 +1,5 @@
 import type { ContinuousImage } from "./continuous_types";
+import type { BrushVersion } from "./selection_delta";
 import type { FinishedFrame, LineColors, LineFocus, LineFrame } from "./webgl";
 
 /** What a frame draws: every row's exact line, or the continuous density of the rows. */
@@ -30,11 +31,23 @@ export interface RenderRequest extends Omit<LineFrame, "axes"> {
   /** The order exact lines draw in (see WebGLLineRenderer.setDrawOrder). */
   drawOrder?: Uint32Array;
   selection?: Uint8Array;
+  /**
+   * Draw the brush worker's selection (see SelectionDelta) instead of the
+   * page's, at this version of this link or a newer one, with its count.
+   */
+  brushVersion?: BrushVersion;
   /** A brush gesture's axis (exact frames); its rows are sent when they change. */
   focus: (Omit<LineFocus, "rows"> & { rows?: LineFocus["rows"] }) | null;
 }
 
-export type RenderMessage = RenderInit | RenderRequest;
+/** The brush worker's port, as channel `link`: it replaces any earlier one and its selection. */
+export interface RenderBrush {
+  kind: "brush";
+  port: MessagePort;
+  link: number;
+}
+
+export type RenderMessage = RenderInit | RenderRequest | RenderBrush;
 
 /** A continuous image's measurements, without its pixels once the worker showed them. */
 export type ContinuousMetrics = Omit<ContinuousImage, "pixels">;

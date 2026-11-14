@@ -3688,3 +3688,27 @@ quieter run of the same machine, against 2.3 ms with bits); moves stay within
 the run-to-run noise. Rechecking a flipped row's whole word instead of its own
 bit made moves at a million rows about 40% slower on the quieter run, so a move
 sets only the flags it can change.
+
+### Brush selections straight to the render worker
+
+Each brush selection still crossed the page: the brush worker returned a byte
+per row, and the page copied it, compared it with the last one sent and
+transferred it to the render worker. The page now links the two workers with a
+`MessageChannel`, one link id per pair. The brush worker sends each selection
+there first, as the 32-row words of its bits that changed since the last it
+sent (or every word when half of them or more did), with its link, version and
+count, and replies to the page after; a newly linked render worker gets the
+current selection at once. A frame names the link and version; the render
+worker draws the newest selection it holds of that link, at or past that
+version, with that selection's own count, waiting for it if the frame overtook
+it. A move at a million rows that grows a brush by 0.2% of an axis flips about
+2,000 rows: at most 2,000 words, 16 KB with their indices, where the page copied,
+compared and moved a megabyte. The page's own selections (no brush, a lasso, a
+selection made elsewhere, or selection on the page) are sent as before.
+
+What remains per move: the brush worker still returns the byte-per-row
+selection to the page, which the flow badges, hover and publication read, and
+the render worker still compares and uploads every row's flag before drawing.
+These are bytes moved, not timings: the machine was too loaded for the
+benchmark to separate the change from noise, so its frame times are still to
+be measured.

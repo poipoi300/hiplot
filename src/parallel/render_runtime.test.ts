@@ -7,6 +7,7 @@ import {
   type RenderWorkerScope,
 } from "./render_runtime";
 import type { RenderMessage, RenderReply, RenderRequest } from "./render_types";
+import { selectionDelta } from "./selection_delta";
 import type { LineFocus, LineFrame } from "./webgl";
 
 const finished = { milliseconds: 12, fullQuality: true, fromBlocks: false, drewEveryRow: true };
@@ -413,8 +414,14 @@ test("render worker frames fail loudly on missing state and unfinished frames", 
   await settled();
   expect(missingRows.last()).toEqual({
     kind: "error",
-    message: "Exact frames need rows, a draw order, colors and a selection",
+    message: "Exact frames need rows, a draw order and colors",
   });
+  const selectionless = runtime(() => canvasRenderer().renderer);
+  const unselected = request();
+  delete unselected.selection;
+  selectionless.send(unselected);
+  await settled();
+  expect(selectionless.last()).toEqual({ kind: "error", message: "A frame needs a selection" });
   const colorless = runtime(() => canvasRenderer().renderer);
   const uncolored = request();
   uncolored.mode = "continuous";
@@ -423,7 +430,7 @@ test("render worker frames fail loudly on missing state and unfinished frames", 
   await settled();
   expect(colorless.last()).toEqual({
     kind: "error",
-    message: "Continuous frames need colors and a selection",
+    message: "Continuous frames need colors",
   });
   const unfinished = runtime(() => canvasRenderer({ finishedFrame: () => null }).renderer);
   unfinished.send(request());
@@ -464,4 +471,217 @@ test("a frame whose context was lost fails instead of waiting for its fence fore
     kind: "error",
     message: "The render worker lost its WebGL context",
   });
+});
+
+/** 32 rows a word, as the brush worker's bits. */
+function bitsOf(flags: number[]): Uint32Array {
+  const bits = new Uint32Array(Math.ceil(flags.length / 32));
+  flags.forEach((flag, row) => {
+    if (flag === 1) bits[row >>> 5] |= 1 << (row & 31);
+  });
+  return bits;
+}
+
+/** Resolves once the worker's message ports delivered what was posted. */
+const delivered = async (until: () => boolean) => {
+  for (let attempt = 0; attempt < 50 && !until(); ++attempt) await settled();
+};
+
+test("frames naming a brush selection wait for it, then draw the newest with its own count", async () => {
+  const selections: number[][] = [];
+  const target = canvasRenderer({
+    setSelection: (selected) => {
+      selections.push(Array.from(selected));
+    },
+  });
+  const worker = runtime(() => target.renderer);
+  const channel = new MessageChannel();
+  worker.send({ kind: "brush", port: channel.port2, link: 1 });
+  const named = (id: number, version: number, link = 1): RenderRequest => {
+    const next = id === 1 ? request(1) : unchanged(id);
+    delete next.selection;
+    next.brushVersion = { link, version };
+    return next;
+  };
+  worker.send(named(1, 1));
+  await settled();
+  expect(worker.frames()).toHaveLength(0);
+  let sent = bitsOf([1, 0, 1]);
+  channel.port1.postMessage(
+    selectionDelta(null, sent, { link: 1, version: 1, rowCount: 3, count: 2 }),
+  );
+  await delivered(() => worker.frames().length === 1);
+  expect(selections).toEqual([[1, 0, 1]]);
+  expect(target.frames[0].frame).toMatchObject({ selectedCount: 2, contextCount: 1 });
+  // Changes only: the newest version draws, whatever the frame named.
+  const next = bitsOf([0, 1, 1]);
+  channel.port1.postMessage(
+    selectionDelta(sent, next, { link: 1, version: 2, rowCount: 3, count: 2 }),
+  );
+  sent = next;
+  const last = bitsOf([0, 0, 1]);
+  channel.port1.postMessage(
+    selectionDelta(sent, last, { link: 1, version: 3, rowCount: 3, count: 1 }),
+  );
+  await settled();
+  await settled();
+  worker.send(named(2, 2));
+  await delivered(() => worker.frames().length === 2);
+  expect(selections[1]).toEqual([0, 0, 1]);
+  expect(target.frames[1].frame).toMatchObject({ selectedCount: 1, contextCount: 2 });
+  // The page's own selection still draws as before.
+  const paged = unchanged(3);
+  paged.selection = new Uint8Array([1, 1, 1]);
+  worker.send(paged);
+  await delivered(() => worker.frames().length === 3);
+  expect(selections[2]).toEqual([1, 1, 1]);
+  expect(target.frames[2].frame).toMatchObject({ selectedCount: 2, contextCount: 1 });
+  // A new port replaces the selection: frames wait for the new brush worker's first.
+  const replaced = new MessageChannel();
+  worker.send({ kind: "brush", port: replaced.port2, link: 2 });
+  worker.send(named(4, 1, 2));
+  await settled();
+  expect(worker.frames()).toHaveLength(3);
+  channel.port1.postMessage(
+    selectionDelta(null, bitsOf([1, 1, 1]), { link: 1, version: 9, rowCount: 3, count: 3 }),
+  );
+  await settled();
+  expect(worker.frames()).toHaveLength(3);
+  replaced.port1.postMessage(
+    selectionDelta(null, bitsOf([1, 1, 0]), { link: 2, version: 1, rowCount: 3, count: 2 }),
+  );
+  await delivered(() => worker.frames().length === 4);
+  expect(selections[3]).toEqual([1, 1, 0]);
+  for (const port of [channel.port1, replaced.port1]) port.close();
+});
+
+test("continuous frames get a copy of each brush selection version, once", async () => {
+  const density = evaluation();
+  const worker = runtime(() => canvasRenderer().renderer, density.create);
+  const channel = new MessageChannel();
+  worker.send({ kind: "brush", port: channel.port2, link: 1 });
+  channel.port1.postMessage(
+    selectionDelta(null, bitsOf([1, 0, 1]), { link: 1, version: 1, rowCount: 3, count: 2 }),
+  );
+  const draft = (id: number, version: number, link = 1): RenderRequest => {
+    const next = id === 1 ? request(1) : unchanged(id);
+    next.mode = "continuous";
+    next.draft = true;
+    delete next.selection;
+    next.brushVersion = { link, version };
+    return next;
+  };
+  await settled();
+  worker.send(draft(1, 1));
+  await delivered(() => worker.frames().length === 1);
+  worker.send(draft(2, 1));
+  await delivered(() => worker.frames().length === 2);
+  expect(Array.from(density.requests[0].selection ?? [])).toEqual([1, 0, 1]);
+  expect(density.requests[0]).toMatchObject({ selectedCount: 2, contextCount: 1 });
+  expect(density.requests[1].selection).toBeUndefined();
+  const copy = density.requests[0].selection;
+  channel.port1.postMessage(
+    selectionDelta(bitsOf([1, 0, 1]), bitsOf([0, 1, 1]), {
+      link: 1,
+      version: 2,
+      rowCount: 3,
+      count: 2,
+    }),
+  );
+  await settled();
+  worker.send(draft(3, 2));
+  await delivered(() => worker.frames().length === 3);
+  expect(Array.from(density.requests[2].selection ?? [])).toEqual([0, 1, 1]);
+  // The kernel's earlier copy is its own.
+  expect(Array.from(copy ?? [])).toEqual([1, 0, 1]);
+  channel.port1.close();
+});
+
+test("brush selections that do not fit the frame, or arrive out of order, fail loudly", async () => {
+  const mismatched = runtime(() => canvasRenderer().renderer);
+  const wide = new MessageChannel();
+  mismatched.send({ kind: "brush", port: wide.port2, link: 1 });
+  wide.port1.postMessage(
+    selectionDelta(null, bitsOf([1, 0, 1, 1]), { link: 1, version: 1, rowCount: 4, count: 3 }),
+  );
+  await settled();
+  const named = request(1);
+  delete named.selection;
+  named.brushVersion = { link: 1, version: 1 };
+  mismatched.send(named);
+  await delivered(() => mismatched.last()?.kind === "error");
+  expect(mismatched.last()).toEqual({
+    kind: "error",
+    message: "The brush selection and the frame's rows differ",
+  });
+  const reordered = runtime(() => canvasRenderer().renderer);
+  const late = new MessageChannel();
+  reordered.send({ kind: "brush", port: late.port2, link: 1 });
+  late.port1.postMessage(
+    selectionDelta(null, bitsOf([1, 0, 1]), { link: 1, version: 2, rowCount: 3, count: 2 }),
+  );
+  late.port1.postMessage(
+    selectionDelta(null, bitsOf([1, 1, 1]), { link: 1, version: 1, rowCount: 3, count: 3 }),
+  );
+  await delivered(() => reordered.last()?.kind === "error");
+  expect(reordered.last()).toEqual({ kind: "error", message: "Selection 1 arrived after 2" });
+  for (const port of [wide.port1, late.port1]) port.close();
+});
+
+test("a new link's selections are never mistaken for the old link's, by frames or the density kernel", async () => {
+  const density = evaluation();
+  const target = canvasRenderer();
+  const worker = runtime(() => target.renderer, density.create);
+  const first = new MessageChannel();
+  worker.send({ kind: "brush", port: first.port2, link: 1 });
+  first.port1.postMessage(
+    selectionDelta(null, bitsOf([1, 0, 1]), { link: 1, version: 3, rowCount: 3, count: 2 }),
+  );
+  const continuous = (id: number, link: number, version: number): RenderRequest => {
+    const next = id === 1 ? request(1) : unchanged(id);
+    next.mode = "continuous";
+    next.draft = true;
+    delete next.selection;
+    next.brushVersion = { link, version };
+    return next;
+  };
+  await settled();
+  worker.send(continuous(1, 1, 3));
+  await delivered(() => worker.frames().length === 1);
+  // The same version number on the next link is another selection: the kernel gets it.
+  const second = new MessageChannel();
+  worker.send({ kind: "brush", port: second.port2, link: 2 });
+  second.port1.postMessage(
+    selectionDelta(null, bitsOf([0, 1, 0]), { link: 2, version: 3, rowCount: 3, count: 1 }),
+  );
+  await settled();
+  worker.send(continuous(2, 2, 3));
+  await delivered(() => worker.frames().length === 2);
+  expect(Array.from(density.requests[1].selection ?? [])).toEqual([0, 1, 0]);
+  // A frame of the old link waits, whatever version the new link reaches.
+  worker.send(continuous(3, 1, 5));
+  second.port1.postMessage(
+    selectionDelta(bitsOf([0, 1, 0]), bitsOf([1, 1, 0]), {
+      link: 2,
+      version: 9,
+      rowCount: 3,
+      count: 2,
+    }),
+  );
+  await settled();
+  await settled();
+  expect(worker.frames()).toHaveLength(2);
+  worker.send(continuous(4, 2, 9));
+  await delivered(() => worker.frames().length === 3);
+  expect(worker.frames()[2].id).toBe(4);
+  // A delta of another link on this port is a protocol error.
+  second.port1.postMessage(
+    selectionDelta(null, bitsOf([1, 1, 1]), { link: 1, version: 10, rowCount: 3, count: 3 }),
+  );
+  await delivered(() => worker.last()?.kind === "error");
+  expect(worker.last()).toEqual({
+    kind: "error",
+    message: "A selection of link 1 reached link 2",
+  });
+  for (const port of [first.port1, second.port1]) port.close();
 });

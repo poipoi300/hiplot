@@ -86,6 +86,7 @@ import {
 import type { ContinuousMetrics } from "./render_types";
 import { RenderWorker, type WorkerFrame } from "./render_worker";
 import type { AxisSelection } from "./selection";
+import type { BrushVersion } from "./selection_delta";
 import { monotoneSlope, SPLINE_HANDLE, splineParameter, splineY } from "./spline";
 import {
   type FinishedFrame,
@@ -571,7 +572,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     rows: ReadonlyArray<Datapoint>;
     mask: Uint8Array;
     count: number;
+    /** The version the render worker holds this selection as, for frames to name. */
+    version: BrushVersion | null;
   } | null = null;
+  /** The brush selection and render worker linked by a channel (see BrushSelection.attachRender). */
+  private linkedSelection: { masks: BrushSelection; worker: RenderWorker; link: number } | null =
+    null;
+  private links = 0;
   /** The last selection this plot handed to HiPlot. */
   private publishedSelection: ReadonlyArray<Datapoint> | null = null;
   /** Incremented by every draw, so a progressive draw stops once superseded. */
@@ -1986,8 +1993,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         ? masks.selectedRows(mask)
         : null;
     this.updateFlowBadges(new Set(actives), mask);
-    this.liveBrushMask = { rows: masks.rows, mask, count };
-    // Nothing reads the replaced mask now: the render worker copied it, and the badges hold this one.
+    this.liveBrushMask = { rows: masks.rows, mask, count, version: result.version };
+    // Nothing reads the replaced mask now: frames carrying it were copied, and the badges hold this one.
     if (previous !== undefined && previous !== mask) masks.recycle(previous);
     // Passing rows belong to this selection: a request without a focus leaves none to draw blocks from.
     this.brushPassing = result.passing;
@@ -2657,6 +2664,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       // Loaded now, from the first draw: a brush's first move would otherwise wait for them.
       this.masks.start();
       this.brushPassing = null;
+      this.linkSelection();
     }
     return this.masks;
   }
@@ -2913,7 +2921,23 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         queueMicrotask(() => this.redrawLines());
       },
     );
+    this.linkSelection();
     return this.worker;
+  }
+
+  /**
+   * Gives the brush worker a channel to the render worker, which then holds
+   * every brush selection: frames name it instead of carrying it.
+   */
+  private linkSelection(): void {
+    const { masks, worker } = this;
+    if (masks === null || worker === null || typeof MessageChannel === "undefined") return;
+    if (this.linkedSelection?.masks === masks && this.linkedSelection.worker === worker) return;
+    const channel = new MessageChannel();
+    const link = ++this.links;
+    masks.attachRender(channel.port1, link);
+    worker.attachBrush(channel.port2, link);
+    this.linkedSelection = { masks, worker, link };
   }
 
   /** Whether the render worker draws this mode's lines (see redrawLines), starting it if needed. */
@@ -2967,14 +2991,24 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     const mask = this.selectionMask(geometry);
     const colors = this.lineColors(geometry);
     const frame = this.lineFrame(geometry, mask);
+    // The worker holds the brush worker's selections: a frame names the one it draws.
+    const live = this.liveBrushMask;
+    const linked = this.linkedSelection;
+    const selection =
+      live?.mask === mask &&
+      live.version !== null &&
+      linked?.worker === worker &&
+      linked.link === live.version.link
+        ? live.version
+        : mask;
     if (continuous) {
-      worker.drawContinuous({ ...frame, draft: this.interacting }, colors, mask);
+      worker.drawContinuous({ ...frame, draft: this.interacting }, colors, selection);
       return;
     }
     worker.drawExact(
       frame,
       colors,
-      mask,
+      selection,
       geometry.order,
       () => geometry.colorOrder(colors.bins, colors.colorMapBins, frame.colorMode),
       this.brushFocus(geometry),

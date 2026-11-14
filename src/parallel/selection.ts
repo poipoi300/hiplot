@@ -366,6 +366,11 @@ export class BrushMasks {
   }
 
   /** Rows the live mask `select` returns holds, counted as its flags change. */
+  /** The live mask's bits, 32 rows a word, updated in place like it: read, never written. */
+  get selectionBits(): Uint32Array {
+    return this.selectedBits;
+  }
+
   get selectedCount(): number {
     return this.selectedTotal;
   }

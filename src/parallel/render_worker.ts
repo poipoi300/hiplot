@@ -1,12 +1,16 @@
 import type { ContinuousMetrics, RenderMode, RenderReply, RenderRequest } from "./render_types";
+import type { BrushVersion } from "./selection_delta";
 import type { FinishedFrame, LineColors, LineFocus, LineFrame } from "./webgl";
 import { WorkerFrameCache } from "./worker_payload";
+
+/** A frame's selection: the page's flags, or a brush selection the worker holds (see attachBrush). */
+export type FrameSelection = Uint8Array | BrushVersion;
 
 interface PendingFrame {
   mode: RenderMode;
   frame: LineFrame;
   colors: LineColors;
-  selection: Uint8Array;
+  selection: FrameSelection;
   /** Exact frames: the shuffled row order, and the draw order without float targets. */
   order: Uint32Array | null;
   fallbackOrder: (() => Uint32Array) | null;
@@ -58,6 +62,8 @@ export class RenderWorker {
    * up as garbage.
    */
   private spareSelections: Uint8Array[] = [];
+  /** The brush worker's port and link, until the worker starts and takes them. */
+  private brushPort: { port: MessagePort; link: number } | null = null;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -96,14 +102,14 @@ export class RenderWorker {
   drawExact(
     frame: LineFrame,
     colors: LineColors,
-    selection: Uint8Array,
+    selection: FrameSelection,
     order: Uint32Array,
     fallbackOrder: () => Uint32Array,
     focus: LineFocus | null = null,
   ): void {
     if (this.presents === false) throw new Error("The render worker cannot draw exact lines");
     if (
-      order.length !== selection.length ||
+      order.length !== colors.bins.length ||
       (focus !== null && focus.rows.length !== order.length)
     ) {
       throw new Error("Exact frames' order, focus and selection must identify the same rows");
@@ -111,7 +117,7 @@ export class RenderWorker {
     this.request("exact", frame, colors, selection, order, fallbackOrder, focus);
   }
 
-  drawContinuous(frame: LineFrame, colors: LineColors, selection: Uint8Array): void {
+  drawContinuous(frame: LineFrame, colors: LineColors, selection: FrameSelection): void {
     this.request("continuous", frame, colors, selection, null, null, null);
   }
 
@@ -119,16 +125,17 @@ export class RenderWorker {
     mode: RenderMode,
     frame: LineFrame,
     colors: LineColors,
-    selection: Uint8Array,
+    selection: FrameSelection,
     order: Uint32Array | null,
     fallbackOrder: (() => Uint32Array) | null,
     focus: LineFocus | null,
   ): void {
     if (this.disposed) throw new Error("Cannot draw with a disposed render worker");
     if (this.failure !== null) throw this.failure;
+    const rows = colors.bins.length;
     if (
-      colors.bins.length !== selection.length ||
-      frame.axes.some((axis) => axis.pixels.length !== selection.length)
+      (selection instanceof Uint8Array && selection.length !== rows) ||
+      frame.axes.some((axis) => axis.pixels.length !== rows)
     ) {
       throw new Error("Rendered columns, colors and selection must identify the same rows");
     }
@@ -140,7 +147,7 @@ export class RenderWorker {
         contextColor: { ...frame.contextColor },
       },
       colors,
-      selection: this.selectionCopy(selection),
+      selection: selection instanceof Uint8Array ? this.selectionCopy(selection) : selection,
       order,
       fallbackOrder,
       focus,
@@ -176,11 +183,35 @@ export class RenderWorker {
       });
   }
 
+  /**
+   * Links the brush worker (see BrushSelection.attachRender): it sends its
+   * selections to this worker, which frames then name by version.
+   */
+  attachBrush(port: MessagePort, link: number): void {
+    if (this.disposed) throw new Error("Cannot link a disposed render worker");
+    this.brushPort?.port.close();
+    this.brushPort = { port, link };
+    this.sendBrushPort();
+  }
+
+  private sendBrushPort(): void {
+    const brush = this.brushPort;
+    if (brush === null || this.worker === null || this.failure !== null) return;
+    this.brushPort = null;
+    try {
+      this.worker.postMessage({ kind: "brush", ...brush }, [brush.port]);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
   /** A copy of `selection` in a returned or superseded buffer when one fits. */
   private selectionCopy(selection: Uint8Array): Uint8Array {
     let spare: Uint8Array | undefined;
-    if (this.pending?.selection.length === selection.length) {
-      spare = this.pending.selection;
+    const pending = this.pending?.selection;
+    if (pending instanceof Uint8Array && pending.length === selection.length) {
+      spare = pending;
+      this.pending = null;
     } else {
       const index = this.spareSelections.findIndex((buffer) => buffer.length === selection.length);
       if (index !== -1) spare = this.spareSelections.splice(index, 1)[0];
@@ -227,6 +258,7 @@ export class RenderWorker {
       this.fail(new Error("The render worker sent an unreadable reply"));
     const offscreen = this.canvas.transferControlToOffscreen();
     worker.postMessage({ kind: "init", canvas: offscreen }, [offscreen]);
+    this.sendBrushPort();
   }
 
   private dispatchPending(): void {
@@ -245,7 +277,9 @@ export class RenderWorker {
       ...this.frameCache.encode(frame.axes, colors, transfer),
       focus: focus === null ? null : { axis: focus.axis, active: focus.active },
     };
-    if (this.sentSelection !== null && equalFlags(this.sentSelection, selection)) {
+    if (!(selection instanceof Uint8Array)) {
+      request.brushVersion = { link: selection.link, version: selection.version };
+    } else if (this.sentSelection !== null && equalFlags(this.sentSelection, selection)) {
       this.recycle(selection);
     } else {
       if (this.sentSelection?.length === selection.length) this.sentSelection.set(selection);
@@ -284,6 +318,9 @@ export class RenderWorker {
     this.failure = error instanceof Error ? error : new Error(String(error));
     this.starting = false;
     this.pending = null;
+    // Nothing reads the brush worker's selections any more.
+    this.brushPort?.port.close();
+    this.brushPort = null;
     this.postedId = this.drawnId;
     this.worker?.terminate();
     const failure = this.failure;
@@ -303,6 +340,8 @@ export class RenderWorker {
     this.drawOrder = null;
     this.focusRows = null;
     this.sentSelection = null;
+    this.brushPort?.port.close();
+    this.brushPort = null;
     this.worker?.terminate();
     this.worker = null;
   }

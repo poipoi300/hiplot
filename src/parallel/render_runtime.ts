@@ -1,6 +1,7 @@
 import { ContinuousRuntime } from "./continuous_runtime";
 import type { ContinuousRequest } from "./continuous_types";
 import type { ContinuousMetrics, RenderMessage, RenderReply, RenderRequest } from "./render_types";
+import { DeltaSelection, type SelectionDelta } from "./selection_delta";
 import { type LineColors, type LineFocus, TaskPoller, WebGLLineRenderer } from "./webgl";
 
 export interface RenderWorkerScope {
@@ -53,6 +54,8 @@ export function connectRenderWorker(
   let drawOrder: Uint32Array | null = null;
   let selection: Uint8Array | null = null;
   let focusRows: Uint8Array | null = null;
+  /** The brush worker's port and the selection it sent (see SelectionDelta). */
+  let brush: { port: MessagePort; link: number; selection: DeltaSelection | null } | null = null;
   /** Replaced selections, returned with the next frame, once no frame uses them. */
   let released: Uint8Array[] = [];
   let latest: RenderRequest | null = null;
@@ -63,7 +66,8 @@ export function connectRenderWorker(
   let continuous: ContinuousEvaluation | null = null;
   let kernelColumns = new Set<number>();
   let kernelColors: LineColors | null = null;
-  let kernelSelection: Uint8Array | null = null;
+  /** The page's selection the kernel holds, or the link and version of the brush worker's. */
+  let kernelSelection: Uint8Array | string | null = null;
 
   const fail = (error: unknown): void => {
     failed = true;
@@ -91,6 +95,47 @@ export function connectRenderWorker(
       retained.set(axis.column, pixels);
     }
     columns = retained;
+  };
+
+  /** The brush worker's selection a request names, once the worker holds that version. */
+  const brushSelection = (request: RenderRequest): DeltaSelection | null => {
+    if (request.brushVersion === undefined) return null;
+    const selection = brush?.selection ?? null;
+    return selection?.holds(request.brushVersion) ? selection : null;
+  };
+
+  /** Whether `request` can be drawn: a brush selection it names has arrived. */
+  const drawable = (request: RenderRequest): boolean =>
+    request.brushVersion === undefined || brushSelection(request) !== null;
+
+  /** The selection a request draws, and its counts when the brush worker's. */
+  const frameSelection = (request: RenderRequest) => {
+    const brushed = brushSelection(request);
+    if (brushed !== null) {
+      if (brushed.rowCount !== (colors?.bins.length ?? -1)) {
+        throw new Error("The brush selection and the frame's rows differ");
+      }
+      return {
+        mask: brushed.mask,
+        // Links and versions together name a selection: either alone may repeat.
+        key: `${brushed.link}:${brushed.version}` as Uint8Array | string,
+        counts: { selectedCount: brushed.count, contextCount: brushed.rowCount - brushed.count },
+      };
+    }
+    if (selection === null) throw new Error("A frame needs a selection");
+    return { mask: selection, key: selection as Uint8Array | string, counts: {} };
+  };
+
+  const receiveBrush = (port: MessagePort, delta: SelectionDelta): void => {
+    if (failed || brush?.port !== port) return;
+    try {
+      brush.selection ??= new DeltaSelection(brush.link, delta.rowCount);
+      brush.selection.apply(delta);
+      // A frame waiting for this selection can now draw.
+      if (!running && latest !== null) void run();
+    } catch (error) {
+      fail(error);
+    }
   };
 
   const settle = async (canvasRenderer: CanvasRenderer) => {
@@ -151,15 +196,16 @@ export function connectRenderWorker(
 
   const drawExact = async (request: RenderRequest): Promise<void> => {
     if (renderer === null) throw new Error("Exact lines need the worker's canvas");
-    if (colors === null || order === null || drawOrder === null || selection === null) {
-      throw new Error("Exact frames need rows, a draw order, colors and a selection");
+    if (colors === null || order === null || drawOrder === null) {
+      throw new Error("Exact frames need rows, a draw order and colors");
     }
+    const { mask, counts } = frameSelection(request);
     // Exact lines took over: the density kernel's counts would only go stale.
     dropContinuous();
     renderer.setRows(order.length, order);
     renderer.setDrawOrder(drawOrder);
     renderer.setColors(colors);
-    renderer.setSelection(selection);
+    renderer.setSelection(mask);
     let focus: LineFocus | null = null;
     if (request.focus !== null) {
       if (focusRows === null) throw new Error("A brush focus needs its rows");
@@ -169,22 +215,24 @@ export function connectRenderWorker(
       x: axis.x,
       pixels: columns.get(axis.column) as Float32Array,
     }));
-    await renderer.drawCooperative({ ...request, axes }, focus);
+    await renderer.drawCooperative({ ...request, ...counts, axes }, focus);
     reply(request, await settle(renderer), null);
   };
 
   const drawContinuous = async (request: RenderRequest): Promise<void> => {
-    if (colors === null || selection === null) {
-      throw new Error("Continuous frames need colors and a selection");
-    }
+    if (colors === null) throw new Error("Continuous frames need colors");
+    const { mask, key, counts } = frameSelection(request);
     continuous ??= createContinuous();
     const kernelRequest: ContinuousRequest = {
       ...request,
+      ...counts,
       columns: Array.from(columns, ([id, pixels]) => ({ id, pixels })).filter(
         ({ id }) => !kernelColumns.has(id),
       ),
       colors: colors === kernelColors ? undefined : colors,
-      selection: selection === kernelSelection ? undefined : selection,
+      // The brush worker's selection changes in place: the kernel gets a copy of each version.
+      selection:
+        key === kernelSelection ? undefined : typeof key === "string" ? mask.slice() : mask,
     };
     const current = generation;
     const rendering = request.draft
@@ -193,7 +241,7 @@ export function connectRenderWorker(
     // The kernel applied every delta before rendering could yield.
     kernelColumns = new Set(request.axes.map((axis) => axis.column));
     kernelColors = colors;
-    kernelSelection = selection;
+    kernelSelection = key;
     const image = await rendering;
     // A refinement superseded by a gesture or another mode: the loop draws the latest.
     if (image === null) return;
@@ -208,7 +256,8 @@ export function connectRenderWorker(
   const run = async (): Promise<void> => {
     running = true;
     try {
-      while (latest !== null && !failed) {
+      // A frame naming a brush selection not yet arrived waits for it (see receiveBrush).
+      while (latest !== null && !failed && drawable(latest)) {
         const request = latest;
         latest = null;
         drawing = { mode: request.mode, draft: request.draft };
@@ -243,6 +292,14 @@ export function connectRenderWorker(
         return;
       }
       if (!initialized) throw new Error("A frame reached the render worker before its canvas");
+      if (data.kind === "brush") {
+        brush?.port.close();
+        const port = data.port;
+        brush = { port, link: data.link, selection: null };
+        port.onmessage = ({ data: delta }: MessageEvent<SelectionDelta>) =>
+          receiveBrush(port, delta);
+        return;
+      }
       apply(data);
       latest = data;
       if (

@@ -4,7 +4,12 @@ import type { LineGeometry } from "../src/parallel/geometry";
 import type { RenderWorker } from "../src/parallel/render_worker";
 import type { LineColors, LineFrame, WebGLLineRenderer } from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
-import { useDirectRenderer } from "./plot";
+import {
+  exposeShownPixels,
+  type ShownPixelsWindow,
+  useDirectRenderer,
+  warmParallelWorker,
+} from "./plot";
 
 interface PicturePlot {
   webgl: WebGLLineRenderer;
@@ -135,3 +140,85 @@ for (const numeric of [true, false]) {
     }
   });
 }
+
+test("brush frames name the brush worker's selection instead of carrying it, and draw the same lines", async ({
+  page,
+}) => {
+  await exposeShownPixels(page);
+  await page.setViewportSize({ width: 800, height: 600 });
+  await loadParallelBenchmark(
+    page,
+    { rows: 4000, columns: 4, discrete: false, seed: 20261109 },
+    "full",
+  );
+  await warmParallelWorker(page);
+  const result = await page.evaluate(async () => {
+    interface BrushedPlot {
+      h: number;
+      state: { dimensions: string[] };
+      worker: Pick<RenderWorker, "busy" | "drawExact"> | null;
+      workerCanvas: HTMLCanvasElement;
+      liveBrushMask: { version: number | null } | null;
+      redrawLines: () => void;
+      startBrushGesture: (
+        event: { sourceEvent: { target: Element }; y: number },
+        dimension: string,
+      ) => void;
+      continueBrushGesture: (y: number) => void;
+      endBrushGesture: () => void;
+      pplot: { brush: (publish: boolean) => Promise<void> };
+    }
+    const win = window as unknown as ShownPixelsWindow & {
+      __parallelProbe: { instance: { parallelPlot: () => BrushedPlot } };
+    };
+    const plot = win.__parallelProbe.instance.parallelPlot();
+    const worker = plot.worker;
+    if (worker === null) throw new Error("Missing render worker");
+    const sent: { version: number | null; rows: boolean }[] = [];
+    const draw = worker.drawExact.bind(worker);
+    worker.drawExact = (frame, colors, selection, ...rest) => {
+      sent.push(
+        selection instanceof Uint8Array
+          ? { version: null, rows: true }
+          : { version: selection.version, rows: false },
+      );
+      draw(frame, colors, selection, ...rest);
+    };
+    const settled = async () => {
+      do await new Promise(requestAnimationFrame);
+      while (worker.busy);
+      // The worker's canvas reaches the page a display frame after its reply.
+      await new Promise(requestAnimationFrame);
+    };
+    const dimension = plot.state.dimensions[1];
+    const overlay = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
+      .find((node) => (node as SVGGElement & { __data__: string }).__data__ === dimension)
+      ?.querySelector(".overlay");
+    if (!overlay) throw new Error("Missing brush overlay");
+    plot.startBrushGesture({ sourceEvent: { target: overlay }, y: plot.h * 0.2 }, dimension);
+    plot.continueBrushGesture(plot.h * 0.6);
+    await plot.pplot.brush(false);
+    plot.endBrushGesture();
+    await plot.pplot.brush(true);
+    await settled();
+    const named = win.shownPixels(plot.workerCanvas);
+    const version = plot.liveBrushMask?.version ?? null;
+    // The same selection, sent as the page's rows.
+    const live = plot.liveBrushMask;
+    if (live === null) throw new Error("No live brush selection");
+    live.version = null;
+    plot.redrawLines();
+    await settled();
+    const carried = win.shownPixels(plot.workerCanvas);
+    let differing = 0;
+    for (let i = 0; i < named.length; ++i) if (named[i] !== carried[i]) ++differing;
+    return { version, sent, differing, length: named.length };
+  });
+  expect(result.version).not.toBeNull();
+  const brushed = result.sent.slice(0, -1);
+  expect(brushed.length).toBeGreaterThan(0);
+  expect(brushed.every((frame) => frame.version !== null && !frame.rows)).toBe(true);
+  expect(result.sent[result.sent.length - 1]).toEqual({ version: null, rows: true });
+  expect(result.length).toBeGreaterThan(0);
+  expect(result.differing).toBe(0);
+});

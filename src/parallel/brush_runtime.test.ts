@@ -4,6 +4,7 @@ import { type Datapoint, ParamType } from "../types";
 import { type BrushWorkerScope, connectBrushWorker } from "./brush_runtime";
 import type { BrushMessage, BrushReply } from "./brush_types";
 import { selectionColumn } from "./selection_columns";
+import type { SelectionDelta } from "./selection_delta";
 import type { SelectionIndexRequest, SelectionIndexResponse } from "./selection_index";
 import { buildSelectionIndex } from "./selection_sort";
 
@@ -144,5 +145,45 @@ test("requests before initialization or for columns never sent reply an error", 
     { kind: "error", message: 'Column ["x",false] was never sent' },
     { kind: "error", message: 'Column ["x",false] was never sent' },
   ]);
+  worker.close();
+});
+
+test("selections go to a linked render worker before the reply: every word first, then changes", async () => {
+  const worker = brushWorker(false);
+  worker.init();
+  worker.column(xRange(0, 10));
+  const render = new MessageChannel();
+  const deltas: SelectionDelta[] = [];
+  render.port1.onmessage = ({ data }: MessageEvent<SelectionDelta>) => deltas.push(data);
+  worker.send({ kind: "select", id: 1, axes: [["x", [xRange(0, 6)]]], focus: null, spare: null });
+  expect(selected(worker.replies[0]).link).toBeNull();
+  worker.send({ kind: "render", port: render.port2, link: 5 });
+  worker.send({ kind: "select", id: 2, axes: [["x", [xRange(0, 6)]]], focus: null, spare: null });
+  worker.send({ kind: "select", id: 3, axes: [["x", [xRange(4, 10)]]], focus: null, spare: null });
+  expect(worker.replies.slice(1).map((reply) => selected(reply).link)).toEqual([5, 5]);
+  for (let wait = 0; wait < 50 && deltas.length < 3; ++wait)
+    await new Promise((r) => setTimeout(r, 1));
+  // The selection made before the link arrives with it, then each new one.
+  expect(
+    deltas.map(({ link, version, count, rowCount }) => ({ link, version, count, rowCount })),
+  ).toEqual([
+    { link: 5, version: 1, count: 3, rowCount: 4 },
+    { link: 5, version: 2, count: 3, rowCount: 4 },
+    { link: 5, version: 3, count: 2, rowCount: 4 },
+  ]);
+  // Four rows fit one word: a change to it is every word.
+  expect(deltas[0].words).toBeNull();
+  expect(Array.from(deltas[2].bits)).toEqual([0b0110]);
+  // A new render worker port gets the current selection at once, as every word.
+  const next = new MessageChannel();
+  const restarted: SelectionDelta[] = [];
+  next.port1.onmessage = ({ data }: MessageEvent<SelectionDelta>) => restarted.push(data);
+  worker.send({ kind: "render", port: next.port2, link: 6 });
+  worker.send({ kind: "select", id: 4, axes: [["x", [xRange(4, 10)]]], focus: null, spare: null });
+  for (let wait = 0; wait < 50 && restarted.length < 2; ++wait)
+    await new Promise((r) => setTimeout(r, 1));
+  expect(restarted[0]).toMatchObject({ link: 6, version: 3, words: null });
+  expect(restarted[1]).toMatchObject({ link: 6, version: 4 });
+  for (const port of [render.port1, next.port1]) port.close();
   worker.close();
 });

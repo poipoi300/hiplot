@@ -54,7 +54,7 @@ class WorkerDouble {
   postMessage(message: RenderMessage, transfer: Transferable[]): void {
     this.transfers.push(transfer);
     this.messages.push(
-      message.kind === "init" ? message : structuredClone(message, { transfer: [...transfer] }),
+      message.kind === "frame" ? structuredClone(message, { transfer: [...transfer] }) : message,
     );
   }
   get requests(): RenderRequest[] {
@@ -502,4 +502,83 @@ test("replies after disposal are ignored and late workers terminate", async () =
   await ready();
   expect(earlyWorker.terminated).toBe(true);
   expect(earlyWorker.messages).toHaveLength(0);
+});
+
+test("a linked brush worker's selections are named by version, without their rows", async () => {
+  const worker = new WorkerDouble();
+  const target = renderer(worker);
+  const channel = new MessageChannel();
+  // Linked before the worker starts: the port follows its canvas.
+  target.attachBrush(channel.port1, 1);
+  const input = source();
+  target.drawExact(input.frame, input.colors, { link: 1, version: 3 }, input.order, input.fallback);
+  await ready();
+  worker.ready();
+  expect(worker.messages.map((message) => message.kind)).toEqual(["init", "brush", "frame"]);
+  expect(worker.transfers[1]).toEqual([channel.port1]);
+  expect(worker.requests[0].brushVersion).toEqual({ link: 1, version: 3 });
+  expect(worker.requests[0].selection).toBeUndefined();
+  worker.finish(0);
+  // The page's own selection is sent, and a later version again only named.
+  draw(target, input);
+  await ready();
+  expect(Array.from(worker.requests[1].selection ?? [])).toEqual([1, 0, 1]);
+  expect(worker.requests[1].brushVersion).toBeUndefined();
+  worker.finish(1);
+  target.drawContinuous(input.frame, input.colors, { link: 1, version: 4 });
+  await ready();
+  expect(worker.requests[2]).toMatchObject({
+    mode: "continuous",
+    brushVersion: { link: 1, version: 4 },
+  });
+  expect(worker.requests[2].selection).toBeUndefined();
+  // Linking again once started sends the new port at once.
+  const next = new MessageChannel();
+  target.attachBrush(next.port1, 2);
+  expect(worker.messages[worker.messages.length - 1]).toEqual({
+    kind: "brush",
+    port: next.port1,
+    link: 2,
+  });
+  target.dispose();
+  expect(() => target.attachBrush(new MessageChannel().port1, 3)).toThrow("disposed");
+  for (const port of [channel.port2, next.port2]) port.close();
+});
+
+test("a render worker that fails to start closes the brush worker's port it held", async () => {
+  const scheduled: (() => void)[] = [];
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void) => {
+    scheduled.push(callback);
+    return 0;
+  }) as unknown as typeof setTimeout);
+  try {
+    let unavailable = 0;
+    const target = new RenderWorker(
+      canvas().element,
+      () => {},
+      () => {
+        unavailable += 1;
+      },
+      () => Promise.reject(new Error("blocked")),
+    );
+    const channel = new MessageChannel();
+    const closed = spyOn(channel.port1, "close");
+    target.attachBrush(channel.port1, 1);
+    const input = source();
+    target.drawExact(
+      input.frame,
+      input.colors,
+      { link: 1, version: 1 },
+      input.order,
+      input.fallback,
+    );
+    await ready();
+    await ready();
+    expect(unavailable).toBe(1);
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(() => scheduled.pop()?.()).toThrow("blocked");
+    channel.port2.close();
+  } finally {
+    timer.mockRestore();
+  }
 });

@@ -3,6 +3,7 @@ import type { Datapoint } from "../types";
 import type { BrushedAxes, BrushMessage, BrushReply } from "./brush_types";
 import { type AxisSelection, BrushMasks } from "./selection";
 import { columnKey, selectionColumn } from "./selection_columns";
+import type { BrushVersion } from "./selection_delta";
 import type { SelectionColumn } from "./selection_index";
 
 /** What a selection request returns: its own copies, which later requests leave alone. */
@@ -14,6 +15,11 @@ export interface SelectionResult {
   passing: { dimension: string; rows: Uint8Array } | null;
   /** Whether this request, or one it replaced before it was sent, publishes its selection. */
   publish: boolean;
+  /**
+   * The version the render worker holds this selection as (see attachRender),
+   * for frames to name instead of sending it; null when it holds none.
+   */
+  version: BrushVersion | null;
 }
 
 interface Request {
@@ -70,6 +76,8 @@ export class BrushSelection {
   private passing: { dimension: string; rows: Uint8Array } | null = null;
   /** A result's mask the caller no longer reads, sent with the next request for its result. */
   private spare: Uint8Array | null = null;
+  /** The render worker's port and link, until the brush worker starts and takes them. */
+  private renderPort: { port: MessagePort; link: number } | null = null;
   private workerWasmBytes = 0;
 
   constructor(
@@ -152,6 +160,29 @@ export class BrushSelection {
   }
 
   /**
+   * Links the render worker (see RenderWorker.attachBrush): from now on the
+   * brush worker sends it every selection, and results say which version it
+   * holds them as. On the page, nothing is sent and the port closes.
+   */
+  attachRender(port: MessagePort, link: number): void {
+    this.assertUsable();
+    this.renderPort?.port.close();
+    if (this.local !== null) {
+      port.close();
+      return;
+    }
+    this.renderPort = { port, link };
+    this.sendRenderPort();
+  }
+
+  private sendRenderPort(): void {
+    const render = this.renderPort;
+    if (render === null || this.workers === null) return;
+    this.renderPort = null;
+    this.post({ kind: "render", ...render }, [render.port]);
+  }
+
+  /**
    * Hands back a result's mask the caller will not read again: the worker
    * writes a later selection into it instead of allocating one per move.
    */
@@ -185,6 +216,7 @@ export class BrushSelection {
       count: this.rows.length,
       passing: focus === null ? null : { dimension: focus, rows: all() },
       publish,
+      version: null,
     };
   }
 
@@ -199,6 +231,7 @@ export class BrushSelection {
           : // Kept while the other axes keep their brushes: the render worker resends changed rows only.
             { dimension: request.focus, rows: masks.passingExcept(request.focus) },
       publish: request.publish,
+      version: null,
     };
   }
 
@@ -278,6 +311,7 @@ export class BrushSelection {
     const channel = new MessageChannel();
     index.postMessage({ port: channel.port2 }, [channel.port2]);
     this.post({ kind: "init", rowCount: this.rows.length, index: channel.port1 }, [channel.port1]);
+    this.sendRenderPort();
     this.sendColumns();
     for (const [id, { axes }] of this.preparing) this.post({ kind: "prepare", id, axes });
     this.sendQueued();
@@ -320,6 +354,7 @@ export class BrushSelection {
         count: reply.count,
         passing: this.passing?.dimension === request.focus ? this.passing : null,
         publish: request.publish,
+        version: reply.link === null ? null : { link: reply.link, version: reply.id },
       });
     }
     this.sendQueued();
@@ -339,6 +374,8 @@ export class BrushSelection {
     this.workers?.brush.terminate();
     this.workers?.index.terminate();
     this.workers = null;
+    this.renderPort?.port.close();
+    this.renderPort = null;
     const rows = this.rows;
     const local = new BrushMasks(rows.length, (range) => selectionColumn(rows, range), null);
     this.local = local;
@@ -379,6 +416,8 @@ export class BrushSelection {
     for (const prepared of this.preparing.values()) prepared.resolve();
     this.preparing.clear();
     this.unsent.clear();
+    this.renderPort?.port.close();
+    this.renderPort = null;
     this.local?.dispose();
   }
 }

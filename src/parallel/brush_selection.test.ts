@@ -231,6 +231,8 @@ test("a failing worker is rethrown, and the page answers the requests it left", 
       expect(await inFlight).toBeNull();
       const result = await waiting;
       expect(flags(result)).toEqual([1, 1, 1, 1, 0, 0, 0, 0]);
+      // Answered on the page: no render worker holds it.
+      expect(result?.version).toBeNull();
       expect(result?.publish).toBe(true);
       expect(scheduled).toHaveLength(1);
       expect(() => scheduled.pop()?.()).toThrow();
@@ -321,4 +323,52 @@ test("a recycled mask carries a later selection instead of a new buffer per move
   await selection.select(brushes(["x", [xRange(0, 2)]]), null, false);
   expect(brush.kinds("select").slice(-1)[0]).toMatchObject({ spare: null });
   selection.dispose();
+});
+
+test("a linked render worker receives every selection, and results name the version it holds", async () => {
+  const { brush, create } = workers();
+  const selection = new BrushSelection(rows, create);
+  const render = new MessageChannel();
+  const versions: number[] = [];
+  render.port2.onmessage = ({ data }: MessageEvent<{ version: number }>) =>
+    versions.push(data.version);
+  const before = await selection.select(brushes(["x", [xRange(0, 3)]]), null, false);
+  expect(before?.version).toBeNull();
+  selection.attachRender(render.port1, 7);
+  const linked = await selection.select(brushes(["x", [xRange(0, 5)]]), null, false);
+  expect(linked?.version).toEqual({ link: 7, version: 2 });
+  expect(brush.kinds("render")).toHaveLength(1);
+  // A request without brushes is answered on the page: the render worker holds none of it.
+  expect((await selection.select(brushes(), null, false))?.version).toBeNull();
+  for (let wait = 0; wait < 50 && versions.length < 2; ++wait) await settled();
+  // The selection made before the link arrives with it.
+  expect(versions).toEqual([1, 2]);
+  selection.dispose();
+  render.port2.close();
+});
+
+test("a render worker linked before the workers start gets its port once they do; on the page, none", async () => {
+  let connect: ((created: BrushWorkers) => void) | undefined;
+  const { brush, index } = workers();
+  const selection = new BrushSelection(
+    rows,
+    () =>
+      new Promise((resolve) => {
+        connect = resolve;
+      }),
+  );
+  selection.start();
+  selection.attachRender(new MessageChannel().port1, 8);
+  connect?.({ brush: brush as unknown as Worker, index: index as unknown as Worker });
+  await settled();
+  expect(brush.messages.map((message) => message.kind).slice(0, 2)).toEqual(["init", "render"]);
+  selection.dispose();
+  const onPage = new BrushSelection(rows, async () => null);
+  onPage.start();
+  await settled();
+  const port = new MessageChannel();
+  onPage.attachRender(port.port1, 9);
+  expect((await onPage.select(brushes(["x", [xRange(0, 1)]]), null, false))?.version).toBeNull();
+  onPage.dispose();
+  port.port2.close();
 });

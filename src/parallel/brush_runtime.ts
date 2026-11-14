@@ -1,6 +1,7 @@
 import type { BrushMessage, BrushReply } from "./brush_types";
 import { BrushMasks, portChannel } from "./selection";
 import { columnKey } from "./selection_columns";
+import { selectionDelta } from "./selection_delta";
 import type { SelectionColumn } from "./selection_index";
 
 export interface BrushWorkerScope {
@@ -17,6 +18,26 @@ export function connectBrushWorker(scope: BrushWorkerScope): void {
   const columns = new Map<string, SelectionColumn>();
   let masks: BrushMasks | null = null;
   let sentPassing: { focus: string; rows: Uint8Array } | null = null;
+  let render: { port: MessagePort; link: number; sent: Uint32Array | null } | null = null;
+  /** The last request selected, which a newly linked render worker receives at once. */
+  let selectedId: number | null = null;
+  /** Sends the render worker the selection request `id` made, as changes to the last it sent. */
+  const sendRender = (selected: BrushMasks, id: number): number | null => {
+    if (render === null) return null;
+    const current = selected.selectionBits;
+    const delta = selectionDelta(render.sent, current, {
+      link: render.link,
+      version: id,
+      rowCount: selected.rowCount,
+      count: selected.selectedCount,
+    });
+    const transfer: Transferable[] = [delta.bits.buffer];
+    if (delta.words !== null) transfer.push(delta.words.buffer);
+    render.port.postMessage(delta, transfer);
+    if (render.sent === null) render.sent = current.slice();
+    else render.sent.set(current);
+    return render.link;
+  };
   const engine = (): BrushMasks => {
     if (masks === null) throw new Error("The brush worker selected before it was initialized");
     return masks;
@@ -60,6 +81,9 @@ export function connectBrushWorker(scope: BrushWorkerScope): void {
               sentPassing = { focus: data.focus, rows };
             }
           }
+          // Sent before the reply: the page's frames name this version once it arrives.
+          selectedId = data.id;
+          const link = sendRender(selected, data.id);
           const transfer: Transferable[] = [mask.buffer];
           if (passing !== null) transfer.push(passing.buffer);
           scope.postMessage(
@@ -69,12 +93,19 @@ export function connectBrushWorker(scope: BrushWorkerScope): void {
               mask,
               count: selected.selectedCount,
               passing,
+              link,
               wasmMemoryBytes: selected.wasmMemoryBytes,
             },
             transfer,
           );
           return;
         }
+        case "render":
+          render?.port.close();
+          render = { port: data.port, link: data.link, sent: null };
+          // The page's frames may name the current selection: the new render worker gets it now.
+          if (masks !== null && selectedId !== null) sendRender(masks, selectedId);
+          return;
         case "prepare": {
           const selected = engine();
           selected.prepare(new Map(data.axes)).then(
