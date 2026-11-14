@@ -1,14 +1,15 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { loadDemo, scrollAxesToEnd, useDirectRenderer } from "./plot";
+import { hideWebGL2, loadDemo, scrollAxesToEnd, useDirectRenderer } from "./plot";
 
 interface ParallelPlotHandle {
   webgl: unknown;
   foreground: unknown;
   redrawLines: () => void;
   foreground_ref: { current: HTMLCanvasElement | null };
-  exact_image_ref: { current: HTMLCanvasElement | null };
-  exact: { busy: boolean } | null;
+  linesBusy: boolean;
+  worker: object | null;
+  workerCanvas: HTMLCanvasElement | null;
 }
 interface HiPlotWindow {
   hiplot_last_instance?: { parallelPlot: () => ParallelPlotHandle | null };
@@ -23,9 +24,9 @@ async function paintedPixels(page: Page): Promise<number> {
       throw new Error("No parallel plot");
     }
     pp.redrawLines();
-    if (pp.exact !== null) {
-      while (pp.exact.busy) await new Promise(requestAnimationFrame);
-      canvas = pp.exact_image_ref.current;
+    if (pp.worker !== null) {
+      while (pp.linesBusy) await new Promise(requestAnimationFrame);
+      canvas = pp.workerCanvas;
       if (!canvas) throw new Error("No completed line surface");
     }
     const copy = document.createElement("canvas");
@@ -179,9 +180,9 @@ test("a steep straight line keeps its width instead of breaking into dots", asyn
       throw new Error("No parallel plot");
     }
     pp.redrawLines();
-    if (pp.exact !== null) {
-      while (pp.exact.busy) await new Promise(requestAnimationFrame);
-      canvas = pp.exact_image_ref.current;
+    if (pp.worker !== null) {
+      while (pp.linesBusy) await new Promise(requestAnimationFrame);
+      canvas = pp.workerCanvas;
       if (!canvas) throw new Error("No completed line surface");
     }
     const copy = document.createElement("canvas");
@@ -262,9 +263,9 @@ for (const deviceScaleFactor of [0.5, 1, 2]) {
           throw new Error("No parallel plot");
         }
         pp.redrawLines();
-        if (pp.exact !== null) {
-          while (pp.exact.busy) await new Promise(requestAnimationFrame);
-          canvas = pp.exact_image_ref.current;
+        if (pp.worker !== null) {
+          while (pp.linesBusy) await new Promise(requestAnimationFrame);
+          canvas = pp.workerCanvas;
           if (!canvas) throw new Error("No completed line surface");
         }
         const opacities = (draw: (context: CanvasRenderingContext2D) => void) => {
@@ -367,9 +368,9 @@ for (const deviceScaleFactor of [1, 2]) {
           throw new Error("No parallel plot");
         }
         pp.redrawLines();
-        if (pp.exact !== null) {
-          while (pp.exact.busy) await new Promise(requestAnimationFrame);
-          canvas = pp.exact_image_ref.current;
+        if (pp.worker !== null) {
+          while (pp.linesBusy) await new Promise(requestAnimationFrame);
+          canvas = pp.workerCanvas;
           if (!canvas) throw new Error("No completed line surface");
         }
         const copy = document.createElement("canvas");
@@ -448,8 +449,8 @@ async function fanOpacities(page: Page, from: number, to: number): Promise<numbe
         throw new Error("No parallel plot");
       }
       pp.redrawLines();
-      while (pp.exact?.busy) await new Promise(requestAnimationFrame);
-      const canvas = pp.exact === null ? pp.foreground_ref.current : pp.exact_image_ref.current;
+      if (pp.worker !== null) while (pp.linesBusy) await new Promise(requestAnimationFrame);
+      const canvas = pp.worker === null ? pp.foreground_ref.current : pp.workerCanvas;
       if (!canvas) throw new Error("No parallel line surface");
       const copy = document.createElement("canvas");
       copy.width = canvas.width;
@@ -545,16 +546,7 @@ for (const [mode, value] of [
   test(`the Canvas 2D fallback draws the ${mode} values on top in the ${mode} color mode`, async ({
     page,
   }) => {
-    await page.addInitScript(() => {
-      const getContext = HTMLCanvasElement.prototype.getContext;
-      HTMLCanvasElement.prototype.getContext = function (
-        this: HTMLCanvasElement,
-        kind: string,
-        options?: unknown,
-      ) {
-        return kind === "webgl2" ? null : getContext.call(this, kind, options);
-      } as typeof HTMLCanvasElement.prototype.getContext;
-    });
+    await hideWebGL2(page);
     // Coincident lines spread over both ends of the color map, a color bin
     // each: drawn in shuffled order, any of them could end up on top.
     const bundles = Array.from({ length: 100 }, (_, i) => [
@@ -674,9 +666,9 @@ async function segmentProfile(
       }
       if (redraw) {
         pp.redrawLines();
-        if (pp.exact !== null) {
-          while (pp.exact.busy) await new Promise(requestAnimationFrame);
-          canvas = pp.exact_image_ref.current;
+        if (pp.worker !== null) {
+          while (pp.linesBusy) await new Promise(requestAnimationFrame);
+          canvas = pp.workerCanvas;
           if (!canvas) throw new Error("No completed line surface");
         }
       }

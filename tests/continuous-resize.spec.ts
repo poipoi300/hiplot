@@ -8,7 +8,8 @@ interface ResizeWindow {
         state: { height: number; width: number };
         h: number;
         continuousFrame: number;
-        continuous: { busy: boolean; failure: Error | null };
+        linesBusy: boolean;
+        worker: { failed: boolean } | null;
         onResize: (height: number, width: number) => void;
       };
     };
@@ -74,14 +75,13 @@ test("continuous density survives minimum and transient nondrawable resize", asy
   });
   await page.waitForFunction((before) => {
     const plot = (window as unknown as ResizeWindow).__parallelProbe.instance.parallelPlot();
-    return plot.continuousFrame > before && !plot.continuous.busy;
+    return plot.continuousFrame > before && !plot.linesBusy;
   }, before);
   expect(
     await page.evaluate(
       () =>
-        (window as unknown as ResizeWindow).__parallelProbe.instance.parallelPlot().continuous
-          .failure,
+        (window as unknown as ResizeWindow).__parallelProbe.instance.parallelPlot().worker?.failed,
     ),
-  ).toBeNull();
+  ).toBe(false);
   expect(errors).toEqual([]);
 });

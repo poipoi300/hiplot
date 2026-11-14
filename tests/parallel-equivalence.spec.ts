@@ -7,18 +7,21 @@ import type { HiPlot } from "../src/component";
 import { expect, test } from "./fixtures";
 import { warmParallelWorker } from "./plot";
 
-test("worker benchmarks count GPU completions even when obsolete images are discarded", async ({
+test("worker benchmarks count the GPU completion of every frame the worker draws", async ({
   page,
 }) => {
   await loadParallelBenchmark(page, { rows: 3, columns: 2, discrete: false, seed: 20261109 });
   await warmParallelWorker(page);
   await instrumentParallelBenchmark(page);
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     const plot = (
       window as unknown as { __parallelProbe: { instance: HiPlot } }
     ).__parallelProbe.instance.parallelPlot();
     if (!plot) throw new Error("Missing plot");
+    // Draws requested together post only the last; these two reach the worker
+    // back to back, and it finishes the first exact frame before the second.
     plot.redrawLines();
+    await Promise.resolve();
     plot.redrawLines();
   });
   await page.waitForFunction(() => {
@@ -39,7 +42,7 @@ test("worker benchmarks count GPU completions even when obsolete images are disc
     ).__parallelProbe.samples.map((sample) => sample.stage),
   );
   expect(stages.filter((stage) => stage === "fence")).toHaveLength(2);
-  expect(stages.filter((stage) => stage === "completedFrame")).toHaveLength(1);
+  expect(stages.filter((stage) => stage === "completedFrame")).toHaveLength(2);
 });
 
 test("benchmark instrumentation leaves every rendered pixel unchanged", async ({ page }) => {
@@ -54,17 +57,17 @@ test("benchmark instrumentation leaves every rendered pixel unchanged", async ({
     page.evaluateHandle(async () => {
       interface Plot {
         redrawLines: () => void;
-        foreground_ref: { current: HTMLCanvasElement };
-        exact: { busy: boolean } | null;
-        exact_image_ref: { current: HTMLCanvasElement };
+        linesBusy: boolean;
+        workerCanvas: HTMLCanvasElement;
       }
       const win = window as unknown as {
         __parallelProbe: { instance: { parallelPlot: () => Plot } };
       };
       const pp = win.__parallelProbe.instance.parallelPlot();
       pp.redrawLines();
-      while (pp.exact?.busy) await new Promise(requestAnimationFrame);
-      const canvas = pp.exact === null ? pp.foreground_ref.current : pp.exact_image_ref.current;
+      while (pp.linesBusy) await new Promise(requestAnimationFrame);
+      // The render worker shows exact lines on its canvas.
+      const canvas = pp.workerCanvas;
       const copy = document.createElement("canvas");
       copy.width = canvas.width;
       copy.height = canvas.height;
@@ -135,14 +138,14 @@ test("the continuous benchmark waits for worker images and completed GPU frames"
         instance: {
           parallelPlot: () => {
             continuousFrame: number;
-            continuous: { busy: boolean };
+            worker: { busy: boolean };
             webgl: { busy: boolean };
           };
         };
       };
     };
     const pp = win.__parallelProbe.instance.parallelPlot();
-    return { frames: pp.continuousFrame, workerBusy: pp.continuous.busy, gpuBusy: pp.webgl.busy };
+    return { frames: pp.continuousFrame, workerBusy: pp.worker.busy, gpuBusy: pp.webgl.busy };
   });
   expect(loaded.frames).toBeGreaterThan(0);
   expect(loaded.workerBusy).toBe(false);
@@ -155,14 +158,8 @@ test("the continuous benchmark waits for worker images and completed GPU frames"
     samples.axis,
     samples.scroll,
   ]) {
-    for (const stage of [
-      "worker",
-      "histogram",
-      "raster",
-      "workerLatency",
-      "completedFrame",
-      "fence",
-    ]) {
+    // The render worker shows its own images: no page presentation waits on it.
+    for (const stage of ["worker", "histogram", "raster", "completedFrame", "fence"]) {
       expect(phase.some((sample) => sample.stage === stage)).toBe(true);
     }
   }

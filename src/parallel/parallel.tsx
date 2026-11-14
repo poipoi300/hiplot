@@ -67,9 +67,8 @@ import {
   savedBrushIntervals,
 } from "./brushes";
 import { categoryTagTexts, placeBrushTags, type TagTexts } from "./brushtags";
+import { ContinuousRenderer } from "./continuous_renderer";
 import type { ContinuousImage } from "./continuous_types";
-import { ContinuousRenderer } from "./continuous_worker";
-import { ExactRenderer } from "./exact_worker";
 import { categoryIndices, countByCategory, type FlowAxis, flowAxes } from "./flow";
 import { LineGeometry } from "./geometry";
 import { defaultHiddenColumns } from "./hidden";
@@ -83,6 +82,8 @@ import {
   RENDER_QUALITIES,
   type RenderQuality,
 } from "./performance";
+import type { ContinuousMetrics } from "./render_types";
+import { RenderWorker, type WorkerFrame } from "./render_worker";
 import { type AxisSelection, BrushMasks } from "./selection";
 import { monotoneSlope, SPLINE_HANDLE, splineParameter, splineY } from "./spline";
 import {
@@ -535,12 +536,14 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   private masks: BrushMasks | null = null;
   /** Line renderer on the GPU; null when WebGL2 is unavailable and Canvas 2D draws. */
   webgl: WebGLLineRenderer | null = null;
+  /** Continuous density on the page, where no render worker draws it. */
   continuous: ContinuousRenderer | null = null;
-  exact: ExactRenderer | null = null;
-  private exactUnavailable = false;
-  private exactImageContext: ImageBitmapRenderingContext | null = null;
+  /** The plot's renderer, which owns `workerCanvas`, wherever workers can draw on a canvas. */
+  worker: RenderWorker | null = null;
+  /** The render worker failed: the page draws from then on. */
+  private workerFailed = false;
   continuousFrame = 0;
-  continuousMetrics: ContinuousImage | null = null;
+  continuousMetrics: ContinuousMetrics | null = null;
   /** The selection flags last computed, reused while the selection is unchanged. */
   private maskMemo: {
     geometry: LineGeometry;
@@ -584,7 +587,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** Width of all the axes, in plot coordinates. */
   contentW = 0;
   foreground_ref = React.createRef<HTMLCanvasElement>();
-  exact_image_ref = React.createRef<HTMLCanvasElement>();
+  /**
+   * The render worker's canvas, made for each mount: the worker takes its
+   * control for good, which a remounted element could not give again.
+   */
+  workerCanvas: HTMLCanvasElement | null = null;
   foreground: CanvasRenderingContext2D | null = null;
   highlighted_ref = React.createRef<HTMLCanvasElement>();
   highlighted: CanvasRenderingContext2D | null = null;
@@ -735,8 +742,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.cancelDrawing();
     this.continuous?.dispose();
     this.continuous = null;
-    this.exact?.dispose();
-    this.exact = null;
+    this.worker?.dispose();
+    this.worker = null;
+    this.workerCanvas?.remove();
+    this.workerCanvas = null;
     this.masks?.dispose();
     this.masks = null;
     this.webgl?.dispose();
@@ -1159,50 +1168,44 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
   }
 
-  /** Busy drafts coalesce; a new gesture can interrupt refinement without another vsync. */
+  /**
+   * A brush move selects rows and posts a frame at most once per display
+   * frame: the first move of a frame at once, the latest of the others when
+   * the next frame starts. On the render worker nothing waits for the
+   * renderer, which draws the newest selection it holds; lines the page
+   * draws wait for its renderer to finish a frame instead, so frames do not
+   * queue behind the pointer, though a new gesture interrupts refinement.
+   */
   private brushMoveFrame: number | null = null;
+  /** A move arrived since the last selection, which the next display frame selects. */
+  private brushMovePending = false;
   private scheduleBrushFrame(): void {
-    if (
-      this.interacting &&
-      (!this.continuous?.busy || this.continuous.refining) &&
-      !this.linesBusy
-    ) {
-      this.cancelBrushMove();
-      this.pplot?.brush(false);
-      return;
-    }
-    if (this.brushMoveFrame !== null) {
-      return;
-    }
-    this.brushMoveFrame = requestAnimationFrame(() => {
-      this.brushMoveFrame = null;
-      if (this.brushMoveBlocked()) {
-        this.scheduleBrushFrame();
-        return;
-      }
-      this.pplot?.brush(false);
-    });
+    this.brushMovePending = true;
+    if (this.brushMoveFrame !== null) return;
+    this.runBrushMove();
   }
 
-  /** Whether a brush move waits for the renderer to finish its frame. */
+  private runBrushMove = (): void => {
+    this.brushMoveFrame = null;
+    if (!this.brushMovePending) return;
+    if (!this.brushMoveBlocked()) {
+      this.brushMovePending = false;
+      this.pplot?.brush(false);
+    }
+    this.brushMoveFrame = requestAnimationFrame(this.runBrushMove);
+  };
+
+  /** Whether a brush move waits for the page's renderer to finish its frame. */
   private brushMoveBlocked(): boolean {
+    if (this.linesOnWorker()) return false;
     return (
-      this.linesBusy ||
+      Boolean(this.webgl?.busy) ||
       Boolean(this.continuous?.busy && !(this.interacting && this.continuous.refining))
     );
   }
 
-  /**
-   * Runs a brush move waiting for the renderer when a finished image frees it,
-   * rather than at the next animation frame: the image of the latest pointer
-   * position then arrives up to a display frame sooner.
-   */
-  private resumeBrushMove(): void {
-    if (this.brushMoveFrame === null || this.brushMoveBlocked()) return;
-    this.cancelBrushMove();
-    this.pplot?.brush(false);
-  }
   cancelBrushMove(): void {
+    this.brushMovePending = false;
     if (this.brushMoveFrame !== null) {
       cancelAnimationFrame(this.brushMoveFrame);
       this.brushMoveFrame = null;
@@ -1298,7 +1301,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
           >
             <div ref={this.plot_ref} className={pstyle.plot}>
               <canvas ref={this.foreground_ref}></canvas>
-              <canvas ref={this.exact_image_ref} style={{ visibility: "hidden" }}></canvas>
               <canvas ref={this.highlighted_ref}></canvas>
               <svg
                 ref={this.svg_ref}
@@ -1608,6 +1610,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       foreground.globalCompositeOperation = "destination-over";
       me.foreground = foreground;
     }
+    const workerCanvas = document.createElement("canvas");
+    workerCanvas.style.visibility = "hidden";
+    mounted(this.highlighted_ref).before(workerCanvas);
+    me.workerCanvas = workerCanvas;
+    // Lines draw on the render worker: start it now, while the page lays the plot out.
+    me.lineWorker()?.start();
     // Highlight canvas for temporary interactions
     const highlighted = mounted(this.highlighted_ref).getContext("2d");
     if (highlighted === null) {
@@ -2506,7 +2514,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.pixelRatio = window.devicePixelRatio;
     div
       .selectAll("canvas")
-      .filter((_, index, nodes) => nodes[index] !== this.exact_image_ref.current)
+      .filter((_, index, nodes) => nodes[index] !== this.workerCanvas)
       .attr("width", Math.round(this.w * this.pixelRatio))
       .attr("height", Math.round(this.h * this.pixelRatio));
     div
@@ -2619,7 +2627,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   /**
-   * Whether brushing sums retained blocks (see LineFocus): the exact worker
+   * Whether brushing sums retained blocks (see LineFocus): the render worker
    * has float targets on a GPU, and enough of the blocks fit in their memory
    * at this size. A software rasterizer would draw the first frame of every
    * gesture in full and read every layer of every pixel each frame on the CPU,
@@ -2627,7 +2635,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
    * draft frames.
    */
   private brushBlocks(): boolean {
-    if (this.exact?.blockFrames !== true) return false;
+    if (this.worker?.blockFrames !== true) return false;
     const numeric = this.props.color_binning.legend.kind === "numeric";
     const pixels =
       Math.max(1, Math.round(this.w * this.pixelRatio)) *
@@ -2635,7 +2643,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return blocksFit(pixels, blockLayerBytes(numeric, numeric && this.props.color_mode !== "mean"));
   }
 
-  /** The axis of the latest brush gesture, whose blocks the exact worker retains. */
+  /** The axis of the latest brush gesture, whose blocks the render worker retains. */
   private focusDimension: string | null = null;
   /** The axis whose blocks the next frame draws ahead of a gesture (see prepareBrushFocus). */
   private preparedDimension: string | null = null;
@@ -2757,66 +2765,118 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
   }
 
+  /** Whether the renderer drawing this mode's lines has a frame in flight. */
   get linesBusy(): boolean {
-    return Boolean(this.exact?.busy || this.webgl?.busy);
+    const worker = this.worker;
+    const onWorker = worker !== null && (this.continuousMode() || worker.presents !== false);
+    return Boolean((onWorker && worker.busy) || this.webgl?.busy);
   }
 
   private lineCanvases() {
-    return d3.selectAll([mounted(this.foreground_ref), mounted(this.exact_image_ref)]);
+    return d3.selectAll(
+      [mounted(this.foreground_ref), this.workerCanvas].filter((canvas) => canvas !== null),
+    );
   }
 
   private showDirectLines(): void {
-    mounted(this.exact_image_ref).style.visibility = "hidden";
+    if (this.workerCanvas !== null) this.workerCanvas.style.visibility = "hidden";
     mounted(this.foreground_ref).style.visibility = "visible";
   }
 
-  private drawExactWorker(
-    frame: LineFrame,
-    geometry: LineGeometry,
-    colors: LineColors,
-    mask: Uint8Array,
-    focus: LineFocus | null = null,
-  ): boolean {
+  private showWorkerLines(): void {
+    if (this.workerCanvas === null) throw new Error("Worker lines need the worker's canvas");
+    this.workerCanvas.style.visibility = "visible";
+    mounted(this.foreground_ref).style.visibility = "hidden";
+  }
+
+  /** The render worker, created on first use; null where no worker can draw on a canvas. */
+  private lineWorker(): RenderWorker | null {
     if (
-      this.exactUnavailable ||
+      this.workerFailed ||
+      this.workerCanvas === null ||
       typeof Worker === "undefined" ||
       typeof OffscreenCanvas === "undefined" ||
-      typeof OffscreenCanvas.prototype.transferToImageBitmap !== "function"
+      typeof HTMLCanvasElement.prototype.transferControlToOffscreen !== "function"
     )
-      return false;
-    this.exactImageContext ??= mounted(this.exact_image_ref).getContext("bitmaprenderer");
-    if (this.exactImageContext === null) {
-      this.exactUnavailable = true;
-      return false;
-    }
-    this.exact ??= new ExactRenderer(
-      (bitmap, finished) => {
-        const canvas = mounted(this.exact_image_ref);
-        if (canvas.width !== bitmap.width) canvas.width = bitmap.width;
-        if (canvas.height !== bitmap.height) canvas.height = bitmap.height;
-        this.exactImageContext?.transferFromImageBitmap(bitmap);
-        canvas.style.visibility = "visible";
-        mounted(this.foreground_ref).style.visibility = "hidden";
-        this.recordFrame(finished);
-        // After the renderer has released this image; then a waiting brush move goes on at once.
-        queueMicrotask(() => this.resumeBrushMove());
-      },
+      return null;
+    this.worker ??= new RenderWorker(
+      this.workerCanvas,
+      (frame) => this.showWorkerFrame(frame),
       () => {
-        // The worker has no WebGL2 or failed; the page draws instead, after this call returns.
-        this.exact = null;
-        this.exactUnavailable = true;
+        // The worker failed, or cannot draw on its canvas: the page draws instead, after this call returns.
+        if (this.worker?.failed) {
+          this.worker = null;
+          this.workerFailed = true;
+        }
         queueMicrotask(() => this.redrawLines());
       },
     );
-    this.exact.draw(
+    return this.worker;
+  }
+
+  /** Whether the render worker draws this mode's lines (see redrawLines), starting it if needed. */
+  private linesOnWorker(): boolean {
+    const worker = this.lineWorker();
+    return worker !== null && (this.continuousMode() || worker.presents !== false);
+  }
+
+  private showWorkerFrame(frame: WorkerFrame): void {
+    if (frame.mode === "continuous") {
+      if (!this.continuousMode()) return;
+      this.continuousFrame += 1;
+      this.continuousMetrics = frame.continuous;
+      if (frame.pixels !== null && frame.continuous !== null) {
+        this.presentContinuous({ ...frame.continuous, pixels: frame.pixels });
+        return;
+      }
+    } else if (frame.finished !== null) {
+      this.recordFrame(frame.finished);
+    }
+    this.showWorkerLines();
+  }
+
+  /** Shows a continuous image on the page's canvas. */
+  private presentContinuous(image: ContinuousImage): void {
+    if (this.webgl !== null) {
+      this.webgl.present(image, { width: this.w, height: this.h, pixelRatio: this.pixelRatio });
+      this.watchFrames(this.webgl);
+    } else if (this.foreground !== null) {
+      const source = document.createElement("canvas");
+      source.width = image.width;
+      source.height = image.height;
+      const context = source.getContext("2d");
+      if (context === null) {
+        throw new Error("No density image context");
+      }
+      context.putImageData(
+        new ImageData(new Uint8ClampedArray(image.pixels), image.width, image.height),
+        0,
+        0,
+      );
+      this.foreground.clearRect(0, 0, this.w, this.h);
+      this.foreground.drawImage(source, 0, 0, this.w, this.h);
+    }
+    this.showDirectLines();
+  }
+
+  /** Posts the current lines to the render worker, which draws the newest it holds. */
+  private drawOnWorker(worker: RenderWorker, continuous: boolean): void {
+    const geometry = this.geometry();
+    const mask = this.selectionMask(geometry);
+    const colors = this.lineColors(geometry);
+    const frame = this.lineFrame(geometry, mask);
+    if (continuous) {
+      worker.drawContinuous({ ...frame, draft: this.interacting }, colors, mask);
+      return;
+    }
+    worker.drawExact(
       frame,
       colors,
       mask,
       geometry.order,
       () => geometry.colorOrder(colors.bins, colors.colorMapBins, frame.colorMode),
-      focus,
+      this.brushFocus(geometry),
     );
-    return true;
   }
 
   /** Curves between axes unless the user chose straight lines. */
@@ -2859,16 +2919,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     };
   }
 
-  /** Draws every original row; used by exact mode and its pixel-equivalence tests. */
+  /** Draws every original row on the page's renderer, where no render worker draws them. */
   private drawWithWebGL(webgl: WebGLLineRenderer): void {
     this.collectFrame(webgl);
     const geometry = this.geometry();
     const mask = this.selectionMask(geometry);
     const colors = this.lineColors(geometry);
     const frame = this.lineFrame(geometry, mask);
-    if (this.drawExactWorker(frame, geometry, colors, mask, this.brushFocus(geometry))) return;
-    this.exact?.dispose();
-    this.exact = null;
     this.showDirectLines();
     webgl.setRows(geometry.rows.length, geometry.order);
     webgl.setDrawOrder(
@@ -2882,41 +2939,17 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.watchFrames(webgl);
   }
 
+  /** Continuous density on the page, where no render worker draws it. */
   private drawContinuous(): void {
-    const execution = typeof Worker !== "undefined" ? "worker" : "local";
-    if (this.continuous === null) {
-      this.continuous = new ContinuousRenderer(
-        (image) => {
-          if (!this.continuousMode()) {
-            return;
-          }
-          this.continuousFrame += 1;
-          this.continuousMetrics = image;
-          if (this.webgl !== null) {
-            this.webgl.present(image.pixels, image.width, image.height);
-            this.watchFrames(this.webgl);
-          } else if (this.foreground !== null) {
-            const source = document.createElement("canvas");
-            source.width = image.width;
-            source.height = image.height;
-            const context = source.getContext("2d");
-            if (context === null) {
-              throw new Error("No density image context");
-            }
-            context.putImageData(
-              new ImageData(new Uint8ClampedArray(image.pixels), image.width, image.height),
-              0,
-              0,
-            );
-            this.foreground.clearRect(0, 0, this.w, this.h);
-            this.foreground.drawImage(source, 0, 0, this.w, this.h);
-          }
-          this.showDirectLines();
-        },
-        undefined,
-        execution,
-      );
-    }
+    this.continuous ??= new ContinuousRenderer((image) => {
+      if (!this.continuousMode()) {
+        return;
+      }
+      this.continuousFrame += 1;
+      const { pixels: _, ...metrics } = image;
+      this.continuousMetrics = metrics;
+      this.presentContinuous(image);
+    });
     const geometry = this.geometry();
     const mask = this.selectionMask(geometry);
     // Pixel integration cost follows occupied bins, not the exact renderer's row threshold.
@@ -2992,9 +3025,18 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (this.webgl === null && this.foreground === null) {
       return;
     }
-    if (this.continuousMode()) {
-      this.exact?.dispose();
-      this.exact = null;
+    const continuous = this.continuousMode();
+    // The render worker draws the newest state it holds: nothing here waits for it.
+    const worker = this.lineWorker();
+    if (worker !== null && (continuous || worker.presents !== false)) {
+      this.drawGeneration += 1;
+      this.cancelDrawing();
+      this.continuous?.dispose();
+      this.continuous = null;
+      this.drawOnWorker(worker, continuous);
+      return;
+    }
+    if (continuous) {
       // Pace active drafts, but let a new gesture interrupt full-width refinement.
       if (
         this.interactiveFrame() &&

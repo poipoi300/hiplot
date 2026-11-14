@@ -5,7 +5,7 @@ import type { LineGeometry } from "../src/parallel/geometry";
 import type { BrushMasks } from "../src/parallel/selection";
 import type { Datapoint } from "../src/types";
 import { expect, test } from "./fixtures";
-import { useDirectRenderer } from "./plot";
+import { hideWebGL2, useDirectRenderer } from "./plot";
 
 interface PlotProbe {
   state: { dimensions: string[] };
@@ -14,8 +14,9 @@ interface PlotProbe {
   webgl: object | null;
   interacting: boolean;
   foreground_ref: { current: HTMLCanvasElement };
-  exact_image_ref: { current: HTMLCanvasElement };
-  exact: { busy: boolean } | null;
+  linesBusy: boolean;
+  worker: object | null;
+  workerCanvas: HTMLCanvasElement;
   geometry: () => LineGeometry;
   brushMasks: () => BrushMasks;
   selectionMask: (geometry: LineGeometry) => Uint8Array;
@@ -54,8 +55,9 @@ async function losslessImage(page: Page): Promise<string> {
   return page.evaluate(async () => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
     pp.redrawLines();
-    while (pp.exact?.busy) await new Promise(requestAnimationFrame);
-    const canvas = pp.exact === null ? pp.foreground_ref.current : pp.exact_image_ref.current;
+    // The page's renderer is read in the task that drew, before its buffer is presented.
+    if (pp.worker !== null) while (pp.linesBusy) await new Promise(requestAnimationFrame);
+    const canvas = pp.worker === null ? pp.foreground_ref.current : pp.workerCanvas;
     const copy = document.createElement("canvas");
     copy.width = canvas.width;
     copy.height = canvas.height;
@@ -75,7 +77,7 @@ test("live WebGL brushes use typed flags and publish identical pixels and ordere
 }) => {
   await useDirectRenderer(page);
   await load(page);
-  const result = await page.evaluate(async () => {
+  const result = await page.evaluate(() => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
     const masks = pp.brushMasks();
     const selectedRows = masks.selectedRows.bind(masks);
@@ -102,7 +104,7 @@ test("live WebGL brushes use typed flags and publish identical pixels and ordere
     const expected = pp.props.rows_filtered
       .filter((_, row) => mask[row] === 1)
       .map((row) => row.uid);
-    const read = async (): Promise<Uint8ClampedArray> => {
+    const read = (): Uint8ClampedArray => {
       if (pp.webgl === null) {
         throw new Error("Expected a WebGL renderer");
       }
@@ -111,8 +113,7 @@ test("live WebGL brushes use typed flags and publish identical pixels and ordere
       pp.interacting = false;
       pp.drawWithWebGL(pp.webgl);
       pp.interacting = interacting;
-      while (pp.exact?.busy) await new Promise(requestAnimationFrame);
-      const canvas = pp.exact === null ? pp.foreground_ref.current : pp.exact_image_ref.current;
+      const canvas = pp.foreground_ref.current;
       const copy = document.createElement("canvas");
       copy.width = canvas.width;
       copy.height = canvas.height;
@@ -123,11 +124,11 @@ test("live WebGL brushes use typed flags and publish identical pixels and ordere
       context.drawImage(canvas, 0, 0);
       return context.getImageData(0, 0, copy.width, copy.height).data;
     };
-    const before = await read();
+    const before = read();
     pp.endBrushGesture();
     // Rebuild selection flags from published objects, the pre-columnar reference path.
     (pp as unknown as { liveBrushMask: unknown }).liveBrushMask = null;
-    const after = await read();
+    const after = read();
     const published = (pp as unknown as { publishedSelection: Datapoint[] }).publishedSelection.map(
       (row) => row.uid,
     );
@@ -323,16 +324,7 @@ test("external lasso, Keep and Restore replace row-identified brush flags", asyn
 });
 
 test("Canvas fallback still materializes every live brush selection", async ({ page }) => {
-  await page.addInitScript(() => {
-    const getContext = HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.getContext = function (
-      this: HTMLCanvasElement,
-      kind: string,
-      options?: unknown,
-    ) {
-      return kind === "webgl2" ? null : getContext.call(this, kind, options);
-    } as typeof HTMLCanvasElement.prototype.getContext;
-  });
+  await hideWebGL2(page);
   await page.goto("/?provider=upload");
   await page.locator("input[type=file]").setInputFiles({
     name: "columnar.csv",
@@ -385,16 +377,36 @@ test("capped spare pixel slots produce the same picture as unrestricted texture 
   page,
   context,
 }) => {
-  await load(page);
+  // The cap reaches only the page's WebGL, so the page's renderer draws both pictures.
+  // A 1024-texel limit still holds this plot's canvas, while 18,432 rows of 30
+  // columns (18 texel rows each) leave room for 56 column slots, under the 60
+  // that unrestricted growth would allocate.
+  const config = { rows: 18_432, columns: 30, discrete: false, seed: 20261109 };
+  await page.setViewportSize({ width: 1000, height: 700 });
+  await useDirectRenderer(page);
+  await loadParallelBenchmark(page, config);
   const unrestricted = await losslessImage(page);
   const capped = await context.newPage();
+  await capped.setViewportSize({ width: 1000, height: 700 });
+  await useDirectRenderer(capped);
   await capped.addInitScript(() => {
     const getParameter = WebGL2RenderingContext.prototype.getParameter;
     WebGL2RenderingContext.prototype.getParameter = function (parameter: number) {
-      return parameter === this.MAX_TEXTURE_SIZE ? 64 : getParameter.call(this, parameter);
+      return parameter === this.MAX_TEXTURE_SIZE ? 1024 : getParameter.call(this, parameter);
     };
   });
-  await load(capped);
+  await loadParallelBenchmark(capped, config);
+  const slots = await capped.evaluate(() => {
+    const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
+    const canvas = pp.foreground_ref.current;
+    return {
+      capacity: (pp.webgl as unknown as { slotCapacity: number }).slotCapacity,
+      width: canvas.width,
+      height: canvas.height,
+    };
+  });
+  expect(slots.capacity).toBe(56);
+  expect(Math.max(slots.width, slots.height)).toBeLessThanOrEqual(1024);
   expect(await losslessImage(capped)).toEqual(unrestricted);
   await capped.close();
 });

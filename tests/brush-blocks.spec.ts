@@ -9,23 +9,30 @@ import type {
   WebGLLineRenderer,
 } from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
-import { warmParallelWorker } from "./plot";
+import { exposeShownPixels, type ShownPixelsWindow, warmParallelWorker } from "./plot";
+
+/** The render worker's client (see RenderWorker), with the private members the tests wrap. */
+interface BlockWorker {
+  busy: boolean;
+  postedId: number;
+  capabilities: { blocks: boolean } | null;
+  drawExact: (
+    frame: LineFrame,
+    colors: LineColors,
+    selection: Uint8Array,
+    order: Uint32Array,
+    fallbackOrder: () => Uint32Array,
+    focus?: LineFocus | null,
+  ) => void;
+  onFrame: (frame: { id: number; finished: FinishedFrame | null }) => void;
+}
 
 interface BlockPlot {
-  exact: {
-    busy: boolean;
-    onImage: (bitmap: ImageBitmap, finished: FinishedFrame) => void;
-  } | null;
+  worker: BlockWorker | null;
+  workerCanvas: HTMLCanvasElement;
   geometry: () => LineGeometry;
   selectionMask: (geometry: LineGeometry) => Uint8Array;
   lineFrame: (geometry: LineGeometry, mask: Uint8Array) => LineFrame;
-  drawExactWorker: (
-    frame: LineFrame,
-    geometry: LineGeometry,
-    colors: LineColors,
-    mask: Uint8Array,
-    focus: LineFocus | null,
-  ) => boolean;
 }
 
 interface Comparison {
@@ -77,6 +84,7 @@ for (const { name, numeric, colorMode, curved, brushes } of CASES) {
       matchingFocus ? "matching" : "mismatched"
     } focus`, async ({ page }) => {
       await page.setViewportSize({ width: 640, height: 480 });
+      await exposeShownPixels(page);
       await loadParallelBenchmark(
         page,
         { rows: 6000, columns: 4, discrete: false, seed: 20261109 },
@@ -84,43 +92,23 @@ for (const { name, numeric, colorMode, curved, brushes } of CASES) {
       );
       const comparisons = await page.evaluate(
         async ({ numeric, colorMode, curved, matchingFocus, brushes }) => {
-          const plot = (
-            window as unknown as {
-              __parallelProbe: { instance: { parallelPlot: () => BlockPlot } };
-            }
-          ).__parallelProbe.instance.parallelPlot();
-          // The worker's premultiplied bytes as they are, which a 2D canvas's
-          // unpremultiplied readback would round by up to half a level.
-          const reader = document.createElement("canvas").getContext("webgl2");
-          if (reader === null) throw new Error("Missing WebGL2 for pixel readback");
-          const readBitmap = (bitmap: ImageBitmap): Uint8Array => {
-            const gl = reader;
-            const texture = gl.createTexture();
-            const framebuffer = gl.createFramebuffer();
-            gl.bindTexture(gl.TEXTURE_2D, texture);
-            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
-            gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
-            gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-            gl.framebufferTexture2D(
-              gl.FRAMEBUFFER,
-              gl.COLOR_ATTACHMENT0,
-              gl.TEXTURE_2D,
-              texture,
-              0,
-            );
-            const pixels = new Uint8Array(bitmap.width * bitmap.height * 4);
-            gl.readPixels(0, 0, bitmap.width, bitmap.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-            gl.deleteFramebuffer(framebuffer);
-            gl.deleteTexture(texture);
-            return pixels;
+          const win = window as unknown as ShownPixelsWindow & {
+            __parallelProbe: { instance: { parallelPlot: () => BlockPlot } };
           };
-          interface RequestIds {
-            nextId: number;
-            activeId: number;
-          }
+          const plot = win.__parallelProbe.instance.parallelPlot();
+          const worker = plot.worker;
+          if (worker === null) throw new Error("Missing render worker");
+          // A frame is read when its reply arrives, by which time the worker showed it.
           const images = new Map<number, { pixels: Uint8Array; finished: FinishedFrame }>();
-          let observed: BlockPlot["exact"] = null;
+          const publish = worker.onFrame.bind(worker);
+          worker.onFrame = (shown) => {
+            if (shown.finished !== null)
+              images.set(shown.id, {
+                pixels: win.shownPixels(plot.workerCanvas),
+                finished: shown.finished,
+              });
+            publish(shown);
+          };
           const geometry = plot.geometry();
           const source = plot.lineFrame(geometry, plot.selectionMask(geometry));
           // Missing values on the brushed axis sort after every pixel; on the other, they fail its brush.
@@ -157,22 +145,19 @@ for (const { name, numeric, colorMode, curved, brushes } of CASES) {
               selectedCount,
               contextCount: mask.length - selectedCount,
             };
-            if (!plot.drawExactWorker(frame, geometry, colors, mask, focus))
-              throw new Error("Missing exact worker support");
-            const exact = plot.exact;
-            if (exact === null) throw new Error("Missing exact renderer");
-            // The plot shares the worker: only the image of this request counts.
-            const ids = exact as unknown as RequestIds;
-            const request = ids.nextId;
-            if (observed !== exact) {
-              const publish = exact.onImage.bind(exact);
-              exact.onImage = (bitmap, finished) => {
-                images.set(ids.activeId, { pixels: readBitmap(bitmap), finished });
-                publish(bitmap, finished);
-              };
-              observed = exact;
-            }
-            while (exact.busy) await new Promise(requestAnimationFrame);
+            worker.drawExact(
+              frame,
+              colors,
+              mask,
+              geometry.order,
+              () => geometry.colorOrder(colors.bins, colors.colorMapBins, colorMode),
+              focus,
+            );
+            // The request is posted once this task's draws are in. The plot shares
+            // the worker: only the image of this request counts.
+            await Promise.resolve();
+            const request = worker.postedId;
+            while (worker.busy) await new Promise(requestAnimationFrame);
             const drawn = images.get(request);
             images.clear();
             if (drawn === undefined) throw new Error(`The plot superseded request ${request}`);
@@ -234,6 +219,7 @@ test("brush gestures on a GPU draw full frames from retained blocks, through rel
   page,
 }) => {
   await page.setViewportSize({ width: 640, height: 480 });
+  await exposeShownPixels(page);
   await loadParallelBenchmark(
     page,
     { rows: 6000, columns: 4, discrete: false, seed: 20261109 },
@@ -248,12 +234,16 @@ test("brush gestures on a GPU draw full frames from retained blocks, through rel
       window as unknown as {
         __parallelProbe: {
           instance: {
-            parallelPlot: () => { exact: object; drafts: { record: (ms: number) => void } };
+            parallelPlot: () => {
+              worker: Pick<BlockWorker, "capabilities"> | null;
+              drafts: { record: (ms: number) => void };
+            };
           };
         };
       }
     ).__parallelProbe.instance.parallelPlot();
-    Object.assign(plot.exact, { blocks: true });
+    if (!plot.worker?.capabilities) throw new Error("Missing render worker");
+    plot.worker.capabilities.blocks = true;
     plot.drafts.record(1000);
     plot.drafts.record(1000);
   });
@@ -262,9 +252,6 @@ test("brush gestures on a GPU draw full frames from retained blocks, through rel
       h: number;
       state: { dimensions: string[] };
       lineColors: (geometry: LineGeometry) => LineColors;
-      exact: NonNullable<BlockPlot["exact"]> & {
-        draw: (frame: LineFrame, ...rest: unknown[]) => void;
-      };
       startBrushGesture: (
         event: { sourceEvent: { target: Element }; y: number },
         dimension: string,
@@ -272,49 +259,32 @@ test("brush gestures on a GPU draw full frames from retained blocks, through rel
       continueBrushGesture: (y: number) => void;
       endBrushGesture: () => void;
     }
-    const plot = (
-      window as unknown as {
-        __parallelProbe: { instance: { parallelPlot: () => GesturePlot } };
-      }
-    ).__parallelProbe.instance.parallelPlot();
-    const reader = document.createElement("canvas").getContext("webgl2");
-    if (reader === null) throw new Error("Missing WebGL2 for pixel readback");
-    const readBitmap = (bitmap: ImageBitmap): Uint8Array => {
-      const gl = reader;
-      const texture = gl.createTexture();
-      const framebuffer = gl.createFramebuffer();
-      gl.bindTexture(gl.TEXTURE_2D, texture);
-      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
-      gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-      const pixels = new Uint8Array(bitmap.width * bitmap.height * 4);
-      gl.readPixels(0, 0, bitmap.width, bitmap.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-      gl.deleteFramebuffer(framebuffer);
-      gl.deleteTexture(texture);
-      return pixels;
+    const win = window as unknown as ShownPixelsWindow & {
+      __parallelProbe: { instance: { parallelPlot: () => GesturePlot } };
     };
-    const exact = plot.exact;
+    const plot = win.__parallelProbe.instance.parallelPlot();
+    const worker = plot.worker;
+    if (worker === null) throw new Error("Missing render worker");
     const drafts: boolean[] = [];
-    const request = exact.draw.bind(exact);
-    exact.draw = (frame, ...rest) => {
+    const request = worker.drawExact.bind(worker);
+    worker.drawExact = (frame, ...rest) => {
       drafts.push(frame.draft);
       request(frame, ...rest);
     };
     const images: { pixels: Uint8Array; fromBlocks: boolean; drewEveryRow: boolean }[] = [];
-    const publish = exact.onImage.bind(exact);
-    exact.onImage = (bitmap, finished) => {
-      images.push({
-        pixels: readBitmap(bitmap),
-        fromBlocks: finished.fromBlocks,
-        drewEveryRow: finished.drewEveryRow,
-      });
-      publish(bitmap, finished);
+    const publish = worker.onFrame.bind(worker);
+    worker.onFrame = (shown) => {
+      if (shown.finished !== null)
+        images.push({
+          pixels: win.shownPixels(plot.workerCanvas),
+          fromBlocks: shown.finished.fromBlocks,
+          drewEveryRow: shown.finished.drewEveryRow,
+        });
+      publish(shown);
     };
     const settled = async (): Promise<void> => {
       do await new Promise(requestAnimationFrame);
-      while (exact.busy);
+      while (worker.busy);
     };
     const dimension = plot.state.dimensions[1];
     const target = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
@@ -332,12 +302,10 @@ test("brush gestures on a GPU draw full frames from retained blocks, through rel
     const release = images[images.length - 1];
     const geometry = plot.geometry();
     const mask = plot.selectionMask(geometry);
-    plot.drawExactWorker(
-      plot.lineFrame(geometry, mask),
-      geometry,
-      plot.lineColors(geometry),
-      mask,
-      null,
+    const colors = plot.lineColors(geometry);
+    const frame = plot.lineFrame(geometry, mask);
+    worker.drawExact(frame, colors, mask, geometry.order, () =>
+      geometry.colorOrder(colors.bins, colors.colorMapBins, frame.colorMode),
     );
     await settled();
     const reference = images[images.length - 1];
@@ -379,10 +347,7 @@ test("resting on an axis's brush band draws its blocks before a gesture", async 
     interface PreparedPlot {
       h: number;
       state: { dimensions: string[] };
-      exact: {
-        busy: boolean;
-        onImage: (bitmap: ImageBitmap, finished: FinishedFrame) => void;
-      };
+      worker: BlockWorker | null;
       startBrushGesture: (
         event: { sourceEvent: { target: Element }; y: number },
         dimension: string,
@@ -395,18 +360,19 @@ test("resting on an axis's brush band draws its blocks before a gesture", async 
         __parallelProbe: { instance: { parallelPlot: () => PreparedPlot } };
       }
     ).__parallelProbe.instance.parallelPlot();
+    const worker = plot.worker;
+    if (!worker?.capabilities) throw new Error("Missing render worker");
     // As in the gesture test: the suite's SwiftShader worker reports no block frames.
-    Object.assign(plot.exact, { blocks: true });
-    const exact = plot.exact;
+    worker.capabilities.blocks = true;
     const images: boolean[] = [];
-    const publish = exact.onImage.bind(exact);
-    exact.onImage = (bitmap, finished) => {
-      images.push(finished.fromBlocks);
-      publish(bitmap, finished);
+    const publish = worker.onFrame.bind(worker);
+    worker.onFrame = (shown) => {
+      if (shown.finished !== null) images.push(shown.finished.fromBlocks);
+      publish(shown);
     };
     const settled = async (): Promise<void> => {
       do await new Promise(requestAnimationFrame);
-      while (exact.busy);
+      while (worker.busy);
     };
     const dimension = plot.state.dimensions[2];
     const band = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))

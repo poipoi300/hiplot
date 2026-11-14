@@ -1,21 +1,23 @@
 import { loadParallelBenchmark } from "../bench/parallel";
 import { evaluateContinuousPairCPU } from "../src/parallel/continuous_density";
 import { ContinuousKernel } from "../src/parallel/continuous_grid";
-import type { ContinuousImage, ContinuousRequest } from "../src/parallel/continuous_types";
+import type { ContinuousRequest } from "../src/parallel/continuous_types";
+import type { ContinuousMetrics } from "../src/parallel/render_types";
+import type { RenderWorker } from "../src/parallel/render_worker";
 import type { LineColors, LineFrame } from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
+import { exposeShownPixels, type ShownPixelsWindow } from "./plot";
 
-interface WarmWindow {
+interface WarmWindow extends ShownPixelsWindow {
   __histogramFrame?: LineFrame;
   __parallelProbe: {
     instance: {
       parallelPlot: () => {
         continuousFrame: number;
-        continuousMetrics: ContinuousImage;
-        continuous: {
-          busy: boolean;
-          draw: (frame: LineFrame, colors: LineColors, mask: Uint8Array) => void;
-        };
+        continuousMetrics: ContinuousMetrics;
+        worker: Pick<RenderWorker, "drawContinuous">;
+        workerCanvas: HTMLCanvasElement;
+        linesBusy: boolean;
       };
     };
   };
@@ -32,6 +34,7 @@ for (const pixelRatio of [1, 1.25, 3]) {
     );
     const right = Float32Array.from({ length: rows }, (_, row) => (row % 50) * 0.47);
     const kernel = new ContinuousKernel();
+    await exposeShownPixels(page);
     await loadParallelBenchmark(
       page,
       { rows: 3, columns: 2, discrete: true, seed: 20261109 },
@@ -104,7 +107,7 @@ for (const pixelRatio of [1, 1.25, 3]) {
               { x: 32, pixels: new Float32Array(right) },
             ],
           };
-          plot.continuous.draw(
+          plot.worker.drawContinuous(
             win.__histogramFrame,
             { ...colors, bins: new Uint32Array(colors.bins) },
             new Uint8Array(selection),
@@ -121,12 +124,15 @@ for (const pixelRatio of [1, 1.25, 3]) {
       );
       await page.waitForFunction((before) => {
         const plot = (window as unknown as WarmWindow).__parallelProbe.instance.parallelPlot();
-        return plot.continuousFrame > before && !plot.continuous.busy;
+        return plot.continuousFrame > before && !plot.linesBusy;
       }, before);
       const actual = await page.evaluate(() => {
-        const image = (window as unknown as WarmWindow).__parallelProbe.instance.parallelPlot()
-          .continuousMetrics;
-        return { pixels: Array.from(image.pixels), width: image.width, height: image.height };
+        const win = window as unknown as WarmWindow;
+        const plot = win.__parallelProbe.instance.parallelPlot();
+        const image = plot.continuousMetrics;
+        // Premultiplied, as the render worker shows the image.
+        const pixels = win.shownPixels(plot.workerCanvas, image);
+        return { pixels: Array.from(pixels), width: image.width, height: image.height };
       });
       expect(actual.width).toBe(expected.width);
       expect(actual.height).toBe(expected.height);
@@ -138,11 +144,7 @@ for (const pixelRatio of [1, 1.25, 3]) {
           channel % 4 === 3
             ? expected.pixels[channel]
             : (expected.pixels[channel] * expected.pixels[alpha]) / 255;
-        const candidate =
-          channel % 4 === 3
-            ? actual.pixels[channel]
-            : (actual.pixels[channel] * actual.pixels[alpha]) / 255;
-        const error = Math.abs(candidate - reference);
+        const error = Math.abs(actual.pixels[channel] - reference);
         maximum = Math.max(maximum, error);
         absolute += error;
       }

@@ -86,7 +86,7 @@ declare global {
         continuousMode?: () => boolean;
         continuousMetrics?: { wasmMemoryBytes?: number } | null;
         brushMasks?: () => { wasmMemoryBytes?: number };
-        exact?: unknown;
+        worker?: unknown;
         webgl?: unknown;
       } | null;
     };
@@ -111,6 +111,11 @@ function installProbe(): void {
   };
   requestAnimationFrame(countFrames);
 
+  const recordDraw = (): void => {
+    probe.draws += 1;
+    probe.lastDraw = performance.now();
+    probe.framesAtLastDraw = probe.frameCount;
+  };
   const wrapDraw = (proto: object | undefined, name: string): void => {
     if (proto === undefined || !(name in proto)) {
       return;
@@ -121,9 +126,7 @@ function installProbe(): void {
       return;
     }
     target[name] = function (this: unknown, ...args: unknown[]): unknown {
-      probe.draws += 1;
-      probe.lastDraw = performance.now();
-      probe.framesAtLastDraw = probe.frameCount;
+      recordDraw();
       return original.apply(this, args);
     };
   };
@@ -140,7 +143,26 @@ function installProbe(): void {
       wrapDraw(ctor?.prototype, name);
     }
   }
-  wrapDraw(window.ImageBitmapRenderingContext?.prototype, "transferFromImageBitmap");
+  // The render worker shows its frames on its own canvas; its reply says a frame finished.
+  const onmessage = Object.getOwnPropertyDescriptor(Worker.prototype, "onmessage");
+  const setHandler = onmessage?.set;
+  if (onmessage !== undefined && setHandler !== undefined) {
+    Object.defineProperty(Worker.prototype, "onmessage", {
+      ...onmessage,
+      set(this: Worker, handler: ((event: MessageEvent) => unknown) | null) {
+        setHandler.call(
+          this,
+          handler === null
+            ? null
+            : (event: MessageEvent) => {
+                const reply = event.data as { kind?: unknown } | null;
+                if (reply?.kind === "frame") recordDraw();
+                return handler.call(this, event);
+              },
+        );
+      },
+    });
+  }
 
   const DECODE_MIN_CHARS = 1_000_000;
   const originalParse = JSON.parse;
@@ -355,7 +377,7 @@ async function runOnce(page: Page, url: string): Promise<RepResult> {
           : ((selectionBytes ?? 0) + (densityBytes ?? 0)) / 1e6,
       renderMode: plot?.continuousMode?.()
         ? "continuous"
-        : plot?.exact
+        : plot?.worker
           ? "exact-worker"
           : plot?.webgl
             ? "exact-webgl"

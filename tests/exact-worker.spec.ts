@@ -1,29 +1,23 @@
 import { loadParallelBenchmark } from "../bench/parallel";
 import type { ColorMode } from "../src/lib/colors";
 import type { LineGeometry } from "../src/parallel/geometry";
+import type { RenderWorker } from "../src/parallel/render_worker";
 import type { LineColors, LineFrame, WebGLLineRenderer } from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
+import { useDirectRenderer } from "./plot";
 
 interface PicturePlot {
   webgl: WebGLLineRenderer;
-  exact: { busy: boolean };
+  worker: Pick<RenderWorker, "busy" | "drawExact"> | null;
   foreground_ref: { current: HTMLCanvasElement };
-  exact_image_ref: { current: HTMLCanvasElement };
+  workerCanvas: HTMLCanvasElement;
   geometry: () => LineGeometry;
   selectionMask: (geometry: LineGeometry) => Uint8Array;
   lineFrame: (geometry: LineGeometry, mask: Uint8Array) => LineFrame;
-  drawExactWorker: (
-    frame: LineFrame,
-    geometry: LineGeometry,
-    colors: LineColors,
-    mask: Uint8Array,
-  ) => boolean;
 }
 
 test("exact lines still render when worker canvases are unavailable", async ({ page }) => {
-  await page.addInitScript(() => {
-    Object.defineProperty(window, "OffscreenCanvas", { value: undefined, configurable: true });
-  });
+  await useDirectRenderer(page);
   await loadParallelBenchmark(
     page,
     { rows: 20_001, columns: 2, discrete: false, seed: 20261109 },
@@ -34,16 +28,16 @@ test("exact lines still render when worker canvases are unavailable", async ({ p
       window as unknown as { __parallelProbe: { instance: { parallelPlot: () => PicturePlot } } }
     ).__parallelProbe.instance.parallelPlot();
     return {
-      worker: plot.exact !== null,
+      worker: plot.worker !== null,
       foreground: plot.foreground_ref.current.style.visibility,
-      bitmap: plot.exact_image_ref.current.style.visibility,
+      workerCanvas: plot.workerCanvas.style.visibility,
     };
   });
-  expect(result).toEqual({ worker: false, foreground: "visible", bitmap: "hidden" });
+  expect(result).toEqual({ worker: false, foreground: "visible", workerCanvas: "hidden" });
 });
 
 for (const numeric of [true, false]) {
-  test(`completed exact worker images preserve ${numeric ? "numeric" : "categorical"} line pixels`, async ({
+  test(`exact lines the render worker shows preserve ${numeric ? "numeric" : "categorical"} line pixels`, async ({
     page,
   }) => {
     await page.setViewportSize({ width: 800, height: 600 });
@@ -56,6 +50,8 @@ for (const numeric of [true, false]) {
       const plot = (
         window as unknown as { __parallelProbe: { instance: { parallelPlot: () => PicturePlot } } }
       ).__parallelProbe.instance.parallelPlot();
+      const worker = plot.worker;
+      if (worker === null) throw new Error("Missing render worker");
       const geometry = plot.geometry();
       const mask = Uint8Array.from(geometry.order, (_, row) => Number(row % 3 !== 0));
       const source = plot.lineFrame(geometry, mask);
@@ -92,10 +88,11 @@ for (const numeric of [true, false]) {
               ),
             })),
           };
-          if (!plot.drawExactWorker(frame, geometry, colors, mask))
-            throw new Error("Missing exact worker support");
-          while (plot.exact.busy) await new Promise(requestAnimationFrame);
-          const worker = capture(plot.exact_image_ref.current);
+          worker.drawExact(frame, colors, mask, geometry.order, () =>
+            geometry.colorOrder(colors.bins, colors.colorMapBins, colorMode),
+          );
+          while (worker.busy) await new Promise(requestAnimationFrame);
+          const shown = capture(plot.workerCanvas);
           plot.webgl.setRows(geometry.rows.length, geometry.order);
           plot.webgl.setDrawOrder(
             plot.webgl.densityRendering
@@ -109,12 +106,12 @@ for (const numeric of [true, false]) {
           let maximum = 0,
             sum = 0,
             ink = 0;
-          for (let i = 0; i < worker.length; i += 4) {
-            ink += worker[i + 3];
+          for (let i = 0; i < shown.length; i += 4) {
+            ink += shown[i + 3];
             for (let channel = 0; channel < 4; channel++) {
               const alpha = channel === 3;
               const difference = Math.abs(
-                worker[i + channel] * (alpha ? 1 : worker[i + 3] / 255) -
+                shown[i + channel] * (alpha ? 1 : shown[i + 3] / 255) -
                   direct[i + channel] * (alpha ? 1 : direct[i + 3] / 255),
               );
               maximum = Math.max(maximum, difference);
@@ -124,7 +121,7 @@ for (const numeric of [true, false]) {
           results.push({
             mode: `${colorMode}/${curved ? "curved" : "straight draft"}`,
             maximum,
-            mean: sum / worker.length,
+            mean: sum / shown.length,
             ink,
           });
         }

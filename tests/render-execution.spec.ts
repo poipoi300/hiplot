@@ -8,7 +8,7 @@ interface ExecutionWindow {
   __localDraws?: number;
 }
 
-test("switching to density after moving a brush keeps the latest exact image until density is ready", async ({
+test("switching to density after moving a brush keeps the latest exact image until density is drawn", async ({
   page,
 }) => {
   await loadParallelBenchmark(
@@ -20,12 +20,12 @@ test("switching to density after moving a brush keeps the latest exact image unt
     const plot = (window as unknown as ExecutionWindow).__parallelProbe.instance.parallelPlot();
     if (!plot) throw new Error("Missing plot");
     const idle = async () => {
-      while (plot.linesBusy || plot.continuous?.busy) await new Promise(requestAnimationFrame);
+      while (plot.linesBusy) await new Promise(requestAnimationFrame);
     };
     const switchMode = (renderQuality: "full" | "low") =>
       new Promise<void>((resolve) => plot.setState({ renderQuality }, resolve));
     const visibility = () => ({
-      exact: plot.exact_image_ref.current?.style.visibility,
+      worker: plot.workerCanvas?.style.visibility,
       direct: plot.foreground_ref.current?.style.visibility,
     });
     const dimension = plot.state.dimensions[1];
@@ -46,15 +46,23 @@ test("switching to density after moving a brush keeps the latest exact image unt
       const pending = visibility();
       const pendingFrames = plot.continuousFrame - frames;
       await idle();
-      switches.push({ before, pending, pendingFrames, after: visibility() });
+      switches.push({
+        before,
+        pending,
+        pendingFrames,
+        afterFrames: plot.continuousFrame - frames,
+        after: visibility(),
+      });
     }
     return switches;
   });
   for (const transition of result) {
-    expect(transition.before).toEqual({ exact: "visible", direct: "hidden" });
+    expect(transition.before).toEqual({ worker: "visible", direct: "hidden" });
     expect(transition.pendingFrames).toBe(0);
     expect(transition.pending).toEqual(transition.before);
-    expect(transition.after).toEqual({ exact: "hidden", direct: "visible" });
+    // The render worker draws density on the same canvas that showed the exact lines.
+    expect(transition.afterFrames).toBeGreaterThan(0);
+    expect(transition.after).toEqual(transition.before);
   }
 });
 
@@ -89,9 +97,9 @@ for (const quality of ["full", "low"] as const) {
       const plot = (window as unknown as ExecutionWindow).__parallelProbe.instance.parallelPlot();
       return (
         plot &&
+        plot.worker?.presents === true &&
         !plot.linesBusy &&
-        !plot.continuous?.busy &&
-        (quality === "full" ? plot.exact !== null : plot.continuous?.execution === "worker")
+        (quality === "full" || plot.continuousFrame > 0)
       );
     }, quality);
     const result = await page.evaluate(() => {
@@ -182,7 +190,7 @@ test("legacy automatic line shape migrates to curved at phone width", async ({ b
         plot !== null &&
         plot.continuousMetrics !== null &&
         plot.continuousFrame > 0 &&
-        !plot.continuous?.busy
+        !plot.linesBusy
       );
     });
     const result = await page.evaluate(() => {

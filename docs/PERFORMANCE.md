@@ -3530,3 +3530,51 @@ k + 1, and with curves also k - 1 and k + 2 through their neighbors' slopes, so
 a frame could keep the rest of the density and redraw that region. It would
 still draw those segments for every row: about 2/11 (straight) to 4/11 (curved)
 of a full frame, roughly 50–200 ms at 1M rows, not real-time.
+
+### One render worker that shows its own frames
+
+The worker above drew into its own canvas, turned each finished frame into an
+`ImageBitmap` and posted it back; the page then showed it, and a brush move
+waited for that image before posting the next state. Every frame therefore
+waited for the page's main thread twice, and an image that finished while a
+newer request waited was thrown away. Continuous density took a second worker
+and was shown by the page's renderer, so the two modes paced differently.
+
+Since 2026-11-13, one render worker owns the lines canvas
+(`transferControlToOffscreen`) and draws both modes on it, showing each finished
+frame itself; only a small reply comes back for timing and busy state. The page
+posts state at most once per display frame (a brush move's first input at once,
+the latest of the others at the next frame), never waiting for the worker; the
+worker applies each request's deltas on arrival and draws the newest state when
+a frame starts. Exact frames always finish; a continuous refinement gives way to
+a gesture's draft or the other mode. A worker canvas shows whatever it holds
+after each worker task, so a frame drawn over several tasks writes and resizes
+the canvas only in its last: the tone-map composite, the continuous image, or,
+without float targets, a blit from an 8-bit offscreen target.
+
+Redraw call to GPU completion, the same measurement on both versions (page
+renderer's fence on `main`, the worker's reply here), RTX 5090, 1600 × 1000,
+15 redraws per load, two interleaved loads, machine loaded by other work:
+
+| Size | `main` p50 ms | Render worker p50 ms | First frame `main` / worker ms |
+|---|---:|---:|---:|
+| 1k × 10 | 1.7–2.1 | 2.5–3.0 | 516–520 / 617–645 |
+| 5k × 20 | 5.2 | 5.4–5.7 | 185–200 / 243–253 |
+| 50k × 50 | 78.5 | 53.3–53.5 | 1962–2087 / 1914–2057 |
+
+Small plots pay two message hops (under a millisecond) and, once, the worker's
+startup: about 50–125 ms more before the first frame. The standalone benchmark
+(`bench/run.ts`) times `main` when it submits its draw calls but the worker at its
+reply, after the GPU finished and the page's main thread received it, so its
+"full redraw" column overstates the difference (7–8 against 20–22 ms at 1k).
+
+At 1M rows, brush input to the frame's reply (the worker showed the frame
+before), p50 / p95 ms, one load per data kind, the display at 30 Hz under load:
+
+| Data | `drag` | `dragEdge` | `drag60` | `dragEdge60` |
+|---|---|---|---|---|
+| Continuous | 10.8 / 13.9 | 8.2 / 11.5 | 10.6 / 12.3 | 8.0 / 10.9 |
+| Integer | 5.1 / 10.9 | 4.9 / 8.7 | 5.9 / 20.4 | 5.3 / 10.5 |
+
+The integer `drag60` p95 comes from two slow GPU frames (fence p95 14.2 ms);
+every other phase stays under 16.6 ms.

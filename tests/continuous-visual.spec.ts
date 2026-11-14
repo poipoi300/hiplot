@@ -1,8 +1,8 @@
 import type { Page } from "@playwright/test";
 import { loadParallelBenchmark } from "../bench/parallel";
-import type { ContinuousImage } from "../src/parallel/continuous_types";
-import type { ContinuousRenderer } from "../src/parallel/continuous_worker";
 import type { LineGeometry } from "../src/parallel/geometry";
+import type { ContinuousMetrics } from "../src/parallel/render_types";
+import type { RenderWorker } from "../src/parallel/render_worker";
 import type { LineColors, LineFrame, WebGLLineRenderer } from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
 
@@ -13,10 +13,12 @@ interface Picture {
 }
 interface VisualPlot {
   webgl: WebGLLineRenderer;
-  continuous: ContinuousRenderer | null;
+  worker: Pick<RenderWorker, "drawContinuous"> | null;
+  linesBusy: boolean;
   continuousFrame: number;
-  continuousMetrics: ContinuousImage | null;
+  continuousMetrics: ContinuousMetrics | null;
   foreground_ref: { current: HTMLCanvasElement };
+  workerCanvas: HTMLCanvasElement;
   geometry: () => LineGeometry;
   selectionMask: (geometry: LineGeometry) => Uint8Array;
   lineFrame: (geometry: LineGeometry, mask: Uint8Array) => LineFrame;
@@ -36,7 +38,8 @@ async function capturePair(page: Page, mixed: boolean): Promise<void> {
   const before = await page.evaluate((mixed) => {
     const win = window as unknown as VisualWindow;
     const pp = win.__parallelProbe.instance.parallelPlot();
-    if (pp.continuous === null) throw new Error("Production worker is missing");
+    const worker = pp.worker;
+    if (worker === null) throw new Error("Render worker is missing");
     const geometry = pp.geometry();
     const mask = Uint8Array.from({ length: geometry.rows.length }, (_, row) =>
       Number(!mixed || row % 2 === 0),
@@ -96,20 +99,22 @@ async function capturePair(page: Page, mixed: boolean): Promise<void> {
       frame,
     };
     const before = pp.continuousFrame;
-    pp.continuous.draw(frame, colors, mask);
+    worker.drawContinuous(frame, colors, mask);
     return before;
   }, mixed);
   await page.waitForFunction((before) => {
     const pp = (window as unknown as VisualWindow).__parallelProbe.instance.parallelPlot();
-    return pp.continuousFrame > before && !pp.continuous?.busy && !pp.webgl.busy;
+    return pp.continuousFrame > before && !pp.linesBusy;
   }, before);
   const images = await page.evaluate(() => {
     const win = window as unknown as VisualWindow;
     const pp = win.__parallelProbe.instance.parallelPlot();
     const image = pp.continuousMetrics;
     if (image === null || image.rows !== 8192) throw new Error("All-row worker image is missing");
-    pp.webgl.present(image.pixels, image.width, image.height);
-    const canvas = pp.foreground_ref.current;
+    // The render worker shows the image on its canvas, read back as the exact picture was.
+    const canvas = pp.workerCanvas;
+    if (canvas.width !== win.__visual.exact.width || canvas.height !== win.__visual.exact.height)
+      throw new Error("The worker canvas differs in size from the exact picture");
     const copy = document.createElement("canvas");
     copy.width = canvas.width;
     copy.height = canvas.height;

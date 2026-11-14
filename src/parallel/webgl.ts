@@ -130,16 +130,28 @@ interface RetainedBlocks {
   axes: ReadonlyArray<RenderAxis>;
 }
 
+/**
+ * A frame's canvas size in device pixels, which its owner gives the canvas
+ * (see WebGLLineRenderer.create): what every offscreen target is sized from.
+ */
+export function deviceSize(frame: Pick<LineFrame, "width" | "height" | "pixelRatio">): {
+  width: number;
+  height: number;
+} {
+  return {
+    width: Math.max(1, Math.round(frame.width * frame.pixelRatio)),
+    height: Math.max(1, Math.round(frame.height * frame.pixelRatio)),
+  };
+}
+
 /** Everything but the axes, rows, colors and selection that a frame's density depends on. */
-function densityStyle(frame: LineFrame, width: number, height: number): string {
-  return JSON.stringify([blockStyle(frame, width, height), frame.draft, frame.drawnRows]);
+function densityStyle(frame: LineFrame): string {
+  return JSON.stringify([blockStyle(frame), frame.draft, frame.drawnRows]);
 }
 
 /** Everything but the axes, rows and colors that the pixels of a block layer depend on. */
-function blockStyle(frame: LineFrame, width: number, height: number): string {
+function blockStyle(frame: LineFrame): string {
   return JSON.stringify([
-    width,
-    height,
     frame.width,
     frame.height,
     frame.lineWidth,
@@ -964,6 +976,14 @@ class Program {
   }
 }
 
+/** An 8-bit color target a frame without float targets draws into, then copies to its canvas. */
+interface DirectTarget {
+  framebuffer: WebGLFramebuffer;
+  renderbuffer: WebGLRenderbuffer;
+  width: number;
+  height: number;
+}
+
 /** Float render targets the line pass accumulates densities into (see DENSITY_FRAGMENT_SHADER). */
 interface DensityTargets {
   framebuffer: WebGLFramebuffer;
@@ -1003,9 +1023,13 @@ export class WebGLLineRenderer {
   private blockPasses: BlockPasses | null = null;
   private imageProgram: Program | null = null;
   private imageTexture: WebGLTexture | null = null;
+  /** Where a batched frame draws without float targets, then copied to the canvas (see drawFrame). */
+  private directTargets: DirectTarget | null = null;
   private readonly textures: Record<SamplerName, WebGLTexture>;
   private readonly vertexArray: WebGLVertexArrayObject;
   private readonly maxTextureSize: number;
+  /** The largest canvas and target side this GPU renders (see surfaceSize). */
+  private readonly maxSurfaceSize: number;
   private layout: TextureLayout = { width: 1, rowsPerColumn: 1 };
   private rowCount = 0;
   /** Texture slot of each uploaded pixel column. */
@@ -1034,17 +1058,27 @@ export class WebGLLineRenderer {
   /** The last frame seen finished, until finishedFrame() reads it. */
   private finished: FinishedFrame | null = null;
 
-  /** A renderer on `canvas`, or null when WebGL2 is unavailable. */
-  static create(canvas: HTMLCanvasElement | OffscreenCanvas): WebGLLineRenderer | null {
+  /**
+   * A renderer on `canvas`, or null when WebGL2 is unavailable. With
+   * `sizesCanvas`, the renderer sizes the canvas to each frame (see
+   * bindCanvas); otherwise its owner sizes it to deviceSize.
+   */
+  static create(
+    canvas: HTMLCanvasElement | OffscreenCanvas,
+    sizesCanvas = false,
+  ): WebGLLineRenderer | null {
     const gl = canvas.getContext("webgl2", {
       alpha: true,
       premultipliedAlpha: true,
       antialias: false,
     });
-    return gl === null ? null : new WebGLLineRenderer(gl);
+    return gl === null ? null : new WebGLLineRenderer(gl, sizesCanvas ? canvas : null);
   }
 
-  private constructor(gl: WebGL2RenderingContext) {
+  private constructor(
+    gl: WebGL2RenderingContext,
+    private readonly sizedCanvas: HTMLCanvasElement | OffscreenCanvas | null,
+  ) {
     this.gl = gl;
     const rendererInfo = gl.getExtension("WEBGL_debug_renderer_info");
     this.softwareRendering =
@@ -1084,6 +1118,13 @@ export class WebGLLineRenderer {
     }
     this.vertexArray = vertexArray;
     this.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+    const viewport = gl.getParameter(gl.MAX_VIEWPORT_DIMS) as Int32Array;
+    this.maxSurfaceSize = Math.min(
+      this.maxTextureSize,
+      gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) as number,
+      viewport[0],
+      viewport[1],
+    );
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   }
 
@@ -1380,6 +1421,103 @@ export class WebGLLineRenderer {
     this.spareDensity = null;
   }
 
+  /** Frees what only exact frames use: their density, spare and offscreen targets, and blocks. */
+  private releaseLineTargets(): void {
+    this.releaseTargets(this.density);
+    this.density = null;
+    this.densityContent = null;
+    this.releaseSpareTargets();
+    this.disposeBlocks();
+    if (this.directTargets !== null) {
+      this.gl.deleteFramebuffer(this.directTargets.framebuffer);
+      this.gl.deleteRenderbuffer(this.directTargets.renderbuffer);
+      this.directTargets = null;
+    }
+  }
+
+  /** The offscreen target of a batched frame without float targets, of this size. */
+  private directTarget(width: number, height: number): DirectTarget {
+    const gl = this.gl;
+    const current = this.directTargets;
+    if (current !== null && current.width === width && current.height === height) return current;
+    if (current !== null) {
+      gl.deleteFramebuffer(current.framebuffer);
+      gl.deleteRenderbuffer(current.renderbuffer);
+      this.directTargets = null;
+    }
+    const renderbuffer = gl.createRenderbuffer();
+    const framebuffer = gl.createFramebuffer();
+    if (renderbuffer === null || framebuffer === null) {
+      throw new Error("Could not create an offscreen line target");
+    }
+    gl.bindRenderbuffer(gl.RENDERBUFFER, renderbuffer);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, width, height);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, renderbuffer);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+    this.directTargets = { framebuffer, renderbuffer, width, height };
+    return this.directTargets;
+  }
+
+  /** Copies an offscreen frame onto its canvas: the frame's only write to the canvas. */
+  private blitToCanvas(frame: LineFrame, source: DirectTarget): void {
+    const gl = this.gl;
+    this.bindCanvas(frame);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, source.framebuffer);
+    gl.blitFramebuffer(
+      0,
+      0,
+      source.width,
+      source.height,
+      0,
+      0,
+      gl.drawingBufferWidth,
+      gl.drawingBufferHeight,
+      gl.COLOR_BUFFER_BIT,
+      gl.NEAREST,
+    );
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  /**
+   * Binds the canvas for a frame's final write, first sizing it for the frame
+   * when the renderer sizes it (see create). Resizing clears a canvas, and a
+   * worker's canvas shows what it holds after every task: a frame drawn over
+   * several tasks only resizes and writes it in its last.
+   */
+  private bindCanvas(frame: Pick<LineFrame, "width" | "height" | "pixelRatio">): void {
+    const gl = this.gl;
+    const canvas = this.sizedCanvas;
+    if (canvas !== null) {
+      const { width, height } = this.surfaceSize(frame);
+      if (canvas.width !== width) canvas.width = width;
+      if (canvas.height !== height) canvas.height = height;
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  }
+
+  /**
+   * A frame's size in device pixels (see deviceSize), within what this GPU
+   * renders: a browser caps a larger canvas's drawing buffer, and targets
+   * past the limit could not be allocated.
+   */
+  private surfaceSize(frame: Pick<LineFrame, "width" | "height" | "pixelRatio">): {
+    width: number;
+    height: number;
+  } {
+    const { width, height } = deviceSize(frame);
+    return {
+      width: Math.min(width, this.maxSurfaceSize),
+      height: Math.min(height, this.maxSurfaceSize),
+    };
+  }
+
+  /** Whether the WebGL context was lost: no frame in flight will finish. */
+  get contextLost(): boolean {
+    return this.gl.isContextLost();
+  }
+
   private releaseTargets(targets: DensityTargets | null): void {
     if (targets === null) return;
     const gl = this.gl;
@@ -1423,10 +1561,9 @@ export class WebGLLineRenderer {
 
   /** Records that `targets` hold the density of `frame`, as currently uploaded. */
   private recordDensity(frame: LineFrame, targets: DensityTargets): void {
-    const gl = this.gl;
     this.densityContent = {
       targets,
-      style: densityStyle(frame, gl.drawingBufferWidth, gl.drawingBufferHeight),
+      style: densityStyle(frame),
       axes: frame.axes.map(({ x, pixels }) => ({ x, pixels })),
       rowsOrder: this.rowsOrder,
       drawOrder: this.uploadedOrder,
@@ -1444,11 +1581,10 @@ export class WebGLLineRenderer {
    */
   private densityShift(frame: LineFrame): number | null {
     const content = this.densityContent;
-    const gl = this.gl;
     if (
       content === null ||
       content.targets !== this.density ||
-      content.style !== densityStyle(frame, gl.drawingBufferWidth, gl.drawingBufferHeight) ||
+      content.style !== densityStyle(frame) ||
       content.rowsOrder !== this.rowsOrder ||
       content.drawOrder !== this.uploadedOrder ||
       content.bins !== this.uploadedBins ||
@@ -1622,7 +1758,7 @@ export class WebGLLineRenderer {
           const waitingAt = performance.now();
           await poller.next();
           lastWait = performance.now() - waitingAt;
-          if (gl.isContextLost()) throw new Error("Exact line worker lost its WebGL context");
+          if (gl.isContextLost()) throw new Error("The line renderer lost its WebGL context");
         } while (gl.getSyncParameter(fence, gl.SYNC_STATUS) !== gl.SIGNALED);
       } finally {
         gl.deleteSync(fence);
@@ -1665,7 +1801,7 @@ export class WebGLLineRenderer {
       blocks.bins !== this.uploadedBins ||
       blocks.palette !== this.uploadedPalette ||
       blocks.colorMapBins !== this.colorMapBins ||
-      blocks.style !== blockStyle(frame, this.gl.drawingBufferWidth, this.gl.drawingBufferHeight) ||
+      blocks.style !== blockStyle(frame) ||
       blocks.axes.length !== frame.axes.length ||
       blocks.axes.some(
         (axis, index) => axis.x !== frame.axes[index].x || axis.pixels !== frame.axes[index].pixels,
@@ -1748,7 +1884,7 @@ export class WebGLLineRenderer {
         bins: this.uploadedBins,
         palette: this.uploadedPalette,
         colorMapBins: this.colorMapBins,
-        style: blockStyle(frame, gl.drawingBufferWidth, gl.drawingBufferHeight),
+        style: blockStyle(frame),
         axes: frame.axes.map(({ x, pixels }) => ({ x, pixels })),
       };
       const passes = this.blockPasses;
@@ -1786,12 +1922,12 @@ export class WebGLLineRenderer {
 
   /** The size and format of a frame's block layers (see BlockLayers). */
   private blockLayout(frame: LineFrame) {
-    const gl = this.gl;
+    const { width, height } = this.surfaceSize(frame);
     const valueColors = this.colorMapBins > 0;
     const withOnTop = valueColors && frame.colorMode !== "mean";
     return {
-      width: Math.max(1, Math.ceil(gl.drawingBufferWidth * frame.resolution)),
-      height: Math.max(1, Math.ceil(gl.drawingBufferHeight * frame.resolution)),
+      width: Math.max(1, Math.ceil(width * frame.resolution)),
+      height: Math.max(1, Math.ceil(height * frame.resolution)),
       valueColors,
       withOnTop,
       layerBytes: blockLayerBytes(valueColors, withOnTop),
@@ -1904,7 +2040,7 @@ export class WebGLLineRenderer {
     gl.disable(gl.BLEND);
     this.recordDensity(frame, targets);
     if (!frame.transient) this.releaseSpareTargets();
-    this.composite(frame, targets, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    this.composite(frame, targets);
     return true;
   }
 
@@ -1933,11 +2069,17 @@ export class WebGLLineRenderer {
     gl.flush();
   }
 
-  /** Presents a worker's top-down ImageData without per-row GPU work. */
-  present(pixels: Uint8ClampedArray, width: number, height: number): void {
+  /**
+   * Presents a continuous density image, top-down ImageData, on the canvas
+   * of `frame` without per-row GPU work.
+   */
+  present(
+    { pixels, width, height }: { pixels: Uint8ClampedArray; width: number; height: number },
+    frame: Pick<LineFrame, "width" | "height" | "pixelRatio">,
+  ): void {
     const gl = this.gl;
-    // Continuous density took over: no exact scroll will move the density again.
-    this.releaseSpareTargets();
+    // Continuous density took over: no exact frame will reuse these.
+    this.releaseLineTargets();
     this.submittedAt = performance.now();
     this.inFlightFullQuality = false;
     this.inFlightFromBlocks = false;
@@ -1947,8 +2089,6 @@ export class WebGLLineRenderer {
     if (this.imageTexture === null) {
       throw new Error("Could not create a density image texture");
     }
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
     gl.disable(gl.BLEND);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
@@ -1960,6 +2100,7 @@ export class WebGLLineRenderer {
     // biome-ignore lint/correctness/useHookAtTopLevel: WebGL useProgram, not a React hook.
     gl.useProgram(this.imageProgram.program);
     gl.uniform1i(this.imageProgram.uniform("u_image"), 0);
+    this.bindCanvas(frame);
     gl.uniform2f(
       this.imageProgram.uniform("u_viewport"),
       gl.drawingBufferWidth,
@@ -1980,13 +2121,11 @@ export class WebGLLineRenderer {
     const gl = this.gl;
     const size = batched ? this.lineBatches : null;
     this.uploadAxes(frame);
-    const width = gl.drawingBufferWidth;
-    const height = gl.drawingBufferHeight;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, width, height);
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
+    const { width, height } = this.surfaceSize(frame);
     if (this.rowCount === 0 || frame.axes.length === 0) {
+      this.bindCanvas(frame);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
       return;
     }
     const contextColor = [
@@ -1997,6 +2136,16 @@ export class WebGLLineRenderer {
     gl.enable(gl.BLEND);
 
     if (this.densityPrograms === null) {
+      // A batched frame draws offscreen, so its canvas never shows part of it.
+      const offscreen = batched ? this.directTarget(width, height) : null;
+      if (offscreen === null) {
+        this.bindCanvas(frame);
+      } else {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, offscreen.framebuffer);
+        gl.viewport(0, 0, width, height);
+      }
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
       // Deselected lines first, then the selection over them.
       const program = this.directProgram;
       const samples = this.prepareLines(program, frame, { width, height });
@@ -2015,6 +2164,7 @@ export class WebGLLineRenderer {
       yield* this.drawLines(program, frame, samples, size);
       gl.uniform1i(program.uniform("u_keep"), DRAW_SELECTED);
       yield* this.drawLines(program, frame, samples, size);
+      if (offscreen !== null) this.blitToCanvas(frame, offscreen);
       return;
     }
 
@@ -2038,7 +2188,7 @@ export class WebGLLineRenderer {
     this.recordDensity(frame, targets);
     // Kept through a scroll, whose frames may draw every row between moves.
     if (!frame.transient) this.releaseSpareTargets();
-    this.composite(frame, targets, width, height);
+    this.composite(frame, targets);
   }
 
   /**
@@ -2062,11 +2212,9 @@ export class WebGLLineRenderer {
     if (programs === null || source === null) {
       throw new Error("A shifted frame needs recorded density targets");
     }
-    const width = gl.drawingBufferWidth;
-    const height = gl.drawingBufferHeight;
     if (shift === 0) {
       gl.disable(gl.BLEND);
-      this.composite(frame, source, width, height);
+      this.composite(frame, source);
       return true;
     }
     const [from, to] = shift > 0 ? [0, shift] : [source.width + shift, source.width];
@@ -2118,7 +2266,7 @@ export class WebGLLineRenderer {
     this.spareDensity = source;
     this.density = target;
     this.recordDensity(frame, target);
-    this.composite(frame, target, width, height);
+    this.composite(frame, target);
     return true;
   }
 
@@ -2191,20 +2339,18 @@ export class WebGLLineRenderer {
     return samples;
   }
 
-  /** Tone-maps the density targets onto the canvas (see COMPOSITE_FRAGMENT_SHADER). */
-  private composite(
-    frame: LineFrame,
-    targets: DensityTargets,
-    width: number,
-    height: number,
-  ): void {
+  /**
+   * Tone-maps the density targets onto the canvas (see
+   * COMPOSITE_FRAGMENT_SHADER), every pixel of it: a frame's only write to
+   * its canvas.
+   */
+  private composite(frame: LineFrame, targets: DensityTargets): void {
     const gl = this.gl;
     const programs = this.densityPrograms;
     if (programs === null) throw new Error("Compositing needs float render targets");
     const { composite } = programs;
     const valueColors = this.colorMapBins > 0;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, width, height);
+    this.bindCanvas(frame);
     // biome-ignore lint/correctness/useHookAtTopLevel: WebGL2RenderingContext.useProgram, not a React hook.
     gl.useProgram(composite.program);
     for (const name of ["selectedSums", "coverageSums", "onTop"] as const) {
@@ -2234,7 +2380,7 @@ export class WebGLLineRenderer {
       frame.contextColor.b / 255,
     );
     gl.uniform1f(composite.uniform("u_contextAlpha"), frame.contextAlpha);
-    gl.uniform1f(composite.uniform("u_resolution"), targets.width / width);
+    gl.uniform1f(composite.uniform("u_resolution"), targets.width / gl.drawingBufferWidth);
     gl.bindVertexArray(this.vertexArray);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindVertexArray(null);

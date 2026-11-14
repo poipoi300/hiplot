@@ -1,20 +1,22 @@
 import { loadParallelBenchmark } from "../bench/parallel";
 import { expect, test } from "./fixtures";
-import { warmParallelWorker } from "./plot";
+import { exposeShownPixels, type ShownPixelsWindow, warmParallelWorker } from "./plot";
 
-interface ContextWindow {
+interface ContextWindow extends ShownPixelsWindow {
   __parallelProbe: {
     instance: {
       parallelPlot: () => {
         continuousFrame: number;
-        continuous: { busy: boolean };
-        continuousMetrics: { pixels: Uint8ClampedArray; rows: number };
+        linesBusy: boolean;
+        continuousMetrics: { rows: number };
+        workerCanvas: HTMLCanvasElement;
       };
     };
   };
 }
 
 test("lost worker WebGL preserves histograms and subsequent images via CPU", async ({ page }) => {
+  await exposeShownPixels(page);
   await loadParallelBenchmark(
     page,
     { rows: 300, columns: 2, discrete: false, seed: 20261109 },
@@ -46,18 +48,20 @@ test("lost worker WebGL preserves histograms and subsequent images via CPU", asy
     await Promise.race([
       page.waitForFunction((before) => {
         const plot = (window as unknown as ContextWindow).__parallelProbe.instance.parallelPlot();
-        return plot.continuousFrame > before && !plot.continuous.busy;
+        return plot.continuousFrame > before && !plot.linesBusy;
       }, before),
       page.waitForEvent("pageerror").then((error) => {
         throw error;
       }),
     ]);
     const image = await page.evaluate(() => {
-      const image = (window as unknown as ContextWindow).__parallelProbe.instance.parallelPlot()
-        .continuousMetrics;
+      const win = window as unknown as ContextWindow;
+      const plot = win.__parallelProbe.instance.parallelPlot();
+      // The worker shows its images on its canvas.
+      const pixels = win.shownPixels(plot.workerCanvas);
       return {
-        rows: image.rows,
-        nonblank: image.pixels.some((value, index) => index % 4 === 3 && value > 0),
+        rows: plot.continuousMetrics.rows,
+        nonblank: pixels.some((value, index) => index % 4 === 3 && value > 0),
       };
     });
     expect(image).toEqual({ rows: 300, nonblank: true });

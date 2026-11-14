@@ -6,9 +6,8 @@ import { parseArgs } from "node:util";
 import { chromium, type Page } from "@playwright/test";
 import type { HiPlot } from "../src/component";
 import type { HiPlotRenderOptions } from "../src/hiplot_web";
-import type { ExactReply } from "../src/parallel/exact_types";
-import type { ExactRenderer } from "../src/parallel/exact_worker";
-import type { FinishedFrame, LineFrame, WebGLLineRenderer } from "../src/parallel/webgl";
+import type { RenderReply } from "../src/parallel/render_types";
+import type { LineFrame, WebGLLineRenderer } from "../src/parallel/webgl";
 import type { HiPlotExperiment } from "../src/types";
 import { createBenchmarkAbort, withDeadline } from "./deadline";
 import { type ParallelBenchmarkConfig, parallelExperiment, quantile } from "./parallel_data";
@@ -20,16 +19,19 @@ interface Sample {
 interface ProbeRenderer extends Pick<WebGLLineRenderer, "draw" | "setSelection" | "busy"> {
   gl: WebGL2RenderingContext;
   slotsFor: (columns: readonly Float32Array[]) => number[];
-  present: (pixels: Uint8ClampedArray, width: number, height: number) => void;
+  present: (...args: Parameters<WebGLLineRenderer["present"]>) => void;
+}
+/** The render worker's client (see RenderWorker), with the private members the probe wraps. */
+interface WorkerProbe {
+  busy: boolean;
+  drawExact: (frame: LineFrame, ...args: unknown[]) => void;
+  drawContinuous: (frame: LineFrame, ...args: unknown[]) => void;
+  dispatchPending: () => void;
+  postedId: number;
+  onFrame: (frame: Extract<RenderReply, { kind: "frame" }>) => void;
 }
 interface ContinuousProbe {
-  exact:
-    | (Pick<ExactRenderer, "busy" | "draw"> & {
-        onImage: (bitmap: ImageBitmap, finished: FinishedFrame) => void;
-        worker: Worker | null;
-        connect: (worker: Worker) => void;
-      })
-    | null;
+  worker: WorkerProbe | null;
   continuous: {
     busy: boolean;
     draw: (...args: unknown[]) => void;
@@ -133,7 +135,7 @@ export async function loadParallelBenchmark(
       const continuous = pp as unknown as ContinuousProbe;
       return (
         !pp.linesBusy &&
-        !continuous.exact?.busy &&
+        !continuous.worker?.busy &&
         (!continuous.continuousMode() ||
           (continuous.continuousFrame > 0 && !continuous.continuous?.busy))
       );
@@ -251,75 +253,62 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
       fenceFrame(start);
     };
     const continuous = pp as unknown as ContinuousProbe;
-    const instrumentExact = (
-      exact: NonNullable<ContinuousProbe["exact"]>,
-      initialRequestedAt = performance.now(),
-      initialInputAt: number | null = null,
-    ): void => {
-      let requestedAt = initialRequestedAt;
-      let inputAt = initialInputAt;
-      const observe = (worker: Worker): void => {
-        const receive = worker.onmessage;
-        if (receive === null) throw new Error("Exact worker has no reply handler");
-        worker.onmessage = (event: MessageEvent<ExactReply>) => {
-          if (event.data.kind === "frame")
-            probe.samples.push({ stage: "fence", milliseconds: event.data.finished.milliseconds });
-          receive.call(worker, event);
+    /**
+     * Frames the render worker drew, timed from the draw call of the request
+     * each drew, the latest when it started, to its reply and to the second
+     * display frame after it: the worker shows a frame on its own canvas.
+     */
+    const instrumentWorker = (worker: WorkerProbe): void => {
+      let latest: { at: number; inputAt: number | null } | null = null;
+      const requests = new Map<number, { at: number; inputAt: number | null }>();
+      for (const method of ["drawExact", "drawContinuous"] as const) {
+        const draw = worker[method].bind(worker);
+        worker[method] = (frame, ...args) => {
+          const at = performance.now();
+          latest = { at, inputAt: probe.brushInputAt };
+          probe.lastFrame = frame;
+          draw(frame, ...args);
+          probe.samples.push({ stage: "submit", milliseconds: performance.now() - at });
         };
+      }
+      const dispatch = worker.dispatchPending.bind(worker);
+      worker.dispatchPending = () => {
+        const before = worker.postedId;
+        dispatch();
+        if (worker.postedId !== before && latest !== null) requests.set(worker.postedId, latest);
       };
-      const connect = exact.connect.bind(exact);
-      exact.connect = (worker) => {
-        connect(worker);
-        observe(worker);
-      };
-      if (exact.worker !== null) observe(exact.worker);
-      const request = exact.draw.bind(exact);
-      exact.draw = (frame, ...args) => {
-        requestedAt = performance.now();
-        inputAt = probe.brushInputAt;
-        probe.lastFrame = frame;
-        request(frame, ...args);
-        probe.samples.push({ stage: "submit", milliseconds: performance.now() - requestedAt });
-      };
-      const publish = exact.onImage.bind(exact);
-      exact.onImage = (bitmap, finished) => {
-        const requested = requestedAt;
-        const input = inputAt;
-        probe.samples.push({ stage: "gpu", milliseconds: finished.milliseconds });
-        publish(bitmap, finished);
-        if (input !== null)
-          probe.samples.push({ stage: "inputToImage", milliseconds: performance.now() - input });
+      const publish = worker.onFrame;
+      worker.onFrame = (frame) => {
+        const request = requests.get(frame.id);
+        for (const id of requests.keys()) if (id <= frame.id) requests.delete(id);
+        if (frame.finished !== null)
+          probe.samples.push({ stage: "fence", milliseconds: frame.finished.milliseconds });
+        if (frame.continuous !== null)
+          probe.samples.push(
+            { stage: "worker", milliseconds: frame.continuous.milliseconds },
+            { stage: "histogram", milliseconds: frame.continuous.countMs },
+            { stage: "raster", milliseconds: frame.continuous.rasterMs },
+          );
+        publish(frame);
+        if (request === undefined) throw new Error(`No request for worker frame ${frame.id}`);
+        const { at, inputAt } = request;
+        if (inputAt !== null)
+          probe.samples.push({ stage: "inputToImage", milliseconds: performance.now() - inputAt });
         probe.draws++;
         probe.pending++;
         requestAnimationFrame(() =>
           requestAnimationFrame(() => {
             const now = performance.now();
             probe.pending--;
-            probe.samples.push({ stage: "completedFrame", milliseconds: now - requested });
-            if (input !== null)
-              probe.samples.push({ stage: "inputToVisible", milliseconds: now - input });
+            probe.samples.push({ stage: "completedFrame", milliseconds: now - at });
+            if (inputAt !== null)
+              probe.samples.push({ stage: "inputToVisible", milliseconds: now - inputAt });
           }),
         );
       };
     };
-    if (continuous.exact !== null) instrumentExact(continuous.exact);
-    const host = pp as unknown as {
-      drawExactWorker: (frame: LineFrame, ...args: unknown[]) => boolean;
-      drawContinuous: () => void;
-    };
-    const drawWorker = host.drawExactWorker.bind(host);
-    host.drawExactWorker = (frame, ...args) => {
-      const previous = continuous.exact;
-      const started = performance.now();
-      const inputAt = probe.brushInputAt;
-      const available = drawWorker(frame, ...args);
-      if (continuous.exact !== null && continuous.exact !== previous) {
-        probe.lastFrame = frame;
-        probe.samples.push({ stage: "submit", milliseconds: performance.now() - started });
-        instrumentExact(continuous.exact, started, inputAt);
-      }
-      return available;
-    };
+    if (continuous.worker !== null) instrumentWorker(continuous.worker);
+    const host = pp as unknown as { drawContinuous: () => void };
     if (continuous.continuous !== null) {
       let requestedAt = performance.now();
       let requestedInputAt: number | null = null;
@@ -339,7 +328,7 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
         });
       };
       const present = renderer.present.bind(renderer);
-      renderer.present = (pixels, width, height) => {
+      renderer.present = (image, frame) => {
         const start = performance.now();
         const metrics = continuous.continuousMetrics;
         if (metrics === null) {
@@ -352,7 +341,7 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
           { stage: "workerLatency", milliseconds: start - requestedAt },
         );
         probe.draws += 1;
-        present(pixels, width, height);
+        present(image, frame);
         probe.samples.push({ stage: "submit", milliseconds: performance.now() - start });
         fenceFrame(start, requestedAt, requestedInputAt);
       };
@@ -377,7 +366,7 @@ async function settle(page: Page): Promise<void> {
     return (
       probe.pending === 0 &&
       !pp.webgl.busy &&
-      !continuous.exact?.busy &&
+      !continuous.worker?.busy &&
       !continuous.continuous?.busy &&
       (!continuous.continuousMode() || continuous.continuousFrame > 0) &&
       callbacks.scrollSettle === null &&
