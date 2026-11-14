@@ -1,8 +1,8 @@
 import type { Page } from "@playwright/test";
 import { loadParallelBenchmark } from "../bench/parallel";
 import type { Filter } from "../src/filters";
+import type { BrushSelection } from "../src/parallel/brush_selection";
 import type { LineGeometry } from "../src/parallel/geometry";
-import type { BrushMasks } from "../src/parallel/selection";
 import type { Datapoint } from "../src/types";
 import { expect, test } from "./fixtures";
 import { hideWebGL2, useDirectRenderer } from "./plot";
@@ -18,7 +18,7 @@ interface PlotProbe {
   worker: object | null;
   workerCanvas: HTMLCanvasElement;
   geometry: () => LineGeometry;
-  brushMasks: () => BrushMasks;
+  brushSelection: () => BrushSelection;
   selectionMask: (geometry: LineGeometry) => Uint8Array;
   redrawLines: () => void;
   drawWithWebGL: (webgl: object) => void;
@@ -29,7 +29,7 @@ interface PlotProbe {
   continueBrushGesture: (y: number) => void;
   endBrushGesture: () => void;
   cancelBrushMove: () => void;
-  pplot: { brush: (publish: boolean) => void };
+  pplot: { brush: (publish: boolean) => Promise<void> };
   setState: (state: { dimensions: string[] }, callback: () => void) => void;
   setBrushes: (dimension: string, spans: readonly (readonly [number, number])[]) => void;
   hasBrushes: (dimension: string) => boolean;
@@ -77,14 +77,21 @@ test("live WebGL brushes use typed flags and publish identical pixels and ordere
 }) => {
   await useDirectRenderer(page);
   await load(page);
-  const result = await page.evaluate(() => {
+  const result = await page.evaluate(async () => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
-    const masks = pp.brushMasks();
+    const masks = pp.brushSelection();
     const selectedRows = masks.selectedRows.bind(masks);
     let materializations = 0;
     masks.selectedRows = (mask) => {
       materializations += 1;
       return selectedRows(mask);
+    };
+    // Selections arrive from the brush worker: the newest brush settles once it is drawn.
+    const brush = pp.pplot.brush;
+    let brushing = Promise.resolve();
+    pp.pplot.brush = (publish) => {
+      brushing = brush(publish);
+      return brushing;
     };
     const dimension = pp.state.dimensions[1];
     const target = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
@@ -97,7 +104,7 @@ test("live WebGL brushes use typed flags and publish identical pixels and ordere
     pp.startBrushGesture({ sourceEvent: { target }, y: 0.2 * pp.h }, dimension);
     pp.continueBrushGesture(0.6 * pp.h);
     pp.cancelBrushMove();
-    pp.pplot.brush(false);
+    await pp.pplot.brush(false);
     const duringCalls = materializations;
     const unchangedPublishedRows = pp.props.rows_selected === initialRows;
     const mask = pp.selectionMask(pp.geometry());
@@ -126,6 +133,7 @@ test("live WebGL brushes use typed flags and publish identical pixels and ordere
     };
     const before = read();
     pp.endBrushGesture();
+    await brushing;
     // Rebuild selection flags from published objects, the pre-columnar reference path.
     (pp as unknown as { liveBrushMask: unknown }).liveBrushMask = null;
     const after = read();
@@ -159,7 +167,7 @@ test("successive live brush moves refresh exact GPU flags even when the mask buf
 }) => {
   await useDirectRenderer(page);
   await load(page);
-  const result = await page.evaluate(() => {
+  const result = await page.evaluate(async () => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
     const dimension = pp.state.dimensions[1];
     const target = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
@@ -180,12 +188,12 @@ test("successive live brush moves refresh exact GPU flags even when the mask buf
     pp.startBrushGesture({ sourceEvent: { target }, y: 0.2 * pp.h }, dimension);
     pp.continueBrushGesture(0.4 * pp.h);
     pp.cancelBrushMove();
-    pp.pplot.brush(false);
+    await pp.pplot.brush(false);
     read();
     const first = pp.selectionMask(pp.geometry()).slice();
     pp.continueBrushGesture(0.8 * pp.h);
     pp.cancelBrushMove();
-    pp.pplot.brush(false);
+    await pp.pplot.brush(false);
     const mask = pp.selectionMask(pp.geometry());
     const actual = read();
     (pp.webgl as { setSelection: (mask: Uint8Array) => void }).setSelection(mask.slice());
@@ -336,15 +344,27 @@ test("Canvas fallback still materializes every live brush selection", async ({ p
     ),
   });
   await page.waitForSelector("svg g.dimension", { state: "attached" });
-  const result = await page.evaluate(() => {
+  // Until the render worker reports that it cannot draw lines, they are left to it.
+  await page.waitForFunction(() => {
+    const pp = (window as unknown as ProbeWindow).hiplot_last_instance.parallelPlot();
+    return (pp.worker as { presents: boolean | null } | null)?.presents === false;
+  });
+  const result = await page.evaluate(async () => {
     const win = window as unknown as ProbeWindow;
     const pp = win.hiplot_last_instance.parallelPlot();
-    const masks = pp.brushMasks();
+    const masks = pp.brushSelection();
     const selectRows = masks.selectedRows.bind(masks);
     let calls = 0;
     masks.selectedRows = (mask) => {
       calls += 1;
       return selectRows(mask);
+    };
+    // Selections arrive from the brush worker: the newest brush settles once it is drawn.
+    const brush = pp.pplot.brush;
+    let brushing = Promise.resolve();
+    pp.pplot.brush = (publish) => {
+      brushing = brush(publish);
+      return brushing;
     };
     const dimension = pp.state.dimensions[1];
     const target = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
@@ -355,6 +375,7 @@ test("Canvas fallback still materializes every live brush selection", async ({ p
     }
     pp.startBrushGesture({ sourceEvent: { target }, y: pp.h * 0.2 }, dimension);
     pp.continueBrushGesture(pp.h * 0.6);
+    await brushing;
     const mask = pp.selectionMask(pp.geometry());
     const expected = pp.props.rows_filtered
       .filter((_, row) => mask[row] === 1)
@@ -364,6 +385,7 @@ test("Canvas fallback still materializes every live brush selection", async ({ p
     );
     const during = calls;
     pp.endBrushGesture();
+    await brushing;
     return { webgl: pp.webgl, during, after: calls, expected, drawn };
   });
   expect(result.webgl).toBeNull();

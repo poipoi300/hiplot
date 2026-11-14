@@ -204,7 +204,7 @@ export async function instrumentParallelBenchmark(page: Page): Promise<void> {
         });
       return brush(...args);
     };
-    const masks = pp.brushMasks();
+    const masks = pp.brushSelection();
     masks.select = timed("filter", masks.select.bind(masks));
     masks.selectedRows = timed("materialize", masks.selectedRows.bind(masks));
     pp.selectionMask = timed("selectionMask", pp.selectionMask.bind(pp));

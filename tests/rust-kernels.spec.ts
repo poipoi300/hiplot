@@ -1,6 +1,6 @@
 import { loadParallelBenchmark } from "../bench/parallel";
+import type { BrushSelection } from "../src/parallel/brush_selection";
 import type { ContinuousMetrics } from "../src/parallel/render_types";
-import type { BrushMasks } from "../src/parallel/selection";
 import type { Datapoint, ParamType } from "../src/types";
 import { expect, test } from "./fixtures";
 import { exposeShownPixels, type ShownPixelsWindow } from "./plot";
@@ -12,7 +12,7 @@ interface ProbeWindow extends ShownPixelsWindow {
         continuousMetrics: ContinuousMetrics | null;
         workerCanvas: HTMLCanvasElement;
         linesBusy: boolean;
-        brushMasks: () => BrushMasks;
+        brushSelection: () => BrushSelection;
         state: { dimensions: string[] };
         props: { rows_filtered: Datapoint[] };
       };
@@ -81,9 +81,16 @@ test("offline density pixels match when CSP blocks WebAssembly compilation", asy
       const ranges = new Map([
         [dimension, [{ col: dimension, type: "numeric" as ParamType.NUMERIC, min: 0.2, max: 0.7 }]],
       ]);
-      const masks = plot.brushMasks();
+      const masks = plot.brushSelection();
+      const brushMask = async (
+        selections: Parameters<typeof masks.select>[0],
+      ): Promise<Uint8Array> => {
+        const result = await masks.select(selections, null, false);
+        if (result === null) throw new Error("A newer selection replaced this one");
+        return result.mask;
+      };
       await masks.prepare(ranges);
-      const actual = masks.select(ranges);
+      const actual = await brushMask(ranges);
       const numericDifferences = plot.props.rows_filtered.reduce((differences, row, index) => {
         const value = Number(row[dimension]);
         return differences + Number(actual[index] !== Number(value >= 0.2 && value <= 0.7));
@@ -106,7 +113,7 @@ test("offline density pixels match when CSP blocks WebAssembly compilation", asy
         ],
       ]);
       await masks.prepare(categoryRanges);
-      const categorical = masks.select(categoryRanges);
+      const categorical = await brushMask(categoryRanges);
       const categoricalDifferences = plot.props.rows_filtered.reduce((differences, row, index) => {
         const value = String(row.category);
         return (

@@ -294,8 +294,9 @@ test("brushes are restored after a reload", async ({ page }) => {
     expect(Math.abs(after.height - box.height)).toBeLessThanOrEqual(1);
   }
   await expect(page.getByRole("button", { name: "Reset brushes" })).toBeEnabled();
-  const { selected: count, total } = await counts(page);
-  expect(count).toBeLessThan(total);
+  // The restored brushes' selection arrives from the brush worker.
+  const total = (await counts(page)).total;
+  await expect.poll(() => selected(page)).toBeLessThan(total);
 });
 
 test("a brush that selects nothing is restored in place after a reload, still selecting nothing", async ({

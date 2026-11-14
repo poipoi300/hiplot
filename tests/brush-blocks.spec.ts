@@ -1,5 +1,6 @@
 import { loadParallelBenchmark } from "../bench/parallel";
 import type { ColorMode } from "../src/lib/colors";
+import type { BrushSelection } from "../src/parallel/brush_selection";
 import type { LineGeometry } from "../src/parallel/geometry";
 import type {
   FinishedFrame,
@@ -98,15 +99,10 @@ for (const { name, numeric, colorMode, curved, brushes } of CASES) {
           const plot = win.__parallelProbe.instance.parallelPlot();
           const worker = plot.worker;
           if (worker === null) throw new Error("Missing render worker");
-          // A frame is read when its reply arrives, by which time the worker showed it.
-          const images = new Map<number, { pixels: Uint8Array; finished: FinishedFrame }>();
+          const images = new Map<number, FinishedFrame>();
           const publish = worker.onFrame.bind(worker);
           worker.onFrame = (shown) => {
-            if (shown.finished !== null)
-              images.set(shown.id, {
-                pixels: win.shownPixels(plot.workerCanvas),
-                finished: shown.finished,
-              });
+            if (shown.finished !== null) images.set(shown.id, shown.finished);
             publish(shown);
           };
           const geometry = plot.geometry();
@@ -158,10 +154,12 @@ for (const { name, numeric, colorMode, curved, brushes } of CASES) {
             await Promise.resolve();
             const request = worker.postedId;
             while (worker.busy) await new Promise(requestAnimationFrame);
-            const drawn = images.get(request);
+            const finished = images.get(request);
             images.clear();
-            if (drawn === undefined) throw new Error(`The plot superseded request ${request}`);
-            return drawn;
+            if (finished === undefined) throw new Error(`The plot superseded request ${request}`);
+            // A worker's canvas reaches the page after its reply: read it a display frame later.
+            await new Promise(requestAnimationFrame);
+            return { pixels: win.shownPixels(plot.workerCanvas), finished };
           };
           const comparisons: Comparison[] = [];
           // Brushes drawn from their tops: the bottom edges move, then cross back.
@@ -258,6 +256,7 @@ test("brush gestures on a GPU draw full frames from retained blocks, through rel
       ) => void;
       continueBrushGesture: (y: number) => void;
       endBrushGesture: () => void;
+      pplot: { brush: (publish: boolean) => Promise<void> };
     }
     const win = window as unknown as ShownPixelsWindow & {
       __parallelProbe: { instance: { parallelPlot: () => GesturePlot } };
@@ -265,6 +264,13 @@ test("brush gestures on a GPU draw full frames from retained blocks, through rel
     const plot = win.__parallelProbe.instance.parallelPlot();
     const worker = plot.worker;
     if (worker === null) throw new Error("Missing render worker");
+    // Selections arrive from the brush worker: the newest brush settles once it is drawn.
+    const brush = plot.pplot.brush;
+    let brushing = Promise.resolve();
+    plot.pplot.brush = (publish) => {
+      brushing = brush(publish);
+      return brushing;
+    };
     const drafts: boolean[] = [];
     const request = worker.drawExact.bind(worker);
     worker.drawExact = (frame, ...rest) => {
@@ -282,9 +288,12 @@ test("brush gestures on a GPU draw full frames from retained blocks, through rel
         });
       publish(shown);
     };
+    // A move's selection is requested by the next display frame at the latest.
     const settled = async (): Promise<void> => {
-      do await new Promise(requestAnimationFrame);
-      while (worker.busy);
+      do {
+        await new Promise(requestAnimationFrame);
+        await brushing;
+      } while (worker.busy);
     };
     const dimension = plot.state.dimensions[1];
     const target = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
@@ -354,6 +363,7 @@ test("resting on an axis's brush band draws its blocks before a gesture", async 
       ) => void;
       continueBrushGesture: (y: number) => void;
       endBrushGesture: () => void;
+      brushSelection: () => BrushSelection;
     }
     const plot = (
       window as unknown as {
@@ -370,9 +380,21 @@ test("resting on an axis's brush band draws its blocks before a gesture", async 
       if (shown.finished !== null) images.push(shown.finished.fromBlocks);
       publish(shown);
     };
+    // Selections arrive from the brush worker, and the plot draws each once it does.
+    const masks = plot.brushSelection();
+    const select = masks.select.bind(masks);
+    let selected: Promise<unknown> = Promise.resolve();
+    masks.select = (...args) => {
+      const selection = select(...args);
+      selected = selection;
+      return selection;
+    };
+    // A move's selection is requested by the next display frame at the latest.
     const settled = async (): Promise<void> => {
-      do await new Promise(requestAnimationFrame);
-      while (worker.busy);
+      do {
+        await new Promise(requestAnimationFrame);
+        await selected;
+      } while (worker.busy);
     };
     const dimension = plot.state.dimensions[2];
     const band = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
@@ -417,6 +439,80 @@ test("resting on an axis's brush band draws its blocks before a gesture", async 
   expect(result.all.slice(1)).toEqual([true, true]);
 });
 
+test("a rest on another axis that replaces a waiting brush commit still publishes it", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 640, height: 480 });
+  await loadParallelBenchmark(
+    page,
+    { rows: 6000, columns: 4, discrete: false, seed: 20261109 },
+    "full",
+  );
+  await warmParallelWorker(page);
+  const result = await page.evaluate(async () => {
+    interface CommittedPlot {
+      h: number;
+      state: { dimensions: string[] };
+      worker: BlockWorker | null;
+      publishedSelection: unknown[] | null;
+      liveBrushMask: { count: number } | null;
+      startBrushGesture: (
+        event: { sourceEvent: { target: Element }; y: number },
+        dimension: string,
+      ) => void;
+      continueBrushGesture: (y: number) => void;
+      endBrushGesture: () => void;
+      brushSelection: () => BrushSelection;
+    }
+    const plot = (
+      window as unknown as {
+        __parallelProbe: { instance: { parallelPlot: () => CommittedPlot } };
+      }
+    ).__parallelProbe.instance.parallelPlot();
+    const worker = plot.worker;
+    if (!worker?.capabilities) throw new Error("Missing render worker");
+    worker.capabilities.blocks = true;
+    const bandOf = (dimension: string) =>
+      Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
+        .find((node) => (node as SVGGElement & { __data__: string }).__data__ === dimension)
+        ?.querySelector<SVGGElement>(".pplot-brush");
+    const other = bandOf(plot.state.dimensions[1]);
+    if (!other) throw new Error("Missing brush band");
+    const idle = () => new Promise((resolve) => setTimeout(resolve, 800));
+    const gesture = (dimension: string, from: number, to: number) => {
+      const overlay = bandOf(dimension)?.querySelector(".overlay");
+      if (!overlay) throw new Error("Missing brush overlay");
+      plot.startBrushGesture({ sourceEvent: { target: overlay }, y: plot.h * from }, dimension);
+      plot.continueBrushGesture(plot.h * to);
+      plot.endBrushGesture();
+    };
+    gesture(plot.state.dimensions[2], 0.1, 0.9);
+    await idle();
+    const before = plot.publishedSelection;
+    // Slow brush worker replies: the commit waits behind the gesture's move.
+    const workers = (plot.brushSelection() as unknown as { workers: { brush: Worker } }).workers;
+    const deliver = workers.brush.onmessage;
+    if (deliver === null) throw new Error("Brush worker not started");
+    workers.brush.onmessage = (event) => setTimeout(() => deliver.call(workers.brush, event), 300);
+    gesture(plot.state.dimensions[3], 0.3, 0.5);
+    // Resting on another axis requests its passing rows while the commit waits.
+    other.dispatchEvent(new PointerEvent("pointerenter"));
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    other.dispatchEvent(new PointerEvent("pointerleave"));
+    workers.brush.onmessage = deliver;
+    const after = plot.publishedSelection;
+    return {
+      changed: after !== before,
+      published: after?.length ?? -1,
+      drawn: plot.liveBrushMask?.count ?? -2,
+      before: before?.length ?? -1,
+    };
+  });
+  expect(result.changed).toBe(true);
+  expect(result.published).toBe(result.drawn);
+  expect(result.published).toBeLessThan(result.before);
+});
+
 test("a touch on an axis's brush band warms its column at once, drawing nothing", async ({
   page,
 }) => {
@@ -432,7 +528,7 @@ test("a touch on an axis's brush band warms its column at once, drawing nothing"
       h: number;
       state: { dimensions: string[] };
       worker: BlockWorker | null;
-      brushMasks: () => { warm: (selection: { col: string }[]) => void };
+      brushSelection: () => BrushSelection;
       startBrushGesture: (
         event: { sourceEvent: { target: Element }; y: number },
         dimension: string,
@@ -449,9 +545,21 @@ test("a touch on an axis's brush band warms its column at once, drawing nothing"
     if (!worker?.capabilities) throw new Error("Missing render worker");
     // As in the gesture test: the suite's SwiftShader worker reports no block frames.
     worker.capabilities.blocks = true;
+    // Selections arrive from the brush worker, and the plot draws each once it does.
+    const masks = plot.brushSelection();
+    const select = masks.select.bind(masks);
+    let selected: Promise<unknown> = Promise.resolve();
+    masks.select = (...args) => {
+      const selection = select(...args);
+      selected = selection;
+      return selection;
+    };
+    // A move's selection is requested by the next display frame at the latest.
     const settled = async (): Promise<void> => {
-      do await new Promise(requestAnimationFrame);
-      while (worker.busy);
+      do {
+        await new Promise(requestAnimationFrame);
+        await selected;
+      } while (worker.busy);
     };
     await settled();
     const images: boolean[] = [];
@@ -460,12 +568,11 @@ test("a touch on an axis's brush band warms its column at once, drawing nothing"
       if (shown.finished !== null) images.push(shown.finished.fromBlocks);
       publish(shown);
     };
-    const masks = plot.brushMasks();
     const warm = masks.warm.bind(masks);
     const warmed: string[] = [];
-    masks.warm = (selection) => {
-      warmed.push(...selection.map((range) => range.col));
-      warm(selection);
+    masks.warm = (range) => {
+      warmed.push(range.col);
+      warm(range);
     };
     const dimension = plot.state.dimensions[2];
     const band = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))

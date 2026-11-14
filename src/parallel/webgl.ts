@@ -279,6 +279,11 @@ export interface FinishedFrame {
 }
 
 /** How rows are colored: a palette color per row, by bin. */
+/** Whether `canvas` is in the page's document, not an offscreen canvas; workers have no HTMLCanvasElement. */
+function isPageCanvas(canvas: HTMLCanvasElement | OffscreenCanvas): canvas is HTMLCanvasElement {
+  return typeof HTMLCanvasElement !== "undefined" && canvas instanceof HTMLCanvasElement;
+}
+
 export interface LineColors {
   bins: Uint32Array;
   palette: ReadonlyArray<RGB>;
@@ -1067,11 +1072,17 @@ export class WebGLLineRenderer {
     canvas: HTMLCanvasElement | OffscreenCanvas,
     sizesCanvas = false,
   ): WebGLLineRenderer | null {
-    const gl = canvas.getContext("webgl2", {
+    const options: WebGLContextAttributes = {
       alpha: true,
       premultipliedAlpha: true,
       antialias: false,
-    });
+    };
+    // Typed and called on each canvas type: on the union, or with inferred
+    // options, the compiler can settle on getContext's untyped overload,
+    // depending on the order it checks the program's files.
+    const gl = isPageCanvas(canvas)
+      ? canvas.getContext("webgl2", options)
+      : canvas.getContext("webgl2", options);
     return gl === null ? null : new WebGLLineRenderer(gl, sizesCanvas ? canvas : null);
   }
 

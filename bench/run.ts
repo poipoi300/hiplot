@@ -85,7 +85,7 @@ declare global {
       parallelPlot: () => {
         continuousMode?: () => boolean;
         continuousMetrics?: { wasmMemoryBytes?: number } | null;
-        brushMasks?: () => { wasmMemoryBytes?: number };
+        brushSelection?: () => { wasmMemoryBytes?: number };
         worker?: unknown;
         webgl?: unknown;
       } | null;
@@ -365,7 +365,7 @@ async function runOnce(page: Page, url: string): Promise<RepResult> {
   const tableSettledAt = await waitForTableToSettle(page, mouseUpAt);
   const memory = await page.evaluate(() => {
     const plot = window.hiplot_last_instance.parallelPlot();
-    const selectionBytes = plot?.brushMasks?.().wasmMemoryBytes;
+    const selectionBytes = plot?.brushSelection?.().wasmMemoryBytes;
     const densityBytes = plot?.continuousMetrics?.wasmMemoryBytes;
     return {
       jsHeapMB:

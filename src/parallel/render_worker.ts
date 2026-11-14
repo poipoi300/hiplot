@@ -21,6 +21,9 @@ export interface WorkerFrame {
   pixels: Uint8ClampedArray | null;
 }
 
+/** Names the render worker in developer tools. */
+export const RENDER_WORKER_NAME = "hiplot-render";
+
 /** Selection buffers kept for reuse: one in flight each way covers a gesture. */
 const SPARE_SELECTIONS = 2;
 
@@ -66,7 +69,7 @@ export class RenderWorker {
     private readonly onUnavailable: () => void,
     private readonly createWorker: () => Promise<Worker> = async () => {
       const { default: InlineWorker } = await import("./render_entry?worker&inline");
-      return new InlineWorker();
+      return new InlineWorker({ name: RENDER_WORKER_NAME });
     },
   ) {}
 

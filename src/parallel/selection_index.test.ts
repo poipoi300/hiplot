@@ -2,12 +2,12 @@ import { describe, expect, test } from "bun:test";
 import type { FilterRange } from "../filters";
 import { ParamType } from "../types";
 import {
-  buildSelectionIndex,
   type IndexInterval,
   selectionIntervals,
   unionIntervals,
   visitIntervalDifference,
 } from "./selection_index";
+import { buildSelectionIndex } from "./selection_sort";
 
 const numeric = (min: number, max: number, include_infnans = false): FilterRange => ({
   col: "x",

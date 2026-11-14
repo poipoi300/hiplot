@@ -73,9 +73,12 @@ exact lines.
 
 Both rendering modes draw on the same worker from the first frame, at any row
 count, and brushing paces them alike: the SVG brush follows the pointer
-immediately, and the selection is recomputed and posted to the worker at most
-once per display frame, without waiting for the worker, which always draws
-the newest state it holds. A frame drawn over several worker tasks reaches the
+immediately, and at most once per display frame the brushes' ranges go to a
+brush worker, which selects the rows in them. Each selection is posted to the
+render worker as it arrives, without waiting for the worker, which always draws
+the newest state it holds. Selecting runs off the page, so a brush's first
+move, which deselects about every row, does not hold up the brush either;
+without workers, the page selects. A frame drawn over several worker tasks reaches the
 canvas only in its last one, so a partial or blank frame never shows, also
 when the plot is resized. Where a browser lacks workers with canvases, the
 page draws instead, waiting for its renderer between frames; where the worker

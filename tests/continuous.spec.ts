@@ -1,10 +1,10 @@
 import type { Page } from "@playwright/test";
 import { loadParallelBenchmark } from "../bench/parallel";
 import type { ParamScale } from "../src/infertypes";
+import type { BrushSelection } from "../src/parallel/brush_selection";
 import type { LineGeometry } from "../src/parallel/geometry";
 import type { ContinuousMetrics } from "../src/parallel/render_types";
 import type { RenderWorker } from "../src/parallel/render_worker";
-import type { BrushMasks } from "../src/parallel/selection";
 import type { LineColors, LineFrame, WebGLLineRenderer } from "../src/parallel/webgl";
 import type { Datapoint } from "../src/types";
 import { expect, test } from "./fixtures";
@@ -42,8 +42,8 @@ interface PlotProbe {
 }
 interface CanvasPlotProbe extends Omit<PlotProbe, "webgl"> {
   webgl: null;
-  brushMasks: () => BrushMasks;
-  pplot: { brush: (publish: boolean) => void };
+  brushSelection: () => BrushSelection;
+  pplot: { brush: (publish: boolean) => Promise<void> };
   startBrushGesture: (event: { sourceEvent: { target: Element }; y: number }, axis: string) => void;
   continueBrushGesture: (y: number) => void;
   cancelBrushMove: () => void;
@@ -232,11 +232,14 @@ test("an idle all-row brush starts before RAF and busy moves remain coalesced", 
     "low",
   );
   await warmParallelWorker(page);
-  const result = await page.evaluate(() => {
+  const result = await page.evaluate(async () => {
     const pp = (
       window as unknown as ProbeWindow
     ).__parallelProbe.instance.parallelPlot() as PlotProbe &
-      Pick<CanvasPlotProbe, "startBrushGesture" | "continueBrushGesture" | "endBrushGesture"> & {
+      Pick<
+        CanvasPlotProbe,
+        "brushSelection" | "startBrushGesture" | "continueBrushGesture" | "endBrushGesture"
+      > & {
         brushMoveFrame: number | null;
       };
     const worker = pp.worker;
@@ -246,6 +249,14 @@ test("an idle all-row brush starts before RAF and busy moves remain coalesced", 
       .find((node) => (node as SVGGElement & { __data__: string }).__data__ === dimension)
       ?.querySelector(".overlay");
     if (!target) throw new Error("No brush overlay");
+    const masks = pp.brushSelection();
+    const select = masks.select.bind(masks);
+    const selections: ReturnType<typeof select>[] = [];
+    masks.select = (...args) => {
+      const selection = select(...args);
+      selections.push(selection);
+      return selection;
+    };
     const draw = worker.drawContinuous.bind(worker);
     let requests = 0;
     worker.drawContinuous = (...args) => {
@@ -255,16 +266,23 @@ test("an idle all-row brush starts before RAF and busy moves remain coalesced", 
     pp.startBrushGesture({ sourceEvent: { target }, y: pp.h * 0.2 }, dimension);
     pp.continueBrushGesture(pp.h * 0.5);
     // The first move selects at once; the next display frame takes the latest of those after it.
-    const first = { requests, scheduled: pp.brushMoveFrame !== null };
+    const first = { selections: selections.length, scheduled: pp.brushMoveFrame !== null };
     pp.continueBrushGesture(pp.h * 0.6);
     const pending = pp.brushMoveFrame;
     pp.continueBrushGesture(pp.h * 0.7);
-    const busy = { requests, coalesced: pending !== null && pending === pp.brushMoveFrame };
+    const busy = {
+      selections: selections.length,
+      coalesced: pending !== null && pending === pp.brushMoveFrame,
+    };
+    // The first selection draws its density as soon as the brush worker returns it.
+    await selections[0];
+    const drawn = { requests };
     pp.endBrushGesture();
-    return { first, busy, cancelled: pp.brushMoveFrame === null };
+    return { first, busy, drawn, cancelled: pp.brushMoveFrame === null };
   });
-  expect(result.first).toEqual({ requests: 1, scheduled: true });
-  expect(result.busy).toEqual({ requests: 1, coalesced: true });
+  expect(result.first).toEqual({ selections: 1, scheduled: true });
+  expect(result.busy).toEqual({ selections: 1, coalesced: true });
+  expect(result.drawn).toEqual({ requests: 1 });
   expect(result.cancelled).toBe(true);
 });
 
@@ -850,14 +868,21 @@ test("Canvas-only continuous images draw and brushes stay columnar until publica
     const pp = (window as unknown as CanvasWindow).hiplot_last_instance.parallelPlot();
     return pp.continuousFrame > 0 && !pp.linesBusy;
   });
-  const result = await page.evaluate(() => {
+  const result = await page.evaluate(async () => {
     const pp = (window as unknown as CanvasWindow).hiplot_last_instance.parallelPlot();
-    const masks = pp.brushMasks();
+    const masks = pp.brushSelection();
     const selectedRows = masks.selectedRows.bind(masks);
     let materializations = 0;
     masks.selectedRows = (mask) => {
       materializations += 1;
       return selectedRows(mask);
+    };
+    // Selections arrive from the brush worker: the newest brush settles once it is drawn.
+    const brush = pp.pplot.brush;
+    let brushing = Promise.resolve();
+    pp.pplot.brush = (publish) => {
+      brushing = brush(publish);
+      return brushing;
     };
     const canvas = pp.foreground_ref.current;
     const context = canvas.getContext("2d");
@@ -875,10 +900,11 @@ test("Canvas-only continuous images draw and brushes stay columnar until publica
     pp.startBrushGesture({ sourceEvent: { target }, y: 0.2 * pp.h }, dimension);
     pp.continueBrushGesture(0.65 * pp.h);
     pp.cancelBrushMove();
-    pp.pplot.brush(false);
+    await pp.pplot.brush(false);
     const during = materializations;
     const selected = pp.selectionMask(pp.geometry()).reduce((count, value) => count + value, 0);
     pp.endBrushGesture();
+    await brushing;
     return {
       webgl: pp.webgl,
       workerPresents: pp.worker?.presents,

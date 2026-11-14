@@ -6,12 +6,13 @@
  */
 
 import type { FilterRange } from "../filters";
-import { convert_to_categorical_input, parse_numeric } from "../lib/d3_scales";
-import { type Datapoint, ParamType } from "../types";
+import { ParamType } from "../types";
+import { columnKey } from "./selection_columns";
 import {
   type IndexInterval,
   type SelectionColumn,
   type SelectionIndex,
+  type SelectionIndexRequest,
   type SelectionIndexResponse,
   selectionIntervals,
   visitIntervalDifference,
@@ -47,32 +48,48 @@ interface PendingIndex {
   reject: (error: Error) => void;
 }
 
-async function inlineWorker(): Promise<Worker | null> {
-  if (typeof Worker === "undefined") return null;
-  // The worker is embedded in standalone HTML, never fetched from a sibling file.
-  const { default: InlineWorker } = await import("./selection_entry?worker&inline");
-  return new InlineWorker();
+/** Where columns are sorted: the selection worker, through a port (see connectSelectionWorker). */
+export interface IndexChannel {
+  post(request: SelectionIndexRequest, transfer: Transferable[]): void;
+  /** Delivers every response, and the channel's failure, from now on. */
+  listen(
+    onResponse: (response: SelectionIndexResponse) => void,
+    onFailure: (error: Error) => void,
+  ): void;
+  close(): void;
+}
+
+/** A selection worker's port as an index channel. */
+export function portChannel(port: MessagePort): IndexChannel {
+  return {
+    post: (request, transfer) => port.postMessage(request, transfer),
+    listen: (onResponse, onFailure) => {
+      port.onmessage = ({ data }: MessageEvent<SelectionIndexResponse>) => onResponse(data);
+      port.onmessageerror = () => onFailure(new Error("Selection worker returned unreadable data"));
+    },
+    close: () => port.close(),
+  };
 }
 
 /**
- * Exact brushes over fixed, immutable rows. Columns are sorted once in an inline
- * worker; until ready, the original column scan remains authoritative. Warm
- * moves touch only the symmetric difference of indexed range unions.
+ * Exact brushes over fixed, immutable rows, which it reads as columns from
+ * `columnOf`. Columns are sorted once through `channel`; until a column's
+ * index is ready, scanning the column remains authoritative, and without a
+ * channel it always is. Warm moves touch only the symmetric difference of
+ * indexed range unions.
  *
  * `axisMask` returns a cached snapshot. `select` returns a live intersection
  * buffer, updated in place by subsequent calls, so warm moves need no O(rows)
  * copy. Copy it explicitly if a historical selection is needed.
  */
 export class BrushMasks {
-  readonly rows: ReadonlyArray<Datapoint>;
   private readonly columns = new Map<string, ColumnState>();
   private readonly axes = new Map<string, AxisState>();
   private readonly failures: Uint32Array;
   private readonly selected: Uint8Array;
   private selectedTotal: number;
   private readonly pending = new Map<number, PendingIndex>();
-  private worker: Promise<Worker | null> | null = null;
-  private connected: Worker | null = null;
+  private listening = false;
   private nextId = 0;
   private disposed = false;
   private failure: Error | null = null;
@@ -84,13 +101,13 @@ export class BrushMasks {
   }
 
   constructor(
-    rows: ReadonlyArray<Datapoint>,
-    private readonly createWorker: () => Promise<Worker | null> = inlineWorker,
+    readonly rowCount: number,
+    private readonly columnOf: (range: FilterRange) => SelectionColumn,
+    private readonly channel: IndexChannel | null,
   ) {
-    this.rows = rows;
-    this.failures = new Uint32Array(rows.length);
-    this.selected = new Uint8Array(rows.length).fill(1);
-    this.selectedTotal = rows.length;
+    this.failures = new Uint32Array(rowCount);
+    this.selected = new Uint8Array(rowCount).fill(1);
+    this.selectedTotal = rowCount;
   }
 
   private assertUsable(): void {
@@ -99,53 +116,24 @@ export class BrushMasks {
   }
 
   private column(range: FilterRange): ColumnState {
-    const categorical = range.type === ParamType.CATEGORICAL;
-    const key = JSON.stringify([range.col, categorical]);
+    const key = columnKey(range);
     const cached = this.columns.get(key);
     if (cached !== undefined) return cached;
-    let column: SelectionColumn;
-    if (categorical) {
-      const codes = new Int32Array(this.rows.length).fill(-1);
-      const categories: string[] = [];
-      const codeOf = new Map<string, number>();
-      this.rows.forEach((row, index) => {
-        const raw = row[range.col];
-        if (raw === undefined) return;
-        const category = convert_to_categorical_input(raw);
-        let code = codeOf.get(category);
-        if (code === undefined) {
-          code = categories.length;
-          codeOf.set(category, code);
-          categories.push(category);
-        }
-        codes[index] = code;
-      });
-      column = { kind: "categorical", codes, categories };
-    } else {
-      const values = new Float64Array(this.rows.length);
-      const missing = new Uint8Array(this.rows.length);
-      this.rows.forEach((row, index) => {
-        const raw = row[range.col];
-        if (raw === undefined) missing[index] = 1;
-        else values[index] = parse_numeric(raw);
-      });
-      column = { kind: "numeric", values, missing };
+    const column = this.columnOf(range);
+    const length = column.kind === "numeric" ? column.values.length : column.codes.length;
+    if (length !== this.rowCount) {
+      throw new Error(`Column ${key} has ${length} rows; brushes select among ${this.rowCount}`);
     }
     const state: ColumnState = { column, index: null, ready: null };
     this.columns.set(key, state);
     return state;
   }
 
-  private connect(): Promise<Worker | null> {
-    if (this.worker !== null) return this.worker;
-    this.worker = this.createWorker().then((worker) => {
-      if (this.disposed) {
-        worker?.terminate();
-        return null;
-      }
-      if (worker === null) return null;
-      this.connected = worker;
-      worker.onmessage = ({ data }: MessageEvent<SelectionIndexResponse>) => {
+  private listen(channel: IndexChannel): void {
+    if (this.listening) return;
+    this.listening = true;
+    channel.listen(
+      (data) => {
         if (this.disposed) return;
         const pending = this.pending.get(data.id);
         if (pending === undefined) {
@@ -156,44 +144,44 @@ export class BrushMasks {
         pending.column.index = data.index;
         this.workerWasmBytes = data.wasmMemoryBytes ?? 0;
         pending.resolve();
-      };
-      worker.onerror = (event) => this.fail(new Error(`Selection worker failed: ${event.message}`));
-      worker.onmessageerror = () =>
-        this.fail(new Error("Selection worker returned unreadable data"));
-      return worker;
-    });
-    return this.worker;
+      },
+      (error) => this.fail(error),
+    );
   }
 
   private fail(error: Error): void {
+    if (this.disposed) return;
     this.failure = error;
-    this.connected?.terminate();
+    this.channel?.close();
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
   }
 
   private prepareColumn(state: ColumnState): Promise<void> {
     if (state.ready !== null) return state.ready;
-    state.ready = this.connect().then((worker) => {
-      if (worker === null || this.disposed) return;
+    const channel = this.channel;
+    if (channel === null) {
+      state.ready = Promise.resolve();
+      return state.ready;
+    }
+    this.listen(channel);
+    state.ready = new Promise<void>((resolve, reject) => {
       if (this.failure !== null) throw this.failure;
-      return new Promise<void>((resolve, reject) => {
-        const id = ++this.nextId;
-        this.pending.set(id, { column: state, resolve, reject });
-        const column = state.column;
-        // Keep the source arrays for the exact pending-index scan.
-        if (column.kind === "numeric") {
-          const values = column.values.slice();
-          const missing = column.missing.slice();
-          worker.postMessage({ id, column: { ...column, values, missing } }, [
-            values.buffer,
-            missing.buffer,
-          ]);
-        } else {
-          const codes = column.codes.slice();
-          worker.postMessage({ id, column: { ...column, codes } }, [codes.buffer]);
-        }
-      });
+      const id = ++this.nextId;
+      this.pending.set(id, { column: state, resolve, reject });
+      const column = state.column;
+      // Keep the source arrays for the exact pending-index scan.
+      if (column.kind === "numeric") {
+        const values = column.values.slice();
+        const missing = column.missing.slice();
+        channel.post({ id, column: { ...column, values, missing } }, [
+          values.buffer,
+          missing.buffer,
+        ]);
+      } else {
+        const codes = column.codes.slice();
+        channel.post({ id, column: { ...column, codes } }, [codes.buffer]);
+      }
     });
     // Automatic warming cannot surface an unhandled rejection. Explicit prepare
     // rejects, and later selection calls surface the same failure.
@@ -290,11 +278,6 @@ export class BrushMasks {
     return this.selectedTotal;
   }
 
-  /** Whether `mask` is the live mask `select` returns, whose rows `selectedCount` counts. */
-  isLive(mask: Uint8Array): boolean {
-    return mask === this.selected;
-  }
-
   private updateAxis(dimension: string, selection: AxisSelection): AxisState {
     // JSON's default NaN/Infinity -> null conversion would alias distinct bounds.
     const key = JSON.stringify(selection, (_, value) =>
@@ -306,8 +289,8 @@ export class BrushMasks {
       axis = {
         key: "",
         groups: new Map(),
-        membership: new Uint32Array(this.rows.length),
-        mask: new Uint8Array(this.rows.length),
+        membership: new Uint32Array(this.rowCount),
+        mask: new Uint8Array(this.rowCount),
         snapshot: null,
         active: false,
       };
@@ -336,7 +319,7 @@ export class BrushMasks {
       } else {
         const wasSelected = this.scanGroup(before);
         const isSelected = this.scanGroup(after);
-        for (let row = 0; row < this.rows.length; ++row) {
+        for (let row = 0; row < this.rowCount; ++row) {
           const oldValue = wasSelected(row);
           const newValue = isSelected(row);
           if (oldValue !== newValue) change(row, newValue);
@@ -433,17 +416,11 @@ export class BrushMasks {
     return rows;
   }
 
-  /** The selected rows, in their original order. Materializing rows is O(rows). */
-  selectedRows(selected: Uint8Array): Datapoint[] {
-    return this.rows.filter((_, index) => selected[index] === 1);
-  }
-
-  /** Release the worker and column/axis caches on unmount or row replacement. */
+  /** Releases the index channel and column/axis caches on unmount or row replacement. */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.connected?.terminate();
-    this.connected = null;
+    this.channel?.close();
     for (const pending of this.pending.values()) pending.resolve();
     this.pending.clear();
     this.axes.clear();

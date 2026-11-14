@@ -1,4 +1,4 @@
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Worker } from "@playwright/test";
 import type { HiPlot } from "../src/component";
 
 /**
@@ -7,6 +7,24 @@ import type { HiPlot } from "../src/component";
  * renderer remove the hand-over before the page loads. OffscreenCanvas stays,
  * so the page's continuous density keeps its GPU kernel.
  */
+/** The page's workers that draw the plot's lines, found by the name the plot gives them. */
+export async function renderWorkers(page: Page): Promise<Worker[]> {
+  const named = await Promise.all(
+    page.workers().map(async (worker) => ({
+      worker,
+      name: await worker.evaluate(() => (self as unknown as { name: string }).name),
+    })),
+  );
+  return named.filter(({ name }) => name === "hiplot-render").map(({ worker }) => worker);
+}
+
+/** The plot's one render worker. */
+export async function renderWorker(page: Page): Promise<Worker> {
+  const workers = await renderWorkers(page);
+  if (workers.length !== 1) throw new Error(`Expected one render worker, found ${workers.length}`);
+  return workers[0];
+}
+
 export async function useDirectRenderer(page: Page): Promise<void> {
   await page.addInitScript(() => {
     Object.defineProperty(HTMLCanvasElement.prototype, "transferControlToOffscreen", {

@@ -35,8 +35,16 @@ async function boxOf(
   return box;
 }
 
-/** Brushes the parallel plot's `dimension` axis between two fractions of its height. */
+/**
+ * Brushes the parallel plot's `dimension` axis between two fractions of its
+ * height, and waits for the selection it publishes once the brush worker
+ * returns it.
+ */
 async function brushAxis(page: Page, dimension: string, from: number, to: number): Promise<void> {
+  await page.evaluate(() => {
+    const win = window as unknown as HiPlotWindow & { __beforeBrush?: unknown };
+    win.__beforeBrush = win.hiplot_last_instance.state.rows_selected;
+  });
   const overlay = await boxOf(
     page
       .locator("svg g.dimension")
@@ -48,6 +56,10 @@ async function brushAxis(page: Page, dimension: string, from: number, to: number
   await page.mouse.down();
   await page.mouse.move(x, overlay.y + overlay.height * to, { steps: 6 });
   await page.mouse.up();
+  await page.waitForFunction(() => {
+    const win = window as unknown as HiPlotWindow & { __beforeBrush?: unknown };
+    return win.hiplot_last_instance.state.rows_selected !== win.__beforeBrush;
+  });
 }
 
 /**

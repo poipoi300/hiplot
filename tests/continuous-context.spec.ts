@@ -1,6 +1,12 @@
 import { loadParallelBenchmark } from "../bench/parallel";
 import { expect, test } from "./fixtures";
-import { exposeShownPixels, type ShownPixelsWindow, warmParallelWorker } from "./plot";
+import {
+  exposeShownPixels,
+  renderWorker,
+  renderWorkers,
+  type ShownPixelsWindow,
+  warmParallelWorker,
+} from "./plot";
 
 interface ContextWindow extends ShownPixelsWindow {
   __parallelProbe: {
@@ -23,7 +29,7 @@ test("lost worker WebGL preserves histograms and subsequent images via CPU", asy
     "low",
   );
   await warmParallelWorker(page);
-  const worker = page.workers()[0];
+  const worker = await renderWorker(page);
   expect(worker).toBeDefined();
   await worker.evaluate(() => {
     const original = WebGL2RenderingContext.prototype.isContextLost;
@@ -65,6 +71,6 @@ test("lost worker WebGL preserves histograms and subsequent images via CPU", asy
       };
     });
     expect(image).toEqual({ rows: 300, nonblank: true });
-    expect(page.workers()).toHaveLength(1);
+    expect(await renderWorkers(page)).toHaveLength(1);
   }
 });

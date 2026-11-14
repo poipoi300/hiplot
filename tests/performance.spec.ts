@@ -291,7 +291,7 @@ test("scrolling and its settle redraw remain continuous without sampling or exac
   expect(counts.every((count) => count === 50)).toBe(true);
 });
 
-test("continuous brushing presents density while worker jobs are slower than input", async ({
+test("continuous brushing presents density while render worker jobs are slower than input", async ({
   page,
 }) => {
   await upload(page, 12_000, `&hip.PARALLEL_PLOT.renderQuality=${encodeURIComponent('"low"')}`);
@@ -319,6 +319,9 @@ test("continuous brushing presents density while worker jobs are slower than inp
       .find((node) => (node as SVGGElement & { __data__: string }).__data__ === dimension)
       ?.querySelector(".overlay");
     if (!target) throw new Error("No continuous brush overlay");
+    // Only the render worker is slow: brush selections still arrive at their own pace.
+    const renderWorker = (worker as unknown as { worker: Worker | null }).worker;
+    if (renderWorker === null) throw new Error("The render worker has not started");
     const postMessage = Worker.prototype.postMessage;
     let workerJobs = 0;
     Worker.prototype.postMessage = function (
@@ -326,12 +329,17 @@ test("continuous brushing presents density while worker jobs are slower than inp
       message: unknown,
       options?: Transferable[] | StructuredSerializeOptions,
     ) {
-      workerJobs += 1;
       const send = postMessage.bind(this);
-      setTimeout(() => {
+      const post = (): void => {
         if (Array.isArray(options)) send(message, options);
         else send(message, options);
-      }, 80);
+      };
+      if (this !== renderWorker) {
+        post();
+        return;
+      }
+      workerJobs += 1;
+      setTimeout(post, 80);
     };
     const initialFrame = pp.continuousFrame;
     const drafts: boolean[] = [];

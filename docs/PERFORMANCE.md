@@ -3624,3 +3624,37 @@ still scans every row; on an axis whose index is ready, a move takes about
 10 ms at that slowdown. Phones whose canvases exceed the block budget (25
 layers at device pixel ratio 3 rarely fit) or that lack float blending draw full
 frames, so for them the main thread's share is the first gesture's whole cost.
+
+### Selecting rows on a brush worker
+
+After those changes, a brush's first move on an axis still held the page's
+main thread for its selection: activating an axis visited every row its brush
+left out (about every row, for a new brush), a scattered write per row in the
+column's sorted order, and every move read and copied the whole selection there.
+Since 2026-11-13 the selection state (`BrushMasks`) lives on a brush worker
+(`connectBrushWorker`), which sorts columns through the selection worker over a
+port of its own. The page builds each brushed column from the rows once (when
+the pointer reaches its brush band, or at its first brush), sends it, and then
+sends only brush ranges; the brush worker returns the selection, its count and,
+for retained blocks, the rows the other axes pass. One request is in flight at
+a time and a newer one replaces the request waiting, so the worker always works
+on the newest brushes; a selection made elsewhere drops brush results still in
+flight. Selection buffers travel back and forth between the page and the worker
+instead of one allocated per move. Without workers, or after they fail (the
+error is rethrown), the same selection runs on the page. The flow badges also
+skip their per-axis DOM pass on plots that show none.
+
+First gesture on fresh axes of 50,000 rows × 10 numeric columns, real mouse
+events, 6× CPU slowdown, headless Chromium, three interleaved loads each against
+the previous commit (`7b95d70`) on a machine loaded by other work. Main-thread
+long tasks during the gesture and input-to-next-frame latency of its 30 moves:
+
+| First brushed axis | `7b95d70` | Brush worker |
+|---|---|---|
+| Long tasks, total ms | 764 / 450 / 150 | 127 / 66 / 59 |
+| Longest task ms | 115 / 79 / 84 | 72 / 66 / 59 |
+| Move latency p95 ms | 89 / 87 / 44 | 64 / 63 / 50 |
+
+A profile of the first three moves shows no selection work left on the main
+thread; what remains is drawing the SVG brush and its value tags, about 9 ms a
+move at that slowdown (1.5 ms without it).

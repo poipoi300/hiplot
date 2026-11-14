@@ -52,6 +52,7 @@ import {
   tickCountFor,
   valueFormatter,
 } from "./axisformat";
+import { BrushSelection, type SelectionResult } from "./brush_selection";
 import {
   type AxisBrush,
   brushesAfterClick,
@@ -84,7 +85,7 @@ import {
 } from "./performance";
 import type { ContinuousMetrics } from "./render_types";
 import { RenderWorker, type WorkerFrame } from "./render_worker";
-import { type AxisSelection, BrushMasks } from "./selection";
+import type { AxisSelection } from "./selection";
 import { monotoneSlope, SPLINE_HANDLE, splineParameter, splineY } from "./spline";
 import {
   type FinishedFrame,
@@ -120,8 +121,11 @@ interface ParallelPlotState {
 
 interface PPlotInternal {
   redraw_axis: () => void;
-  /** Recomputes the selection from the brushes; `publish` hands it to HiPlot. */
-  brush: (publish: boolean) => void;
+  /**
+   * Recomputes the selection from the brushes; `publish` hands it to HiPlot.
+   * Resolves once the selection is drawn, or replaced by a newer one.
+   */
+  brush: (publish: boolean) => Promise<void>;
 }
 
 // DISPLAYS_DATA_DOC_BEGIN
@@ -535,8 +539,15 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   dimensions_dom: d3.Selection<SVGGElement, string, SVGGElement, unknown> | null = null;
   /** Cached per-row pixels, colors and draw order of the filtered rows. */
   private lineGeometry: LineGeometry | null = null;
-  /** Per-axis brush masks over the filtered rows. */
-  private masks: BrushMasks | null = null;
+  /** The brushes' selection over the filtered rows, computed on the brush worker. */
+  private masks: BrushSelection | null = null;
+  /**
+   * Incremented when a selection made elsewhere replaces the brushes' one:
+   * brush selections requested before then are dropped when they arrive.
+   */
+  private selectionEpoch = 0;
+  /** The rows every brushed axis but the focus passes, from the latest brush selection. */
+  private brushPassing: { dimension: string; rows: Uint8Array } | null = null;
   /** Line renderer on the GPU; null when WebGL2 is unavailable and Canvas 2D draws. */
   webgl: WebGLLineRenderer | null = null;
   /** Continuous density on the page, where no render worker draws it. */
@@ -556,7 +567,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** The rows whose lines are drawn: the brush selection, or a selection made elsewhere. */
   private drawnSelection: ReadonlyArray<Datapoint> | null = null;
   /** Live brushes stay columnar until publication; row identity rejects masks from old datasets. */
-  private liveBrushMask: { rows: ReadonlyArray<Datapoint>; mask: Uint8Array } | null = null;
+  private liveBrushMask: {
+    rows: ReadonlyArray<Datapoint>;
+    mask: Uint8Array;
+    count: number;
+  } | null = null;
   /** The last selection this plot handed to HiPlot. */
   private publishedSelection: ReadonlyArray<Datapoint> | null = null;
   /** Incremented by every draw, so a progressive draw stops once superseded. */
@@ -888,6 +903,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       prevProps.rows_selected !== this.props.rows_selected &&
       this.props.rows_selected !== this.publishedSelection;
     if (selectionChanged) {
+      this.selectionEpoch += 1;
       this.liveBrushMask = null;
       this.maskMemo = null;
       this.drawnSelection = this.props.rows_selected;
@@ -1113,7 +1129,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     });
     this.props.persistentState.set(PSTATE_BRUSHES, saved);
     this.sendBrushExtents();
-    this.pplot?.brush(true);
+    void this.pplot?.brush(true);
   }
 
   /**
@@ -1193,7 +1209,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (!this.brushMovePending) return;
     if (!this.brushMoveBlocked()) {
       this.brushMovePending = false;
-      this.pplot?.brush(false);
+      void this.pplot?.brush(false);
     }
     this.brushMoveFrame = requestAnimationFrame(this.runBrushMove);
   };
@@ -1864,13 +1880,14 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       me.fitTickLabels();
     }
 
-    function brush(publish: boolean): void {
+    function brush(publish: boolean): Promise<void> {
       /**
-       * Called whenever a brush changes. Recomputes and draws the selected
-       * lines right away; with `publish`, also draws every brush and hands
-       * the selection to HiPlot, which updates the other displays (done when
-       * a brush gesture ends). A gesture's moves draw their brush themselves
-       * (see continueBrushGesture), ahead of the selection.
+       * Called whenever a brush changes. Asks the brush worker for the
+       * selected rows and draws their lines once they arrive; with `publish`,
+       * also draws every brush and hands the selection to HiPlot, which
+       * updates the other displays (done when a brush gesture ends). A
+       * gesture's moves draw their brush themselves (see
+       * continueBrushGesture), ahead of the selection.
        */
       me.props.context_menu_ref?.current?.hide();
       if (publish) me.drawBrushes();
@@ -1881,33 +1898,15 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
       me.markBrushedTitles(actives);
 
-      // Get lines within the brushes: in any brush of each brushed axis.
-      const selections = new Map<string, AxisSelection>(
-        actives.map((dimension) => [dimension, me.axisRanges(dimension)]),
-      );
-      const masks = me.brushMasks();
-      const mask = masks.select(selections);
-      const canvasSelection =
-        me.webgl === null && !me.continuousMode() ? masks.selectedRows(mask) : null;
-      me.updateFlowBadges(new Set(actives), mask);
-      me.liveBrushMask = { rows: masks.rows, mask };
-      me.maskMemo = null;
-      me.drawnSelection = canvasSelection;
-      me.redrawLines();
-      if (!publish) {
-        return;
-      }
-
-      const selected = canvasSelection ?? masks.selectedRows(mask);
-      const filters = Array.from(selections.values(), (selection) => anyOfRanges(selection));
-      me.drawnSelection = selected;
-      if (me.props.asserts) {
-        me.assertPixelSelectionMatches(actives, filters, selected);
-      }
-      me.publishedSelection = selected;
-      me.props.setSelected(selected, {
-        type: FilterType.All,
-        data: filters,
+      // Lines within the brushes: in any brush of each brushed axis, selected on the brush worker.
+      const selections = me.brushSelections(actives);
+      const masks = me.brushSelection();
+      const epoch = me.selectionEpoch;
+      const focus = me.brushBlocks() ? me.focusDimension : null;
+      return masks.select(selections, focus, publish).then((result) => {
+        if (me.currentBrushResult(masks, epoch, result)) {
+          me.showBrushSelection(masks, actives, selections, result);
+        }
       });
     }
 
@@ -1942,8 +1941,71 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     };
 
     // Initial selection and full foreground
-    brush(true);
+    void brush(true);
     me.sendBrushExtents();
+  }
+
+  /** The ranges each brushed axis selects. */
+  private brushSelections(
+    actives: ReadonlyArray<string> = this.brushedDimensions(),
+  ): Map<string, AxisSelection> {
+    return new Map(actives.map((dimension) => [dimension, this.axisRanges(dimension)]));
+  }
+
+  /**
+   * Whether `result` still applies: requested over the rows shown, from the
+   * brush selection in use, since the last selection made elsewhere.
+   */
+  private currentBrushResult(
+    masks: BrushSelection,
+    epoch: number,
+    result: SelectionResult | null,
+  ): result is SelectionResult {
+    return (
+      result !== null &&
+      this.masks === masks &&
+      masks.rows === this.props.rows_filtered &&
+      this.selectionEpoch === epoch
+    );
+  }
+
+  /**
+   * Draws a brush selection the brush worker returned; when its request
+   * publishes, also hands it to HiPlot, which updates the other displays.
+   */
+  private showBrushSelection(
+    masks: BrushSelection,
+    actives: string[],
+    selections: ReadonlyMap<string, AxisSelection>,
+    result: SelectionResult,
+  ): void {
+    const { mask, count } = result;
+    const previous = this.liveBrushMask?.mask;
+    const canvasSelection =
+      this.webgl === null && !this.continuousMode() && !this.linesOnWorker()
+        ? masks.selectedRows(mask)
+        : null;
+    this.updateFlowBadges(new Set(actives), mask);
+    this.liveBrushMask = { rows: masks.rows, mask, count };
+    // Nothing reads the replaced mask now: the render worker copied it, and the badges hold this one.
+    if (previous !== undefined && previous !== mask) masks.recycle(previous);
+    // Passing rows belong to this selection: a request without a focus leaves none to draw blocks from.
+    this.brushPassing = result.passing;
+    this.maskMemo = null;
+    this.drawnSelection = canvasSelection;
+    this.redrawLines();
+    if (!result.publish) return;
+    const selected = canvasSelection ?? masks.selectedRows(mask);
+    const filters = Array.from(selections.values(), (selection) => anyOfRanges(selection));
+    this.drawnSelection = selected;
+    if (this.props.asserts) {
+      this.assertPixelSelectionMatches(actives, filters, selected);
+    }
+    this.publishedSelection = selected;
+    this.props.setSelected(selected, {
+      type: FilterType.All,
+      data: filters,
+    });
   }
 
   /** What the brushes of one axis select, one value range per brush that selects any value. */
@@ -2339,6 +2401,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   /** The brushes and selection the flow badges were last drawn for. */
   private lastFlow: { brushed: ReadonlySet<string>; mask: Uint8Array } | null = null;
+  /** Whether an axis may show flow badges, which a selection without flows must remove. */
+  private flowBadgesDrawn = false;
   /** Each row's category on a categorical axis, kept while the rows and categories are. */
   private categoryIndexCache = new Map<
     string,
@@ -2372,7 +2436,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         (dimension) => this.yscale[dimension]?.kind === "categorical",
       ).map((flow) => [flow.dimension, flow.from]),
     );
-    const rows = this.brushMasks().rows;
+    // Without badges to draw or remove, a brush move's selection touches no axis.
+    if (flows.size === 0 && !this.flowBadgesDrawn) return;
+    this.flowBadgesDrawn = flows.size > 0;
+    const rows = this.brushSelection().rows;
     const measure = this.textMeasure(FLOW_FONT_WEIGHT, FLOW_FONT_PIXELS);
     this.dimensions_dom?.each((dimension, index, nodes) => {
       const from = flows.get(dimension);
@@ -2583,10 +2650,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return this.lineGeometry;
   }
 
-  brushMasks(): BrushMasks {
+  brushSelection(): BrushSelection {
     if (this.masks === null || this.masks.rows !== this.props.rows_filtered) {
       this.masks?.dispose();
-      this.masks = new BrushMasks(this.props.rows_filtered);
+      this.masks = new BrushSelection(this.props.rows_filtered);
+      // Loaded now, from the first draw: a brush's first move would otherwise wait for them.
+      this.masks.start();
+      this.brushPassing = null;
     }
     return this.masks;
   }
@@ -2682,20 +2752,26 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       // Gestures and scrolls draw their own frames; a removed axis has nothing to brush.
       if (this.interactiveFrame() || !this.state.dimensions.includes(dimension)) return;
       this.warmBrushColumn(dimension);
-      if (!this.brushBlocks()) return;
-      const previous = this.focusDimension;
-      this.focusDimension = dimension;
-      this.preparedDimension = dimension;
-      try {
-        // Without a brush selection to focus, the redraw would draw every row for nothing.
-        if (this.brushFocus(this.geometry()) === null) {
-          this.focusDimension = previous;
-          return;
+      // Without a brush selection to focus, the redraw would draw every row for nothing.
+      if (!this.brushBlocks() || this.liveBrushMask?.rows !== this.props.rows_filtered) return;
+      const masks = this.brushSelection();
+      const epoch = this.selectionEpoch;
+      const actives = this.brushedDimensions();
+      const selections = this.brushSelections(actives);
+      void masks.select(selections, dimension, false).then((result) => {
+        if (!this.currentBrushResult(masks, epoch, result)) return;
+        // Shown even once a gesture began: it may carry the publication of a request it replaced.
+        const prepared = !this.interactiveFrame();
+        if (prepared) {
+          this.focusDimension = dimension;
+          this.preparedDimension = dimension;
         }
-        this.redrawLines();
-      } finally {
-        this.preparedDimension = null;
-      }
+        try {
+          this.showBrushSelection(masks, actives, selections, result);
+        } finally {
+          this.preparedDimension = null;
+        }
+      });
     }, BRUSH_PREPARE_MS);
   }
 
@@ -2705,7 +2781,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
    */
   private warmBrushColumn(dimension: string): void {
     const whole = brushRange(dimension, scale_pixels_range(this.yscale[dimension], [0, this.h]));
-    if (whole !== null) this.brushMasks().warm([whole]);
+    if (whole !== null) this.brushSelection().warm(whole);
   }
 
   private cancelBrushPreparation(): void {
@@ -2716,12 +2792,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** The latest brushed axis and the rows the other axes' brushes pass, for brush selections. */
   private brushFocus(geometry: LineGeometry): LineFocus | null {
     const dimension = this.focusDimension;
-    const masks = this.masks;
+    const passing = this.brushPassing;
     if (
       dimension === null ||
       !this.brushBlocks() ||
-      masks === null ||
-      masks.rows !== geometry.rows ||
+      passing?.dimension !== dimension ||
+      this.masks?.rows !== geometry.rows ||
       this.liveBrushMask?.rows !== geometry.rows
     ) {
       return null;
@@ -2730,7 +2806,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (axis === -1) return null;
     return {
       axis,
-      rows: masks.passingExcept(dimension),
+      rows: passing.rows,
       active: this.brushGesture?.dimension === dimension || this.preparedDimension === dimension,
     };
   }
@@ -2912,8 +2988,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   private lineFrame(geometry: LineGeometry, mask: Uint8Array): LineFrame {
     let selectedCount = 0;
-    if (this.masks?.isLive(mask)) {
-      selectedCount = this.masks.selectedCount;
+    if (this.liveBrushMask?.mask === mask) {
+      selectedCount = this.liveBrushMask.count;
     } else {
       for (let i = 0; i < mask.length; ++i) {
         selectedCount += mask[i];

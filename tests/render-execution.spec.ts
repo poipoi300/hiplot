@@ -4,7 +4,7 @@ import { expect, test } from "./fixtures";
 
 interface ExecutionWindow {
   __parallelProbe: { instance: HiPlot };
-  __workers?: number;
+  __workers?: string[];
   __localDraws?: number;
 }
 
@@ -71,7 +71,7 @@ for (const quality of ["full", "low"] as const) {
     await page.addInitScript(() => {
       const OriginalWorker = Worker;
       const win = window as unknown as ExecutionWindow;
-      win.__workers = 0;
+      win.__workers = [];
       win.__localDraws = 0;
       // Lines are instanced draws; presenting a worker's image is a plain one.
       const draw = WebGL2RenderingContext.prototype.drawArraysInstanced;
@@ -84,7 +84,7 @@ for (const quality of ["full", "low"] as const) {
       window.Worker = class extends OriginalWorker {
         constructor(url: string | URL, options?: WorkerOptions) {
           super(url, options);
-          win.__workers = (win.__workers ?? 0) + 1;
+          win.__workers?.push(options?.name ?? "");
         }
       };
     });
@@ -107,7 +107,8 @@ for (const quality of ["full", "low"] as const) {
       return { localDraws: win.__localDraws, workers: win.__workers };
     });
     expect(result.localDraws).toBe(0);
-    expect(result.workers).toBe(1);
+    // One render worker; the others select brushed rows.
+    expect(result.workers?.filter((name) => name === "hiplot-render")).toHaveLength(1);
   });
 }
 

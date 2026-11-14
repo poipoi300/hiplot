@@ -1,6 +1,7 @@
 import { loadParallelBenchmark } from "../bench/parallel";
+import type { BrushSelection, SelectionResult } from "../src/parallel/brush_selection";
+import type { ContinuousRenderer } from "../src/parallel/continuous_renderer";
 import type { RenderWorker } from "../src/parallel/render_worker";
-import type { BrushMasks } from "../src/parallel/selection";
 import type { WebGLLineRenderer } from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
 import { useDirectRenderer, warmParallelWorker } from "./plot";
@@ -9,12 +10,12 @@ interface InteractionPlot {
   h: number;
   state: { dimensions: string[] };
   webgl: WebGLLineRenderer;
-  continuous: { busy: boolean; refining: boolean } | null;
+  continuous: (Pick<ContinuousRenderer, "draw"> & { busy: boolean; refining: boolean }) | null;
   worker: Pick<RenderWorker, "busy" | "drawExact" | "drawContinuous"> | null;
   startBrushGesture: (event: { sourceEvent: { target: Element }; y: number }, axis: string) => void;
   continueBrushGesture: (y: number) => void;
   endBrushGesture: () => void;
-  brushMasks: () => BrushMasks;
+  brushSelection: () => BrushSelection;
   drawWithWebGL: (renderer: WebGLLineRenderer) => void;
   drawContinuous: () => void;
   brushSpans: (dimension: string) => { top: number; bottom: number }[];
@@ -82,11 +83,15 @@ for (const [quality, renderer] of [
       if (active === null) throw new Error(`Missing ${renderer} renderer`);
       Object.defineProperty(active, "busy", { configurable: true, get: () => busy });
       let selections = 0;
-      const masks = pp.brushMasks();
+      // Selections arrive from the brush worker; lines are drawn once the newest one does.
+      let selected: Promise<unknown> = Promise.resolve();
+      const masks = pp.brushSelection();
       const select = masks.select.bind(masks);
       masks.select = (...args) => {
         selections++;
-        return select(...args);
+        const selection = select(...args);
+        selected = selection;
+        return selection;
       };
       const rendered: number[] = [];
       const drawExact = pp.drawWithWebGL.bind(pp);
@@ -118,6 +123,7 @@ for (const [quality, renderer] of [
       const inFlight = { selections, renders: rendered.length };
       busy = false;
       await frame();
+      await selected;
       await frame();
       const caughtUp = { selections, rendered: [...rendered] };
       busy = true;
@@ -125,6 +131,7 @@ for (const [quality, renderer] of [
       await frame();
       const beforeRelease = selections;
       pp.endBrushGesture();
+      await selected;
       return { overlays, inFlight, caughtUp, beforeRelease, released: { selections, rendered } };
     }, renderer);
     expect(result.overlays).toHaveLength(3);
@@ -152,13 +159,20 @@ test("a brush dispatches immediately while continuous release refinement is busy
     { rows: 50_000, columns: 4, discrete: false, seed: 20261109 },
     "low",
   );
-  const selections = await page.evaluate(() => {
+  const result = await page.evaluate(async () => {
     const pp = (
       window as unknown as {
         __parallelProbe: { instance: { parallelPlot: () => InteractionPlot } };
       }
     ).__parallelProbe.instance.parallelPlot();
     if (pp.continuous === null) throw new Error("Missing continuous renderer");
+    const continuous = pp.continuous;
+    let draws = 0;
+    const draw = continuous.draw.bind(continuous);
+    continuous.draw = (...args) => {
+      draws++;
+      draw(...args);
+    };
     Object.defineProperty(pp.continuous, "busy", { configurable: true, get: () => true });
     Object.defineProperty(pp.continuous, "refining", { configurable: true, get: () => true });
     const dimension = pp.state.dimensions[1];
@@ -168,17 +182,23 @@ test("a brush dispatches immediately while continuous release refinement is busy
     const target = group?.querySelector(".overlay");
     if (!target) throw new Error("Missing brush axis");
     let selections = 0;
-    const masks = pp.brushMasks();
+    let selected: Promise<SelectionResult | null> = Promise.resolve(null);
+    const masks = pp.brushSelection();
     const select = masks.select.bind(masks);
     masks.select = (...args) => {
       selections++;
-      return select(...args);
+      selected = select(...args);
+      return selected;
     };
     pp.startBrushGesture({ sourceEvent: { target }, y: pp.h * 0.2 }, dimension);
     pp.continueBrushGesture(pp.h * 0.6);
-    return selections;
+    // Requested within the move, while refinement is busy; drawn once the selection arrives.
+    const requested = selections;
+    const drawsBefore = draws;
+    await selected;
+    return { requested, drawn: draws - drawsBefore };
   });
-  expect(selections).toBe(1);
+  expect(result).toEqual({ requested: 1, drawn: 1 });
 });
 
 for (const quality of ["full", "low"] as const) {
@@ -205,50 +225,71 @@ for (const quality of ["full", "low"] as const) {
         .find((node) => (node as SVGGElement & { __data__: string }).__data__ === dimension)
         ?.querySelector(".overlay");
       if (!target) throw new Error("Missing brush axis");
-      let selections = 0;
-      const masks = pp.brushMasks();
+      // Each selection request, by the brush bottom it selects; the brush worker
+      // answers them in order, and a request still waiting is replaced by a newer one.
+      const requested: number[] = [];
+      const delivered: number[] = [];
+      let drawing: number | null = null;
+      let newest: Promise<unknown> = Promise.resolve();
+      const masks = pp.brushSelection();
       const select = masks.select.bind(masks);
       masks.select = (...args) => {
-        selections++;
-        return select(...args);
+        const bottom = pp.brushSpans(dimension)[0].bottom / pp.h;
+        requested.push(bottom);
+        const selection = select(...args);
+        // Runs before the plot draws the result, which it chains after this returns.
+        void selection.then((result) => {
+          if (result === null) return;
+          delivered.push(bottom);
+          drawing = bottom;
+        });
+        newest = selection;
+        return selection;
       };
-      const posted: number[] = [];
-      const record = (): void => {
-        posted.push(pp.brushSpans(dimension)[0].bottom / pp.h);
-      };
+      const posted: (number | null)[] = [];
       const drawExact = worker.drawExact.bind(worker);
       worker.drawExact = (...args) => {
-        record();
+        posted.push(drawing);
         drawExact(...args);
       };
       const drawContinuous = worker.drawContinuous.bind(worker);
       worker.drawContinuous = (...args) => {
-        record();
+        posted.push(drawing);
         drawContinuous(...args);
       };
       const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       pp.startBrushGesture({ sourceEvent: { target }, y: pp.h * 0.2 }, dimension);
-      const steps: { selections: number; posted: number[] }[] = [];
+      const selections: number[] = [];
       for (const fractions of [
         [0.45, 0.5],
         [0.6, 0.65, 0.7],
       ]) {
         for (const fraction of fractions) pp.continueBrushGesture(pp.h * fraction);
-        steps.push({ selections, posted: [...posted] });
+        selections.push(requested.length);
         await frame();
       }
-      steps.push({ selections, posted: [...posted] });
+      selections.push(requested.length);
+      await newest;
+      const observed = {
+        selections,
+        requested: [...requested],
+        delivered: [...delivered],
+        posted: [...posted],
+      };
       pp.endBrushGesture();
-      return steps;
+      return observed;
     });
     // The first move selects at once; each display frame then selects the latest
-    // move before it, and none waits for the busy worker.
-    expect(result.map((step) => step.selections)).toEqual([1, 2, 3]);
-    const expected = [[0.45], [0.45, 0.5], [0.45, 0.5, 0.7]];
-    for (const [index, step] of result.entries()) {
-      expect(step.posted).toHaveLength(expected[index].length);
-      for (const [draw, fraction] of expected[index].entries())
-        expect(step.posted[draw]).toBeCloseTo(fraction, 6);
-    }
+    // move before it, and none waits for the busy worker: every selection the
+    // brush worker returns posts its frame at once.
+    expect(result.selections).toEqual([1, 2, 3]);
+    expect(result.requested).toHaveLength(3);
+    for (const [index, fraction] of [0.45, 0.5, 0.7].entries())
+      expect(result.requested[index]).toBeCloseTo(fraction, 6);
+    // The first request is sent at once and the last is the newest: both arrive.
+    // The middle one is replaced only if it was still waiting for the first.
+    expect(result.delivered[0]).toBe(result.requested[0]);
+    expect(result.delivered[result.delivered.length - 1]).toBe(result.requested[2]);
+    expect(result.posted).toEqual(result.delivered);
   });
 }
