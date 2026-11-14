@@ -141,9 +141,14 @@ export function scatterStats(
   if (line === null) {
     return { kind: "numeric", summary, logX, logY, fit: null };
   }
-  const finite = us.filter(Number.isFinite);
-  const low = Math.min(...finite);
-  const high = Math.max(...finite);
+  let low = Number.POSITIVE_INFINITY;
+  let high = Number.NEGATIVE_INFINITY;
+  for (const u of us) {
+    if (Number.isFinite(u)) {
+      low = Math.min(low, u);
+      high = Math.max(high, u);
+    }
+  }
   const points = Array.from({ length: LINE_POINTS }, (_, index) => {
     const u = low + ((high - low) * index) / (LINE_POINTS - 1);
     return toData(u, line.intercept + line.slope * u);

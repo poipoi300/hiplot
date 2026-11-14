@@ -24,6 +24,16 @@ describe("scatter statistics", () => {
     expect(stats.fit.points[stats.fit.points.length - 1][1]).toBeCloseTo(41);
   });
 
+  test("a straight fit spans a million selected points", () => {
+    const data = rows(Array.from({ length: 1_000_000 }, (_, i) => ({ a: i, b: 1 - i })));
+    const stats = scatterStats(data, numeric("a"), numeric("b"), "linear");
+    if (stats.kind !== "numeric" || stats.fit?.mode !== "linear") {
+      throw new Error("Expected a straight fit");
+    }
+    expect(stats.fit.points[0]).toEqual([0, 1]);
+    expect(stats.fit.points[stats.fit.points.length - 1][0]).toBe(999_999);
+  });
+
   test("log axes are fitted in log space and the fit comes back as values", () => {
     // y = x^2 is a straight line of slope 2 in log-log space.
     const data = rows([1, 10, 100, 1000].map((value) => ({ a: value, b: value ** 2 })));
