@@ -1850,9 +1850,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         .text("Drag up or down to add a brush on this axis; click to remove all its brushes");
       brushBands.call(me.brushDrag);
       brushBands
-        .on("pointerenter", (_event: PointerEvent, dimension: string) =>
-          me.prepareBrushFocus(dimension),
-        )
+        .on("pointerenter", (event: PointerEvent, dimension: string) => {
+          // A finger never rests before it brushes: its axis's column is warmed
+          // at once, its blocks drawn by its first move, as a tap draws none.
+          if (event.pointerType === "touch") me.warmBrushColumn(dimension);
+          else me.prepareBrushFocus(dimension);
+        })
         .on("pointerleave", () => me.cancelBrushPreparation());
       me.drawBrushes();
       me.fitTickLabels();
@@ -2651,10 +2654,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   /**
    * After the pointer rests on an axis's brush band for BRUSH_PREPARE_MS,
-   * readies a brush gesture on it: builds and sorts its selection column, and
-   * draws the current brush selection once more from its blocks, drawing them
-   * if the worker lacks them. The gesture's first move then reads neither
-   * every row nor draws every line.
+   * readies a brush gesture on it: warms its selection column, and draws the
+   * current brush selection once more from its blocks, drawing them if the
+   * worker lacks them. The gesture's first move then reads neither every row
+   * nor draws every line.
    */
   private prepareBrushFocus(dimension: string): void {
     this.cancelBrushPreparation();
@@ -2663,8 +2666,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.brushPreparation = null;
       // Gestures and scrolls draw their own frames; a removed axis has nothing to brush.
       if (this.interactiveFrame() || !this.state.dimensions.includes(dimension)) return;
-      const whole = brushRange(dimension, scale_pixels_range(this.yscale[dimension], [0, this.h]));
-      if (whole !== null) this.brushMasks().warm([whole]);
+      this.warmBrushColumn(dimension);
       if (!this.brushBlocks()) return;
       const previous = this.focusDimension;
       this.focusDimension = dimension;
@@ -2680,6 +2682,15 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         this.preparedDimension = null;
       }
     }, BRUSH_PREPARE_MS);
+  }
+
+  /**
+   * Builds `dimension`'s selection column and starts sorting it: until the
+   * sorted index returns, every brush move on the axis scans every row.
+   */
+  private warmBrushColumn(dimension: string): void {
+    const whole = brushRange(dimension, scale_pixels_range(this.yscale[dimension], [0, this.h]));
+    if (whole !== null) this.brushMasks().warm([whole]);
   }
 
   private cancelBrushPreparation(): void {

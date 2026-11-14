@@ -3294,14 +3294,17 @@ partly selected draws every row instead. Overflowing slots draw directly into
 the density targets.
 
 The layers take at most 1 GiB (`BLOCK_MEMORY_BYTES`): 153 layers of
-944 × 465 RGBA32F at device pixel ratio 1, 143 blocks of about 7,000 rows.
+944 × 465 RGBA32F at device pixel ratio 1, 143 blocks of about 7,000 rows
+(142 since the block count follows the rows' square root; see **The first
+gesture on a new axis**).
 When fewer than 16 focus blocks fit, as at device pixel ratio 2 on a large
 plot, and on software rasterizers, brushing keeps its draft frames. Blocks stay
 allocated while the plot can reuse them (the next gesture on the same axis, the
 release frame); the first frame that cannot use them frees them.
 
 Building a fresh axis's blocks costs a full frame, so the plot prepares the
-axis a brush is likely to start on: after the pointer rests 120 ms on an axis's
+axis a brush is likely to start on (a touch only warms its column; see **The
+first gesture on a new axis**): after the pointer rests 120 ms on an axis's
 brush band, it builds and sorts that axis's selection column
 (`BrushMasks.warm`) and redraws the same selection with that axis as an active
 focus, which builds its blocks in the worker: the same selection, within the
@@ -3578,3 +3581,46 @@ before), p50 / p95 ms, one load per data kind, the display at 30 Hz under load:
 
 The integer `drag60` p95 comes from two slow GPU frames (fence p95 14.2 ms);
 every other phase stays under 16.6 ms.
+
+### The first gesture on a new axis
+
+A brush gesture on an axis without retained blocks builds them in its first
+frame. The block count was one per 256 focus rows up to what the 1 GiB layer
+budget held: about 60 canvas-sized layers at 1000 × 700 coloring by the highest
+value, whatever the row count above 15,000 rows. At 50,000 rows the first frame
+allocated and cleared about 1 GiB to spare redrawing a few hundred rows a frame.
+A brush frame sums every layer and redraws the rows of the blocks a brush's
+edges cut, so B blocks of R rows cost about B layers plus a few times R / B
+rows. The count is now sqrt(R / 50), at least 16 and at most one per 256 rows,
+within the budget (`blockCountFor`). Worker frame times for a gesture on a fresh
+axis, RTX 5090, 1000 × 700, highest-value coloring, two runs each, at 50,000
+rows (first frame; steady frame p50):
+
+| Axis | One per 256 rows, to the budget (≈60) | 32 blocks |
+|---|---|---|
+| First brushed | 104–114; 2.2–2.5 ms | 67–68; 2.5–2.6 ms |
+| Second brushed | 47; 1.2–1.6 ms | 43–44; 1.3–1.4 ms |
+| Third brushed | 25–26; 1.1–1.2 ms | 25–28; 1.2 ms |
+
+Fewer blocks build faster still (8: 52–57 ms; 16: 57–63 ms) but grow steady
+frames at larger counts: at 1M rows coloring by the mean, where the budget holds
+about 134 layers, sqrt(R / 200) = 71 blocks built 10–18% faster but took about
+1 ms more per brush frame (first axis p50 5.5 → 6.7 ms). With sqrt(R / 50) =
+142, 1M rows keep what the budget holds in every coloring mode, as before. With
+fatter blocks, an axis carrying several separate brushes reaches the
+half-the-rows-partly-selected fallback sooner: 16 blocks fall back to full frames
+from about five brushes on one axis. The rest of a first frame draws every focus
+row once, about a full frame, which only preparing the axis ahead removes.
+
+A finger never rests on a brush band before it brushes, so the 120 ms rest
+never prepared a touch's axis. A touch's pointer entering a band now builds the
+axis's selection column and starts sorting it at once, before its pointer down,
+without drawing blocks: a tap, which removes brushes, does not wait for a block
+build, and the gesture's first move builds them. On the page's main thread,
+under a 6× CPU slowdown at 50,000 rows, the first moves of a gesture on a fresh
+axis took 89, 35, 27, 25 ms without it and 57, 27, 22, 14 ms with it (19 ms of
+column building before the gesture). Until the sorted index returns, a move
+still scans every row; on an axis whose index is ready, a move takes about
+10 ms at that slowdown. Phones whose canvases exceed the block budget (25
+layers at device pixel ratio 3 rarely fit) or that lack float blending draw full
+frames, so for them the main thread's share is the first gesture's whole cost.

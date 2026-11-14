@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   BLOCK_MEMORY_BYTES,
+  BLOCK_ROWS_PER_LAYER,
   BlockSelection,
   blockCountFor,
   blocksFit,
@@ -307,14 +308,24 @@ describe("PartialSlots", () => {
 });
 
 describe("blockCountFor", () => {
-  test("fits the layer memory, the device's layers and useful block sizes", () => {
+  test("balances layers against edge rows within the layer memory and the device's layers", () => {
     const pixels = 1000 * 500;
     const layerBytes = 16;
     const affordable =
       Math.floor(BLOCK_MEMORY_BYTES / (pixels * layerBytes)) - 1 - 2 * PARTIAL_SLOTS;
+    expect(blockCountFor(10_000_000, pixels, layerBytes, 2048)).toBe(affordable);
+    expect(blockCountFor(10_000_000, pixels, layerBytes, 64)).toBe(64 - 1 - 2 * PARTIAL_SLOTS);
+    // The square root of the rows: four times the rows takes twice the blocks.
+    expect(blockCountFor(400 * BLOCK_ROWS_PER_LAYER, pixels, layerBytes, 2048)).toBe(20);
+    expect(blockCountFor(1600 * BLOCK_ROWS_PER_LAYER, pixels, layerBytes, 2048)).toBe(40);
     expect(blockCountFor(1_000_000, pixels, layerBytes, 2048)).toBe(affordable);
-    expect(blockCountFor(1_000_000, pixels, layerBytes, 64)).toBe(64 - 1 - 2 * PARTIAL_SLOTS);
-    expect(blockCountFor(10 * MIN_BLOCK_ROWS, pixels, layerBytes, 2048)).toBe(10);
+    expect(blockCountFor(50_000, pixels, layerBytes, 2048)).toBe(32);
+    // At least MIN_FOCUS_BLOCKS, where the square root is fewer...
+    expect(blockCountFor(10_000, pixels, layerBytes, 2048)).toBe(MIN_FOCUS_BLOCKS);
+    // ...but no more than one per MIN_BLOCK_ROWS rows, and at least one.
+    expect(blockCountFor(4 * MIN_BLOCK_ROWS, pixels, layerBytes, 2048)).toBe(4);
+    expect(blockCountFor(5, pixels, layerBytes, 2048)).toBe(1);
+    expect(blockCountFor(0, pixels, layerBytes, 2048)).toBe(1);
   });
 
   test("leaves brushing to drafts when too few blocks fit, counting every layer", () => {

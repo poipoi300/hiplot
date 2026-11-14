@@ -417,6 +417,81 @@ test("resting on an axis's brush band draws its blocks before a gesture", async 
   expect(result.all.slice(1)).toEqual([true, true]);
 });
 
+test("a touch on an axis's brush band warms its column at once, drawing nothing", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 640, height: 480 });
+  await loadParallelBenchmark(
+    page,
+    { rows: 6000, columns: 4, discrete: false, seed: 20261109 },
+    "full",
+  );
+  await warmParallelWorker(page);
+  const result = await page.evaluate(async () => {
+    interface TouchedPlot {
+      h: number;
+      state: { dimensions: string[] };
+      worker: BlockWorker | null;
+      brushMasks: () => { warm: (selection: { col: string }[]) => void };
+      startBrushGesture: (
+        event: { sourceEvent: { target: Element }; y: number },
+        dimension: string,
+      ) => void;
+      continueBrushGesture: (y: number) => void;
+      endBrushGesture: () => void;
+    }
+    const plot = (
+      window as unknown as {
+        __parallelProbe: { instance: { parallelPlot: () => TouchedPlot } };
+      }
+    ).__parallelProbe.instance.parallelPlot();
+    const worker = plot.worker;
+    if (!worker?.capabilities) throw new Error("Missing render worker");
+    // As in the gesture test: the suite's SwiftShader worker reports no block frames.
+    worker.capabilities.blocks = true;
+    const settled = async (): Promise<void> => {
+      do await new Promise(requestAnimationFrame);
+      while (worker.busy);
+    };
+    await settled();
+    const images: boolean[] = [];
+    const publish = worker.onFrame.bind(worker);
+    worker.onFrame = (shown) => {
+      if (shown.finished !== null) images.push(shown.finished.fromBlocks);
+      publish(shown);
+    };
+    const masks = plot.brushMasks();
+    const warm = masks.warm.bind(masks);
+    const warmed: string[] = [];
+    masks.warm = (selection) => {
+      warmed.push(...selection.map((range) => range.col));
+      warm(selection);
+    };
+    const dimension = plot.state.dimensions[2];
+    const band = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
+      .find((node) => (node as SVGGElement & { __data__: string }).__data__ === dimension)
+      ?.querySelector<SVGGElement>(".pplot-brush");
+    const overlay = band?.querySelector(".overlay");
+    if (!band || !overlay) throw new Error("Missing brush band");
+    band.dispatchEvent(new PointerEvent("pointerenter", { pointerType: "touch" }));
+    // Warmed before the touch's pointer down, without a frame: a tap draws no blocks.
+    const touched = { warmed: [...warmed], requested: worker.busy };
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const afterRest = { warmed: warmed.length, images: images.length };
+    plot.startBrushGesture({ sourceEvent: { target: overlay }, y: plot.h * 0.2 }, dimension);
+    plot.continueBrushGesture(plot.h * 0.5);
+    await settled();
+    plot.endBrushGesture();
+    await settled();
+    return { dimension, touched, afterRest, images };
+  });
+  expect(result.touched).toEqual({ warmed: [result.dimension], requested: false });
+  // No delayed preparation follows a touch either.
+  expect(result.afterRest).toEqual({ warmed: 1, images: 0 });
+  // The gesture draws the blocks with its first move, and its release reuses them.
+  expect(result.images).toEqual([true, true]);
+});
+
 for (const { name, numeric, colorMode } of [
   { name: "numeric mean", numeric: true, colorMode: "mean" as ColorMode },
   { name: "numeric highest", numeric: true, colorMode: "highest" as ColorMode },

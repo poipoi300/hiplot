@@ -310,8 +310,18 @@ export class PartialSlots {
 
 /** GPU memory the layers of one brushed axis may take, partial slots included. */
 export const BLOCK_MEMORY_BYTES = 1024 * 1024 * 1024;
-/** Fewer rows per block than this gain little: per-draw overhead dominates. */
+/** More blocks than one per this many rows gain little: per-draw overhead dominates. */
 export const MIN_BLOCK_ROWS = 256;
+/**
+ * Sets the block count from the rows, sqrt(rows / this): a brush frame sums
+ * every layer and redraws the rows of the blocks a brush's edges cut, so B
+ * blocks of R rows cost about B layers plus a few times R / B rows, and fewer
+ * layers build faster. Measured on a desktop GPU: at 50,000 rows, 32 blocks
+ * build a new axis's blocks in about 60% of the time 60 blocks took, with
+ * brush frames as fast; at 1M rows, halving the blocks (this at 200) cost
+ * 1 ms per brush frame, so there the count stays at what the memory holds.
+ */
+export const BLOCK_ROWS_PER_LAYER = 50;
 /**
  * Fewer focus blocks than this leave so many rows partly selected that a
  * frame costs about as much as drawing every row: brushing then drafts.
@@ -335,9 +345,10 @@ export function blocksFit(pixels: number, layerBytes: number): boolean {
 }
 
 /**
- * Blocks of focus rows that fit in BLOCK_MEMORY_BYTES and the device's layers
- * at this target size, beside the other layers; at least one. Call it only
- * when `blocksFit`.
+ * Blocks of focus rows: about sqrt(rows / BLOCK_ROWS_PER_LAYER), at least
+ * MIN_FOCUS_BLOCKS but no more than one per MIN_BLOCK_ROWS rows, within
+ * BLOCK_MEMORY_BYTES and the device's layers at this target size beside the
+ * other layers; at least one. Call it only when `blocksFit`.
  */
 export function blockCountFor(
   focusRows: number,
@@ -349,7 +360,11 @@ export function blockCountFor(
     throw new Error(`Brush blocks of ${pixels} pixels do not fit in GPU memory`);
   }
   const affordable = Math.floor(BLOCK_MEMORY_BYTES / (pixels * layerBytes)) - EXTRA_LAYERS;
-  const useful = Math.ceil(focusRows / MIN_BLOCK_ROWS);
+  const balanced = Math.max(
+    MIN_FOCUS_BLOCKS,
+    Math.ceil(Math.sqrt(focusRows / BLOCK_ROWS_PER_LAYER)),
+  );
+  const useful = Math.min(Math.ceil(focusRows / MIN_BLOCK_ROWS), balanced);
   return Math.max(1, Math.min(affordable, maxLayers - EXTRA_LAYERS, useful));
 }
 
