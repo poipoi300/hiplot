@@ -60,8 +60,14 @@ describe("filters", () => {
     expect(apply_filter(table, { type: FilterType.None, data: {} })).toEqual([]);
   });
 
-  test("a lasso's filter keeps exactly the rows it drew around", () => {
-    const lasso = lassoFilter([table[3], table[1]]);
+  test("a lasso across a categorical axis keeps the categories it spanned", () => {
+    const lasso = lassoFilter({ kind: "categories", col: "opt", values: ["sgd", "rmsprop"] });
+    expect(uids(apply_filter(table, lasso))).toEqual(["b", "d"]);
+    expect(isLassoSelection(lasso)).toBe(true);
+  });
+
+  test("a lasso saved as the uids of its rows still keeps exactly those rows", () => {
+    const lasso: Filter = { type: FilterType.Lasso, data: ["d", "b"] };
     expect(uids(apply_filter(table, lasso))).toEqual(["b", "d"]);
     expect(isLassoSelection(lasso)).toBe(true);
     expect(isLassoSelection(lossRange(0, 1))).toBe(false);
@@ -105,6 +111,7 @@ describe("filter validation", () => {
     expect(isFilter(lossRange(0, 1))).toBe(true);
     expect(isFilter({ type: FilterType.Not, data: { type: FilterType.All, data: [] } })).toBe(true);
     expect(isFilter({ type: FilterType.Lasso, data: ["a", "b"] })).toBe(true);
+    expect(isFilter(lassoFilter({ kind: "categories", col: "opt", values: ["sgd"] }))).toBe(true);
   });
 
   test("malformed filters from storage are rejected", () => {
@@ -116,6 +123,8 @@ describe("filter validation", () => {
       { type: FilterType.Search, data: 3 },
       { type: FilterType.All, data: [{ type: FilterType.None }] },
       { type: FilterType.Lasso, data: [1, 2] },
+      { type: FilterType.Lasso, data: { kind: "categories", col: "opt", values: [1] } },
+      { type: FilterType.Lasso, data: { kind: "circle" } },
     ]) {
       expect(isFilter(value)).toBe(false);
     }

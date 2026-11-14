@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   insidePolygon,
-  lassoed,
-  lassoedAlong,
+  lassoSpan,
   startsLasso,
   WHEEL_GESTURE_GAP_MS,
   WheelLatch,
+  withinLasso,
 } from "./lasso";
 
 const square = [
@@ -30,9 +30,15 @@ describe("lasso selection", () => {
     expect(insidePolygon(2, 5, notch)).toBe(true);
   });
 
-  test("every point on screen inside the lasso is picked, and only those", () => {
-    const positions = [{ x: 5, y: 5 }, { x: 50, y: 5 }, { x: 2, y: 2 }, null];
-    expect(lassoed(positions.length, (index) => positions[index], square)).toEqual([0, 2]);
+  test("every point on screen inside the lasso is in, and only those", () => {
+    const inside = withinLasso(square);
+    const positions = [
+      { x: 5, y: 5 },
+      { x: 50, y: 5 },
+      { x: 2, y: 2 },
+      { x: Number.NaN, y: 5 },
+    ];
+    expect(positions.map(inside)).toEqual([true, false, true, false]);
   });
 
   test("a primary press with Ctrl or Cmd starts a lasso; others do what they always did", () => {
@@ -42,17 +48,14 @@ describe("lasso selection", () => {
     expect(startsLasso({ button: 2, ctrlKey: true, metaKey: false })).toBe(false);
   });
 
-  test("a gesture too short to enclose anything picks nothing", () => {
-    expect(lassoed(1, () => ({ x: 0, y: 0 }), square.slice(0, 2))).toEqual([]);
-    expect(lassoedAlong(1, () => 0, square.slice(0, 2), "x")).toEqual([]);
+  test("a gesture too short to enclose anything takes nothing", () => {
+    expect(withinLasso(square.slice(0, 2))({ x: 0, y: 0 })).toBe(false);
   });
 
-  test("on one axis, the lasso takes what lies within its extent along that axis", () => {
-    const positions = [-1, 0, 4, 10, 11, null];
-    const at = (index: number) => positions[index];
-    expect(lassoedAlong(positions.length, at, square, "x")).toEqual([1, 2, 3]);
+  test("on one axis, the lasso spans its extent along that axis", () => {
+    expect(lassoSpan(square, "x")).toEqual([0, 10]);
     const tall = square.map(({ x, y }) => ({ x, y: y * 2 }));
-    expect(lassoedAlong(positions.length, at, tall, "y")).toEqual([1, 2, 3, 4]);
+    expect(lassoSpan(tall, "y")).toEqual([0, 20]);
   });
 });
 

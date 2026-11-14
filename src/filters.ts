@@ -8,6 +8,7 @@
 import { convert_to_categorical_input, parse_numeric } from "./lib/d3_scales";
 import { escapeRegExp } from "./lib/escape";
 import { isStringArray } from "./lib/savedstate";
+import { isLassoShape, type LassoShape, lassoShapePredicate } from "./plots/lassoshape";
 import { type Datapoint, type DatapointValue, ParamType } from "./types";
 
 export enum FilterType {
@@ -19,7 +20,7 @@ export enum FilterType {
   Search = "Search",
   Column = "Column",
   None = "None",
-  /** The rows a lasso drew around in a scatter plot, by uid. */
+  /** The rows a lasso drew around, in a scatter plot or across a one-axis plot. */
   Lasso = "Lasso",
 }
 
@@ -52,11 +53,12 @@ export type Filter =
   | { type: FilterType.Search; data: string }
   | { type: FilterType.Column; data: { col: string; query: string } }
   | { type: FilterType.None; data: Record<string, never> }
-  | { type: FilterType.Lasso; data: string[] };
+  /** Lasso filters saved before shapes existed list the uids of the rows instead. */
+  | { type: FilterType.Lasso; data: LassoShape | string[] };
 
-/** The selection a lasso makes: exactly the rows it drew around. */
-export function lassoFilter(rows: Iterable<Datapoint>): Filter {
-  return { type: FilterType.Lasso, data: Array.from(rows, (row) => row.uid) };
+/** The selection a lasso makes: the rows inside its shape. */
+export function lassoFilter(shape: LassoShape): Filter {
+  return { type: FilterType.Lasso, data: shape };
 }
 
 /** Whether a selection is a lasso's, which replaced every brush. */
@@ -161,20 +163,24 @@ function filter_search(data: string): Predicate {
   return (dp: Datapoint) => regexp.test(Object.values(dp).join("  "));
 }
 
-export function filter_predicate(filter: Filter): Predicate {
+/**
+ * Whether a row meets `filter`, among `rows`, the rows it filters: a lasso
+ * places the rows as its plot did, which depends on all of them.
+ */
+export function filter_predicate(filter: Filter, rows: ReadonlyArray<Datapoint>): Predicate {
   switch (filter.type) {
     case FilterType.All: {
-      const predicates = filter.data.map(filter_predicate);
+      const predicates = filter.data.map((part) => filter_predicate(part, rows));
       return (dp) => predicates.every((fn) => fn(dp));
     }
     case FilterType.Range:
       return filter_range(filter.data);
     case FilterType.Any: {
-      const predicates = filter.data.map(filter_predicate);
+      const predicates = filter.data.map((part) => filter_predicate(part, rows));
       return (dp) => predicates.some((fn) => fn(dp));
     }
     case FilterType.Not: {
-      const predicate = filter_predicate(filter.data);
+      const predicate = filter_predicate(filter.data, rows);
       return (dp) => !predicate(dp);
     }
     case FilterType.Search:
@@ -186,11 +192,17 @@ export function filter_predicate(filter: Filter): Predicate {
     }
     case FilterType.None:
       return () => false;
-    case FilterType.Lasso: {
-      const uids = new Set(filter.data);
-      return (dp) => uids.has(dp.uid);
-    }
+    case FilterType.Lasso:
+      return lasso_predicate(filter.data, rows);
   }
+}
+
+function lasso_predicate(shape: LassoShape | string[], rows: ReadonlyArray<Datapoint>): Predicate {
+  if (Array.isArray(shape)) {
+    const uids = new Set(shape);
+    return (dp) => uids.has(dp.uid);
+  }
+  return lassoShapePredicate(shape, rows);
 }
 
 /**
@@ -220,7 +232,7 @@ export function rowsExcept(
 }
 
 export function apply_filter(rows: ReadonlyArray<Datapoint>, filter: Filter): Array<Datapoint> {
-  return rows.filter(filter_predicate(filter));
+  return rows.filter(filter_predicate(filter, rows));
 }
 
 export function apply_filters(
@@ -281,7 +293,7 @@ export function isFilter(value: unknown): value is Filter {
     case FilterType.None:
       return isRecord(value.data);
     case FilterType.Lasso:
-      return isStringArray(value.data);
+      return isStringArray(value.data) || isLassoShape(value.data);
     default:
       return false;
   }

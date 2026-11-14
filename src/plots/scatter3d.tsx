@@ -10,14 +10,15 @@ import React from "react";
 import { create_d3_scale_without_outliers, type ParamDefMap } from "../infertypes";
 import type { ColorBinning, RGB } from "../lib/colors";
 import { devicePixelShift } from "../lib/crisptext";
-import { is_special_numeric } from "../lib/d3_scales";
+import type { Scale } from "../lib/d3_scales";
 import { labelTextFromHtml } from "../lib/escape";
 import { fitColor } from "../lib/fitcolor";
 import { columnNotation, formatterFor } from "../lib/numberformat";
 import { mounted } from "../lib/refs";
 import { planeFit } from "../stats/regression";
 import { type Datapoint, ParamType } from "../types";
-import { LASSO_GESTURE, lassoed, type ScreenPoint, WheelLatch } from "./lasso";
+import { LASSO_GESTURE, type ScreenPoint, WheelLatch } from "./lasso";
+import { cubeCoordinate, lassoAxis, lassoPolygon, type ViewLasso } from "./lassoshape";
 import { LassoSurface } from "./lassosurface";
 import {
   DEFAULT_ORBIT,
@@ -54,16 +55,17 @@ export function scatterPositions(
   const positions = new Float32Array(rows.length * 3);
   AXES.forEach((axis, offset) => {
     const pd = params_def[axes[axis]];
-    const scale = create_d3_scale_without_outliers(pd);
-    scale.range([-1, 1]);
+    const scale = cubeScale(params_def, axes[axis]);
     rows.forEach((row, index) => {
-      const value = row[axes[axis]];
-      const missing = value === undefined || (pd.numeric && is_special_numeric(value));
-      const position = missing ? Number.NaN : scale(value);
-      positions[index * 3 + offset] = Number.isFinite(position) ? position : Number.NaN;
+      positions[index * 3 + offset] = cubeCoordinate(row[axes[axis]], scale, pd.numeric);
     });
   });
   return positions;
+}
+
+/** The scale of a column over an axis of the [-1, 1] cube. */
+function cubeScale(params_def: ParamDefMap, column: string): Scale {
+  return create_d3_scale_without_outliers(params_def[column]).range([-1, 1]);
 }
 
 /** Text at both ends of an axis: its smallest and largest value. */
@@ -114,8 +116,8 @@ interface Scatter3DProps {
   height: number;
   render_row_text: (row: Datapoint) => string;
   setHighlighted: (rows: Datapoint[]) => void;
-  /** Makes the rows a lasso drew around the selection, in place of any other. */
-  onLasso: (rows: Datapoint[]) => void;
+  /** Makes the rows inside a lasso, selected or not, the selection in place of any other. */
+  onLasso: (lasso: ViewLasso) => void;
 }
 
 /** What a drag does: turn the view or pan it (a lasso is the LassoSurface's). */
@@ -426,27 +428,21 @@ export class Scatter3D extends React.Component<Scatter3DProps, Scatter3DState> {
     event.currentTarget.releasePointerCapture(event.pointerId);
   };
 
-  /**
-   * Selects the points inside the lasso, among all the rows Keep and Exclude
-   * left, selected or not: the lasso replaces the selection.
-   */
+  /** A lasso drawn over the view, as the view projects the cube now. */
   private onLasso = (polygon: ReadonlyArray<ScreenPoint>): void => {
-    const { rows, width, height } = this.props;
-    const matrix = this.matrix();
-    const inside = lassoed(
-      rows.length,
-      (index) =>
-        projectPoint(
-          matrix,
-          this.positions[index * 3],
-          this.positions[index * 3 + 1],
-          this.positions[index * 3 + 2],
-          width,
-          height,
-        ),
-      polygon,
-    );
-    this.props.onLasso(inside.map((index) => rows[index]));
+    const { params_def, axes, width, height } = this.props;
+    const axis = (column: string) =>
+      lassoAxis(column, params_def[column].type, cubeScale(params_def, column));
+    this.props.onLasso({
+      kind: "view",
+      x: axis(axes.x),
+      y: axis(axes.y),
+      z: axis(axes.z),
+      matrix: Array.from(this.matrix()),
+      width,
+      height,
+      polygon: lassoPolygon(polygon),
+    });
   };
 
   private recordWheel = (event: WheelEvent): void => {

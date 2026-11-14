@@ -76,8 +76,15 @@ rows replace the selection:
   header shows "Lasso selection · N rows" with a button that selects every
   row again;
 - the next brush on an axis replaces the lasso's selection in turn;
-- Keep and Exclude apply to the lasso's rows; they are saved by uid, so they
-  replay on reload for experiments whose uids are stable.
+- Keep and Exclude apply to the lasso's rows. They are saved with the page
+  as the lasso's shape, not as a list of rows, so the address stays short
+  however many rows the lasso takes. The shape is the polygon on screen, the
+  scales of the plot's axes (zoom included) and, in 3D, the view; across a
+  one-axis plot, its extent along the axis, or the categories it spans. On
+  reload, the plot's scales are built again over the rows the lasso was
+  drawn over, which selects the same rows from the same data. Rows added to
+  the experiment since can move the categories and percentiles they are
+  placed by. Lassos saved by uid in earlier versions still replay.
 
 ## Rendering model
 

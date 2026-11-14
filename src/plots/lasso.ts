@@ -42,18 +42,11 @@ export function insidePolygon(x: number, y: number, polygon: ReadonlyArray<Scree
 }
 
 /**
- * Indices, among `count` points, of those whose screen position falls inside
- * the lasso. `project` gives a point's screen position, or null when it is
- * not on screen (behind the camera, or a missing value).
+ * Whether a point lies inside a lasso: within the polygon's bounds, the cheap
+ * test most points fail, and then inside it. Points with a NaN coordinate are
+ * outside.
  */
-export function lassoed(
-  count: number,
-  project: (index: number) => ScreenPoint | null,
-  polygon: ReadonlyArray<ScreenPoint>,
-): number[] {
-  if (polygon.length < MIN_LASSO_POINTS) {
-    return [];
-  }
+export function withinLasso(polygon: ReadonlyArray<ScreenPoint>): (point: ScreenPoint) => boolean {
   let left = Number.POSITIVE_INFINITY;
   let right = Number.NEGATIVE_INFINITY;
   let top = Number.POSITIVE_INFINITY;
@@ -64,49 +57,19 @@ export function lassoed(
     top = Math.min(top, y);
     bottom = Math.max(bottom, y);
   }
-  const inside: number[] = [];
-  for (let index = 0; index < count; ++index) {
-    const point = project(index);
-    if (
-      point !== null &&
-      point.x >= left &&
-      point.x <= right &&
-      point.y >= top &&
-      point.y <= bottom &&
-      insidePolygon(point.x, point.y, polygon)
-    ) {
-      inside.push(index);
-    }
-  }
-  return inside;
+  return ({ x, y }) =>
+    x >= left && x <= right && y >= top && y <= bottom && insidePolygon(x, y, polygon);
 }
 
-/**
- * Indices, among `count` points that sit on one axis only, of those within
- * the lasso's extent along that axis (`along`): a one-axis plot has no other
- * coordinate to test. `position` gives a point's pixel on the axis, or null
- * when it has no value.
- */
-export function lassoedAlong(
-  count: number,
-  position: (index: number) => number | null,
-  polygon: ReadonlyArray<ScreenPoint>,
-  along: "x" | "y",
-): number[] {
-  if (polygon.length < MIN_LASSO_POINTS) {
-    return [];
+/** The lasso's extent along one screen axis: what it spans over a plot with no other axis. */
+export function lassoSpan(polygon: ReadonlyArray<ScreenPoint>, along: "x" | "y"): [number, number] {
+  let low = Number.POSITIVE_INFINITY;
+  let high = Number.NEGATIVE_INFINITY;
+  for (const point of polygon) {
+    low = Math.min(low, point[along]);
+    high = Math.max(high, point[along]);
   }
-  const coordinates = polygon.map((point) => point[along]);
-  const low = Math.min(...coordinates);
-  const high = Math.max(...coordinates);
-  const inside: number[] = [];
-  for (let index = 0; index < count; ++index) {
-    const at = position(index);
-    if (at !== null && at >= low && at <= high) {
-      inside.push(index);
-    }
-  }
-  return inside;
+  return [low, high];
 }
 
 /** Wheel events further apart than this start a new gesture. */

@@ -20,7 +20,8 @@ import {
 import { labelTextFromHtml } from "../lib/escape";
 import { powerOfTenLabels } from "../lib/numberformat";
 import { mounted } from "../lib/refs";
-import { lassoedAlong, type ScreenPoint } from "../plots/lasso";
+import { lassoSpan, type ScreenPoint } from "../plots/lasso";
+import { type CategoriesLasso, lassoAxis, type SpanLasso } from "../plots/lassoshape";
 import { type Datapoint, ParamType } from "../types";
 import { type ColumnFit, densityCurve, fitColumn } from "./fit";
 
@@ -108,6 +109,8 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
   } | null = null;
   /** Where a row's value falls along the data axis, as the bars were last drawn. */
   private positionOf: ((row: Datapoint) => number | null) | null = null;
+  /** Where a fraction of the data axis was drawn, categories at the slots of their bars. */
+  private positionAt: ((fraction: number) => number) | null = null;
 
   dataScale: Scale = create_d3_scale_without_outliers(this.props.param_def);
 
@@ -359,17 +362,18 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
     const pixelOf = d3.scaleLinear().range(this.dataScale.range());
     const binCount = allHist.all.bins.length;
     const vertical = this.isVertical();
-    this.positionOf = (row) => {
-      const fraction = fractionOf(row, 0, []);
-      if (!Number.isFinite(fraction)) {
-        return null;
-      }
+    const positionAt = (fraction: number): number => {
       if (vertical) {
         return pixelOf(fraction);
       }
       // Categories reordered by density sit at their display slot.
       const bin = Math.min(binCount - 1, Math.floor(fraction * binCount));
       return pixelOf((displayIndexByOriginal[bin] + 0.5) / binCount);
+    };
+    this.positionAt = positionAt;
+    this.positionOf = (row) => {
+      const fraction = fractionOf(row, 0, []);
+      return Number.isFinite(fraction) ? positionAt(fraction) : null;
     };
     this.drawHighlight();
   }
@@ -452,27 +456,35 @@ export class DistributionPlot extends React.Component<DistributionPlotData, Reco
   }
 
   /**
-   * The rows of the plot whose value lies within a lasso's extent along the
-   * data axis, the polygon in pixels from the plot's top left corner: a row
-   * has no other coordinate here.
+   * What lies within a lasso's extent along the data axis, the polygon in
+   * pixels from the plot's top left corner: a row has no other coordinate
+   * here. Categories are taken where their bars are drawn.
    */
-  lassoedRows(polygon: ReadonlyArray<ScreenPoint>): Datapoint[] {
-    const positionOf = this.positionOf;
-    if (positionOf === null) {
+  lassoShape(polygon: ReadonlyArray<ScreenPoint>): SpanLasso | CategoriesLasso {
+    const positionAt = this.positionAt;
+    if (positionAt === null) {
       throw new Error("A lasso was drawn over a distribution that is not drawn");
     }
     const vertical = this.isVertical();
     const offset = vertical ? margin.left : margin.top;
-    const rows = this.props.histData.all;
-    return lassoedAlong(
-      rows.length,
-      (index) => {
-        const position = positionOf(rows[index]);
-        return position === null ? null : position + offset;
-      },
-      polygon,
-      vertical ? "x" : "y",
-    ).map((index) => rows[index]);
+    const [low, high] = lassoSpan(polygon, vertical ? "x" : "y").map((at) =>
+      Math.round(at - offset),
+    );
+    const col = this.props.axis;
+    if (this.dataScale.kind === "categorical") {
+      const domain = this.dataScale.domain();
+      const values = domain.filter((_value, index) => {
+        const position = positionAt((index + 0.5) / domain.length);
+        return position >= low && position <= high;
+      });
+      return { kind: "categories", col, values };
+    }
+    // Numbers are drawn where the scale puts them along the axis.
+    const axis = lassoAxis(col, this.props.param_def.type, this.dataScale);
+    if (axis.type === ParamType.CATEGORICAL) {
+      throw new Error(`Categorical column "${col}" has a continuous scale`);
+    }
+    return { kind: "span", axis, span: [low, high] };
   }
 
   /** A line across the plot at each highlighted row's value, in the row's color. */

@@ -8,7 +8,7 @@
 import $ from "jquery";
 import React from "react";
 import _ from "underscore";
-import { lassoFilter } from "../filters";
+import { apply_filter, lassoFilter } from "../filters";
 import { ColumnSelect } from "../lib/columnpicker";
 import { fitColor } from "../lib/fitcolor";
 import { mounted } from "../lib/refs";
@@ -61,10 +61,10 @@ export class DistributionView extends React.Component<
   DistributionViewState
 > {
   private plotRef = React.createRef<DistributionPlot>();
-  /** A lasso's rows replace the selection. */
+  /** The rows a lasso spans, selected or not, replace the selection. */
   private onLasso = (polygon: ReadonlyArray<ScreenPoint>): void => {
-    const rows = mounted(this.plotRef).lassoedRows(polygon);
-    this.props.setSelected(rows, lassoFilter(rows));
+    const filter = lassoFilter(mounted(this.plotRef).lassoShape(polygon));
+    this.props.setSelected(apply_filter(this.props.rows_filtered, filter), filter);
   };
   constructor(props: DistributionViewProps) {
     super(props);
