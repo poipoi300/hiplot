@@ -225,7 +225,7 @@ describe("incremental indexed brushes", () => {
     expect(worker.terminated).toBe(true);
   });
 
-  test("intersection updates only changed candidates for moves, overlaps, added axes and removals", async () => {
+  test("moves recheck only the rows they flip; adding or removing an axis intersects every word once", async () => {
     const source = Array.from(
       { length: 10_000 },
       (_, i): Datapoint => ({
@@ -244,30 +244,42 @@ describe("incremental indexed brushes", () => {
       ["y", y],
     ]);
     masks.select(new Map([["x", full]]));
-    const changes = spyOn(
-      masks as unknown as { changeFailure(row: number, delta: number): void },
-      "changeFailure",
-    );
-    masks.select(new Map([["x", [xRange(1, 9999)]]]));
-    expect(changes.mock.calls).toEqual([[0, 1]]);
-    changes.mockClear();
+    const probe = masks as unknown as {
+      recheck(row: number): void;
+      recombine(): void;
+    };
+    const rows = spyOn(probe, "recheck");
+    const recombined = spyOn(probe, "recombine");
+    const calls = () => {
+      const counts = { rows: rows.mock.calls.length, recombined: recombined.mock.calls.length };
+      rows.mockClear();
+      recombined.mockClear();
+      return counts;
+    };
+    // Row 0 leaves the brush: only it is rechecked.
+    let selected = masks.select(new Map([["x", [xRange(1, 9999)]]]));
+    expect(calls()).toEqual({ rows: 1, recombined: 0 });
+    expect(selected[0]).toBe(0);
+    expect(masks.selectedCount).toBe(9999);
+    // Overlapping ranges selecting the same rows flip none.
     masks.select(new Map([["x", [xRange(1, 7000), xRange(6000, 9999)]]]));
-    expect(changes).not.toHaveBeenCalled();
-    masks.select(
+    expect(calls()).toEqual({ rows: 0, recombined: 0 });
+    // A new axis, its removal, and clearing every brush intersect the active axes again.
+    for (const selections of [
       new Map([
         ["x", [xRange(1, 9999)]],
         ["y", y],
       ]),
-    );
-    expect(changes.mock.calls).toEqual([[0, 1]]);
-    changes.mockClear();
-    masks.select(new Map([["y", y]]));
-    expect(changes.mock.calls).toEqual([[0, -1]]);
-    changes.mockClear();
-    const selected = masks.select(new Map());
-    expect(changes.mock.calls).toEqual([[0, -1]]);
+      new Map([["y", y]]),
+      new Map<string, AxisSelection>(),
+    ]) {
+      selected = masks.select(selections);
+      expect(calls().recombined).toBe(1);
+    }
     expect(selected.every((value) => value === 1)).toBe(true);
-    changes.mockRestore();
+    expect(masks.selectedCount).toBe(10_000);
+    rows.mockRestore();
+    recombined.mockRestore();
     masks.dispose();
   });
 
@@ -465,4 +477,128 @@ test("the live mask's selected count follows every brush change", () => {
     expect(masks.selectedCount).toBe(count(mask));
   }
   masks.dispose();
+});
+
+test("bit masks match filters at every row count around a 32-row word, through many flips and axis changes", async () => {
+  let seed = 7;
+  const random = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 2 ** 32;
+  };
+  for (const count of [1, 31, 32, 33, 63, 64, 65, 100]) {
+    const source = Array.from(
+      { length: count },
+      (_, i): Datapoint => ({ uid: String(i), from_uid: null, x: random(), y: random() }),
+    );
+    const worker = new TestWorker();
+    const masks = masksOf(source, worker);
+    const scanning = masksOf(source);
+    await warm(masks, worker, [
+      ["x", [xRange(0, 1)]],
+      ["y", [{ ...xRange(0, 1), col: "y" }]],
+    ]);
+    for (let step = 0; step < 40; ++step) {
+      const selections = new Map<string, AxisSelection>();
+      for (const col of ["x", "y"]) {
+        if (random() < 0.3) continue;
+        const [a, b] = [random(), random()];
+        // Wide jumps flip more rows than there are words, narrow ones a few.
+        selections.set(col, [{ ...xRange(Math.min(a, b), Math.max(a, b)), col }]);
+      }
+      const expected = uids(apply_filters(source, Array.from(selections.values(), anyOfRanges)));
+      const selected = masks.select(selections);
+      expect(picked(source, selected)).toEqual(expected);
+      expect(masks.selectedCount).toBe(expected.length);
+      expect(picked(source, scanning.select(selections))).toEqual(expected);
+      for (const dimension of ["x", "y"]) {
+        const others = Array.from(selections).filter(([name]) => name !== dimension);
+        expect(picked(source, masks.passingExcept(dimension))).toEqual(
+          uids(
+            apply_filters(
+              source,
+              others.map(([, ranges]) => anyOfRanges(ranges)),
+            ),
+          ),
+        );
+      }
+      for (const [axis, ranges] of selections) {
+        expect(picked(source, masks.axisMask(axis, ranges))).toEqual(
+          uids(apply_filters(source, [anyOfRanges(ranges)])),
+        );
+      }
+    }
+    masks.dispose();
+    scanning.dispose();
+  }
+});
+
+test("one-row moves keep every flag exact, across word edges and bit 31", async () => {
+  for (const count of [33, 64, 65, 1000]) {
+    // Shuffled integers: each one-unit edge move flips exactly one row, anywhere in the words.
+    const values = Array.from({ length: count }, (_, i) => (i * 37) % count);
+    const source = values.map((x, i): Datapoint => ({ uid: String(i), from_uid: null, x, y: i }));
+    const worker = new TestWorker();
+    const masks = masksOf(source, worker);
+    const y = [{ ...xRange(0, count - 1), col: "y" }];
+    await warm(masks, worker, [
+      ["x", [xRange(0, count)]],
+      ["y", y],
+    ]);
+    let [low, high] = [Math.floor(count / 4), Math.floor((3 * count) / 4)];
+    const recheck = spyOn(masks as unknown as { recheck(row: number): void }, "recheck");
+    for (let step = 0; step < 4 * count; ++step) {
+      if (step % 4 === 0) ++low;
+      else if (step % 4 === 1) ++high;
+      else if (step % 4 === 2) --low;
+      else --high;
+      const selections = new Map<string, AxisSelection>([
+        ["x", [xRange(low, high)]],
+        ["y", y],
+      ]);
+      const expected = uids(apply_filters(source, Array.from(selections.values(), anyOfRanges)));
+      expect(picked(source, masks.select(selections))).toEqual(expected);
+      expect(masks.selectedCount).toBe(expected.length);
+    }
+    // Every move after the first, which activates the axes, rechecks a single row.
+    expect(recheck.mock.calls.length).toBe(4 * count - 1);
+    recheck.mockRestore();
+    masks.dispose();
+  }
+});
+
+test("a selection that throws partway leaves the next one exact", () => {
+  const masks = new BrushMasks(
+    rows.length,
+    (range) => {
+      if (range.col === "broken") throw new Error("No such column");
+      return selectionColumn(rows, range);
+    },
+    null,
+  );
+  masks.select(
+    new Map([
+      ["x", [xRange(0, 6)]],
+      ["c", [cRange("a", "b")]],
+    ]),
+  );
+  // The c axis is removed before the broken column throws.
+  expect(() => masks.select(new Map([["x", [{ ...xRange(0, 6), col: "broken" }]]]))).toThrow(
+    "No such column",
+  );
+  expect(select(masks, [["x", [xRange(0, 6)]]])).toEqual(["0", "1"]);
+  expect(masks.selectedCount).toBe(2);
+  expect(Array.from(masks.passingExcept("x"))).toEqual([1, 1, 1, 1, 1, 1]);
+  masks.dispose();
+});
+
+test("an axis brushed through more than 255 columns is refused, and no rows select nothing", () => {
+  const masks = masksOf(rows);
+  const ranges = Array.from({ length: 256 }, (_, i) => ({ ...xRange(0, 1), col: `c${i}` }));
+  expect(() => masks.select(new Map([["many", ranges]]))).toThrow("at most 255 columns");
+  masks.dispose();
+  const empty = masksOf([]);
+  expect(empty.select(new Map([["x", [xRange(0, 6)]]]))).toHaveLength(0);
+  expect(empty.selectedCount).toBe(0);
+  expect(empty.passingExcept("x")).toHaveLength(0);
+  empty.dispose();
 });

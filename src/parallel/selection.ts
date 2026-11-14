@@ -36,11 +36,16 @@ interface RangeGroup {
 interface AxisState {
   key: string;
   groups: Map<ColumnState, RangeGroup>;
-  membership: Uint32Array;
-  mask: Uint8Array;
+  /** How many of the axis's columns select each row: its groups never overlap within a column. */
+  membership: Uint8Array;
+  /** One bit per row, set where `membership` is not zero (see BrushMasks). */
+  bits: Uint32Array;
   snapshot: Uint8Array | null;
   active: boolean;
 }
+
+/** An axis's ranges read this many columns at most: `membership` counts them in a byte. */
+const MAX_AXIS_COLUMNS = 255;
 
 interface PendingIndex {
   column: ColumnState;
@@ -78,6 +83,13 @@ export function portChannel(port: MessagePort): IndexChannel {
  * channel it always is. Warm moves touch only the symmetric difference of
  * indexed range unions.
  *
+ * Each axis keeps one bit per row, and the selection is the intersection of
+ * the active axes' bits. Adding or removing an axis intersects them again a
+ * 32-row word at a time and writes only the flags that change, in row order;
+ * a move rechecks only the rows whose bit it flipped. A first brush, which
+ * deselects about every row, thus costs a pass over words instead of a
+ * scattered write per row.
+ *
  * `axisMask` returns a cached snapshot. `select` returns a live intersection
  * buffer, updated in place by subsequent calls, so warm moves need no O(rows)
  * copy. Copy it explicitly if a historical selection is needed.
@@ -85,9 +97,22 @@ export function portChannel(port: MessagePort): IndexChannel {
 export class BrushMasks {
   private readonly columns = new Map<string, ColumnState>();
   private readonly axes = new Map<string, AxisState>();
-  private readonly failures: Uint32Array;
+  private readonly words: number;
+  /** The valid rows' bits in the last word. */
+  private readonly lastWord: number;
+  /** The intersection of the active axes' bits; every row's when none is active. */
+  private readonly selectedBits: Uint32Array;
   private readonly selected: Uint8Array;
   private selectedTotal: number;
+  /** The axes whose bits the selection intersects, as of the last time it settled. */
+  private activeAxes: AxisState[] = [];
+  /**
+   * Whether an axis was added or removed since the selection last settled,
+   * also by a call that threw partway: the next one intersects every word.
+   */
+  private activeChanged = false;
+  /** Rows an active axis flipped since the selection last settled; null once recombining is cheaper. */
+  private flipped: number[] | null = [];
   private readonly pending = new Map<number, PendingIndex>();
   private listening = false;
   private nextId = 0;
@@ -105,7 +130,10 @@ export class BrushMasks {
     private readonly columnOf: (range: FilterRange) => SelectionColumn,
     private readonly channel: IndexChannel | null,
   ) {
-    this.failures = new Uint32Array(rowCount);
+    this.words = Math.ceil(rowCount / 32);
+    this.lastWord = rowCount % 32 === 0 ? 0xffffffff : (2 ** (rowCount % 32) - 1) >>> 0;
+    this.selectedBits = new Uint32Array(this.words).fill(0xffffffff);
+    if (this.words > 0) this.selectedBits[this.words - 1] = this.lastWord;
     this.selected = new Uint8Array(rowCount).fill(1);
     this.selectedTotal = rowCount;
   }
@@ -266,11 +294,75 @@ export class BrushMasks {
     };
   }
 
-  private changeFailure(row: number, delta: number): void {
-    this.failures[row] += delta;
-    const selected = Number(this.failures[row] === 0);
-    this.selectedTotal += selected - this.selected[row];
+  /** The rows every axis of `axes` selects, in the 32 rows of `word`. */
+  private intersection(word: number, axes: ReadonlyArray<AxisState>): number {
+    let bits = word === this.words - 1 ? this.lastWord : 0xffffffff;
+    for (const axis of axes) bits &= axis.bits[word];
+    return bits >>> 0;
+  }
+
+  /** Writes the flags of `word`'s rows that changed to `bits`. */
+  private setSelectedWord(word: number, bits: number): void {
+    let changed = (bits ^ this.selectedBits[word]) >>> 0;
+    if (changed === 0) return;
+    this.selectedBits[word] = bits;
+    const base = word * 32;
+    while (changed !== 0) {
+      const bit = 31 - Math.clz32(changed & -changed);
+      const selected = (bits >>> bit) & 1;
+      this.selectedTotal += selected - this.selected[base + bit];
+      this.selected[base + bit] = selected;
+      changed = (changed & (changed - 1)) >>> 0;
+    }
+  }
+
+  /** Intersects the active axes again, after one was added or removed. */
+  private recombine(): void {
+    for (let word = 0; word < this.words; ++word) {
+      this.setSelectedWord(word, this.intersection(word, this.activeAxes));
+    }
+  }
+
+  /**
+   * Brings the selection up to the axes' bits: intersects every word again
+   * after an axis was added or removed, else rechecks the rows active axes
+   * flipped.
+   */
+  private settle(): void {
+    const flipped = this.flipped;
+    this.flipped = [];
+    if (this.activeChanged || flipped === null) {
+      this.activeAxes = Array.from(this.axes.values()).filter((axis) => axis.active);
+      this.activeChanged = false;
+      this.recombine();
+      return;
+    }
+    for (const row of flipped) this.recheck(row);
+  }
+
+  /** Sets `row`'s flag from the active axes' bits. */
+  private recheck(row: number): void {
+    const word = row >>> 5;
+    const bit = 1 << (row & 31);
+    let selected = 1;
+    for (const axis of this.activeAxes) {
+      if ((axis.bits[word] & bit) === 0) {
+        selected = 0;
+        break;
+      }
+    }
+    if (selected === this.selected[row]) return;
     this.selected[row] = selected;
+    this.selectedTotal += selected === 1 ? 1 : -1;
+    this.selectedBits[word] ^= bit;
+  }
+
+  private flip(row: number): void {
+    const flipped = this.flipped;
+    if (flipped === null) return;
+    // Past one flipped row per word, intersecting every word costs less than rechecking rows.
+    if (flipped.length >= this.words) this.flipped = null;
+    else flipped.push(row);
   }
 
   /** Rows the live mask `select` returns holds, counted as its flags change. */
@@ -289,8 +381,8 @@ export class BrushMasks {
       axis = {
         key: "",
         groups: new Map(),
-        membership: new Uint32Array(this.rowCount),
-        mask: new Uint8Array(this.rowCount),
+        membership: new Uint8Array(this.rowCount),
+        bits: new Uint32Array(this.words),
         snapshot: null,
         active: false,
       };
@@ -298,13 +390,15 @@ export class BrushMasks {
     }
     const current = axis;
     const groups = this.groups(selection);
+    if (groups.size > MAX_AXIS_COLUMNS) {
+      throw new Error(`Brushes of one axis read at most ${MAX_AXIS_COLUMNS} columns`);
+    }
     const change = (row: number, included: boolean) => {
       const wasSelected = current.membership[row] !== 0;
       current.membership[row] += included ? 1 : -1;
-      const selected = current.membership[row] !== 0;
-      if (wasSelected === selected) return;
-      current.mask[row] = Number(selected);
-      if (current.active) this.changeFailure(row, selected ? -1 : 1);
+      if (wasSelected === (current.membership[row] !== 0)) return;
+      current.bits[row >>> 5] ^= 1 << (row & 31);
+      if (current.active) this.flip(row);
     };
     for (const column of new Set([...axis.groups.keys(), ...groups.keys()])) {
       const before = axis.groups.get(column);
@@ -336,41 +430,22 @@ export class BrushMasks {
   axisMask(dimension: string, selection: AxisSelection): Uint8Array {
     this.assertUsable();
     const axis = this.updateAxis(dimension, selection);
-    axis.snapshot ??= axis.mask.slice();
+    this.settle();
+    axis.snapshot ??= this.expand((word) => axis.bits[word]);
     return axis.snapshot;
   }
 
-  private visitRejected(axis: AxisState, delta: number): void {
-    // Every rejected row is outside each group's union. Use the broadest ready
-    // union to enumerate a superset of rejected rows, including undefined cells.
-    let candidate: { index: SelectionIndex; intervals: IndexInterval[] } | null = null;
-    let covered = -1;
-    for (const group of axis.groups.values()) {
-      const index = group.column.index;
-      if (index === null) continue;
-      const intervals = group.intervals ?? selectionIntervals(index, group.ranges);
-      const count = intervals.reduce((total, [start, end]) => total + end - start, 0);
-      if (count > covered) {
-        candidate = { index, intervals };
-        covered = count;
-      }
+  /** One flag per row from the bits `wordAt` returns for each word. */
+  private expand(wordAt: (word: number) => number): Uint8Array {
+    const rows = new Uint8Array(this.rowCount);
+    for (let word = 0; word < this.words; ++word) {
+      const bits = wordAt(word);
+      if (bits === 0) continue;
+      const base = word * 32;
+      const end = Math.min(32, this.rowCount - base);
+      for (let bit = 0; bit < end; ++bit) rows[base + bit] = (bits >>> bit) & 1;
     }
-    const visit = (row: number) => {
-      if (axis.mask[row] === 0) this.changeFailure(row, delta);
-    };
-    if (candidate === null) {
-      for (let row = 0; row < axis.mask.length; ++row) visit(row);
-      return;
-    }
-    const { index, intervals } = candidate;
-    let start = 0;
-    for (const [low, high] of intervals) {
-      for (let position = start; position < low; ++position) visit(index.order[position]);
-      start = high;
-    }
-    for (let position = start; position < index.order.length; ++position)
-      visit(index.order[position]);
-    for (const row of index.missing) visit(row);
+    return rows;
   }
 
   /** Live mask of rows inside every active axis, in original row order. */
@@ -379,14 +454,15 @@ export class BrushMasks {
     for (const [dimension, axis] of this.axes) {
       if (!axis.active || selections.has(dimension)) continue;
       axis.active = false;
-      this.visitRejected(axis, -1);
+      this.activeChanged = true;
     }
     for (const [dimension, selection] of selections) {
       const axis = this.updateAxis(dimension, selection);
       if (axis.active) continue;
       axis.active = true;
-      this.visitRejected(axis, 1);
+      this.activeChanged = true;
     }
+    this.settle();
     return this.selected;
   }
 
@@ -406,12 +482,9 @@ export class BrushMasks {
     if (this.passing?.dimension === dimension && this.passing.key === others) {
       return this.passing.rows;
     }
-    const own = this.axes.get(dimension);
-    const rows = new Uint8Array(this.failures.length);
-    for (let row = 0; row < rows.length; ++row) {
-      const ownFailure = own?.active === true && own.mask[row] === 0 ? 1 : 0;
-      rows[row] = this.failures[row] === ownFailure ? 1 : 0;
-    }
+    this.settle();
+    const axes = this.activeAxes.filter((axis) => axis !== this.axes.get(dimension));
+    const rows = this.expand((word) => this.intersection(word, axes));
     this.passing = { dimension, key: others, rows };
     return rows;
   }

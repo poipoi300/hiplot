@@ -3658,3 +3658,33 @@ long tasks during the gesture and input-to-next-frame latency of its 30 moves:
 A profile of the first three moves shows no selection work left on the main
 thread; what remains is drawing the SVG brush and its value tags, about 9 ms a
 move at that slowdown (1.5 ms without it).
+
+### One bit per row per brushed axis
+
+On the brush worker, a brush's first move still cost a pass over about every
+row: each row its new axis left out had its count of failing axes raised, a
+scattered write per row in the column's sorted order (4 bytes of counts and a
+byte of flags per row per brushed axis, and 5 bytes per row overall). Each
+brushed axis now keeps one bit per row (and a byte per row counting how many of
+its columns select it, for axes brushed through several), and the selection is
+the intersection of the active axes' bits. Adding or removing an axis
+intersects them again a 32-row word at a time and writes only the flags that
+change, in row order; a move rechecks only the rows whose bit it flipped,
+against each active axis's bit. Memory per brushed axis falls from 5 to 1.125
+bytes per row, and the selection's own state from 5 to 1.125.
+
+The selection engine alone on the CPU (Bun, indexes ready, two numeric columns,
+a new tiny brush on the second axis while the first is brushed, then 60 moves
+growing it by 0.2% of the range each; medians of seven interleaved repetitions,
+three runs on a machine heavily loaded by other work):
+
+| Rows | First brush, counts → bits ms | Move, counts → bits ms |
+|---|---|---|
+| 50,000 | 0.96 / 0.86 / 1.30 → 0.42 / 0.54 / 0.77 | 0.018 / 0.016 / 0.024 → 0.045 / 0.019 / 0.029 |
+| 1,000,000 | 99 / 95 / 75 → 3.4 / 3.0 / 2.8 | 0.34 / 0.25 / 0.30 → 0.40 / 0.23 / 0.29 |
+
+A first brush's scattered writes suffer most from the contention (16 ms on a
+quieter run of the same machine, against 2.3 ms with bits); moves stay within
+the run-to-run noise. Rechecking a flipped row's whole word instead of its own
+bit made moves at a million rows about 40% slower on the quieter run, so a move
+sets only the flags it can change.
