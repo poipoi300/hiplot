@@ -308,6 +308,33 @@ test("brushes are restored after a reload", async ({ page }) => {
   await expect.poll(() => selected(page)).toBeLessThan(total);
 });
 
+test("Refresh reloads the experiment with the brushes' selection still counted", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  const total = (await counts(page)).total;
+  // A categorical brush saves the categories it selects, which load back as the same filter.
+  await brushAxis(page, "c", 0, 0.15);
+  await expect.poll(() => selected(page)).toBeLessThan(total);
+  const brushed = await selected(page);
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(bands(page, "c")).toHaveCount(1);
+  await expect.poll(() => counts(page)).toEqual({ selected: brushed, total });
+});
+
+test("Refresh keeps the rows Keep left", async ({ page }) => {
+  await loadDemo(page);
+  const total = (await counts(page)).total;
+  await brushAxis(page, "seed", 0.1, 0.3);
+  await expect.poll(() => selected(page)).toBeLessThan(total);
+  const kept = await selected(page);
+  await page.getByRole("button", { name: "Keep" }).click();
+  await expect.poll(() => counts(page)).toEqual({ selected: kept, total: kept });
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(page.locator("svg g.dimension").first()).toBeAttached();
+  await expect.poll(() => counts(page)).toEqual({ selected: kept, total: kept });
+});
+
 test("a brush that selects nothing is restored in place after a reload, still selecting nothing", async ({
   page,
 }) => {

@@ -271,6 +271,20 @@ test("clearing a lasso selects every row again", async ({ page }) => {
   expect((await selectedUids(page)).length).toBe(all);
 });
 
+test("Refresh drops a lasso selection, which is not saved, and selects every row", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  const all = await filteredCount(page);
+  await lasso(page, await open3D(page), [0.3, 0.3], [0.7, 0.7]);
+  const chip = page.getByTestId("lasso-selection");
+  await expect(chip).toBeVisible();
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(page.getByRole("img", { name: /3D scatter plot/ })).toBeVisible();
+  await expect(chip).toBeHidden();
+  await expect.poll(async () => (await selectedUids(page)).length).toBe(all);
+});
+
 /** The filters Keep and Exclude saved in the page state, which replay on reload. */
 const savedFilters = (page: Page): unknown =>
   JSON.parse(new URL(page.url()).searchParams.get("hip.filters") ?? "null");

@@ -616,6 +616,10 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       params_def: params_def,
       params_def_unfiltered: params_def_unfiltered,
       rows_filtered_filters: initFilters,
+      // Every row is selected again. The filter of the selection before a
+      // reload must go too: displays restoring their selection publish the
+      // same filter, which would then be taken for the current one.
+      rows_selected_filter: null,
       migratedDistributionAxes,
       ...datasets,
     });
