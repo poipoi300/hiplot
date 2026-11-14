@@ -379,6 +379,9 @@ function fitText(element: SVGTextElement, fullText: string, maxLength: number): 
   return element.getComputedTextLength();
 }
 
+/** The full text each brush tag element shows, fitted and measured when it changes. */
+const brushTagTexts = new WeakMap<SVGGElement, string>();
+
 /**
  * Like `fitText`, with a measuring function instead of the DOM: brush tags
  * change on every frame of a drag, and measuring SVG text forces a layout.
@@ -1863,14 +1866,14 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
     function brush(publish: boolean): void {
       /**
-       * Called whenever a brush changes. Draws the brushes, recomputes and
-       * draws the selected lines right away; with `publish`, also hands the
-       * selection to HiPlot, which updates the other displays (done when a
-       * brush gesture ends).
+       * Called whenever a brush changes. Recomputes and draws the selected
+       * lines right away; with `publish`, also draws every brush and hands
+       * the selection to HiPlot, which updates the other displays (done when
+       * a brush gesture ends). A gesture's moves draw their brush themselves
+       * (see continueBrushGesture), ahead of the selection.
        */
       me.props.context_menu_ref?.current?.hide();
-      // Mid-gesture only the axis under the pointer changes.
-      me.drawBrushes(me.brushGesture?.dimension);
+      if (publish) me.drawBrushes();
       const actives = me.brushedDimensions();
       if (me.state.brushed !== actives.length > 0) {
         me.setState({ brushed: actives.length > 0 });
@@ -2304,9 +2307,21 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       )
       .classed(pstyle.tagActive, (label) => label.brush === active)
       .classed(pstyle.tagDimmed, (label) => active !== null && label.brush !== active);
-    tags.filter((label) => label.brush === active).raise();
+    // The active brush's tags go on top of the axis's other elements, unless they
+    // already are its last children: moving a node costs a layout on every move.
+    const raised = tags.filter((label) => label.brush === active).nodes();
+    const parent = raised[0]?.parentNode;
+    if (parent !== undefined && parent !== null) {
+      const last = Array.from(parent.childNodes).slice(-raised.length);
+      if (raised.some((node, index) => last[index] !== node)) {
+        for (const node of raised) parent.appendChild(node);
+      }
+    }
     const measure = this.tagTextMeasure();
     tags.each(function (this: SVGGElement, label) {
+      // A drag changes a tag's text on few frames: it is measured and set only then.
+      if (brushTagTexts.get(this) === label.text) return;
+      brushTagTexts.set(this, label.text);
       const text = d3.select(this).select<SVGTextElement>("text").node();
       if (text === null) {
         throw new Error("Brush tag lost its text");
