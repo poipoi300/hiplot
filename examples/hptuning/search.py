@@ -16,7 +16,7 @@ weight decay and label smoothing are applied per model.
 
 import math
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -486,8 +486,16 @@ class SearchSettings:
     rescore_seeds: int
 
 
-def run_search(settings: SearchSettings) -> list[dict[str, Any]]:
-    """Runs the search; one result row per trial, in the order they were proposed."""
+def run_search(
+    settings: SearchSettings, save: Callable[[Sequence[dict[str, Any]]], None], save_every_s: float
+) -> list[dict[str, Any]]:
+    """Runs the search; one result row per trial, in the order they were proposed.
+
+    Between rounds, once `save_every_s` seconds have passed since the last
+    save, and after the last round, the trials so far are handed to `save`,
+    not yet re-scored and without the baselines: a search stopped early loses
+    at most that long plus a round.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device} ({torch.cuda.get_device_name(device) if device.type == 'cuda' else 'CPU'})", flush=True)
     torch.manual_seed(settings.seed)
@@ -496,6 +504,7 @@ def run_search(settings: SearchSettings) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     completed: list[optuna.trial.FrozenTrial] = []
     started = time.perf_counter()
+    saved = started
     while len(rows) < settings.trials:
         size = min(settings.round, settings.trials - len(rows))
         # Random search first; then multivariate TPE fitted to the most recent
@@ -518,15 +527,18 @@ def run_search(settings: SearchSettings) -> list[dict[str, Any]]:
         for trial, result in zip(asked, results, strict=True):
             study.tell(trial, objective_value(result, len(data.y_val)))
         completed.extend(study.trials[-size:])
-        rows.extend(results)
+        rows.extend({**result, "model": "mlp"} for result in results)
         best = min(rows, key=lambda row: objective_value(row, len(data.y_val)))
         print(
             f"{len(rows):>6} trials  best val error {best['best_val_error']:.4f} (loss {best['best_val_loss']:.4f})  "
             f"elapsed {time.perf_counter() - started:6.1f} s (training {time.perf_counter() - proposed:5.1f} s)",
             flush=True,
         )
+        if len(rows) == settings.trials or time.perf_counter() - saved >= save_every_s:
+            save(rows)
+            saved = time.perf_counter()
     rescored = rescore(rows, data, device, settings)
     unscored = dict.fromkeys(next(iter(rescored.values())), math.nan)
-    trial_rows = [{**row, "model": "mlp", **rescored.get(int(row["uid"]), unscored)} for row in rows]
+    trial_rows = [{**row, **rescored.get(int(row["uid"]), unscored)} for row in rows]
     print(f"rescored the top {len(rescored)} configurations over {settings.rescore_seeds} seeds", flush=True)
     return trial_rows + baselines(data)

@@ -14,9 +14,11 @@
 """A real hyperparameter search, rendered with HiPlot.
 
 Trains thousands of small MLPs on the UCI handwritten digits (see search.py)
-and writes every trial to a standalone HiPlot page. With --from-parquet, the
-page is rendered again from the trials a previous run wrote with --parquet,
-without training; that path imports neither torch nor optuna.
+and writes every trial to a standalone HiPlot page and a Parquet file (see
+--parquet). The search saves its trials so far to that file every few minutes,
+so a search stopped early can still be rendered. With --from-parquet, the page
+is rendered again from such a file, without training; that path imports
+neither torch nor optuna.
 
 The digits are split into training, validation and test rows. Each trial keeps
 the epoch with the lowest validation error, ties broken by plain (unsmoothed)
@@ -34,19 +36,29 @@ regression) are rows with negative uids, scored on the same splits; `model`
 tells them apart from the trials.
 
 Usage:
-    uv run examples/hptuning/tune.py --out hptuning.html [--trials 10000] [--parquet hptuning.parquet]
+    uv run examples/hptuning/tune.py --out hptuning.html [--trials 10000] [--parquet trials.parquet] [--save-every 300]
     uv run examples/hptuning/tune.py --out hptuning.html --from-parquet hptuning.parquet
 """
 
 import argparse
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
 import hiplot as hip
 
 LOG_COLUMNS = ("lr", "weight_decay", "best_val_loss", "best_train_loss", "last_val_loss", "last_train_loss")
+
+
+def write_trials(rows: Sequence[Mapping[str, Any]], path: Path) -> None:
+    """Writes the trials as Parquet, replacing `path` only once written, so a kill never leaves it torn."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    written = path.with_name(f"{path.name}.partial")
+    # Baseline rows have no hyperparameters; infer the schema from every row.
+    pl.DataFrame(rows, infer_schema_length=None).write_parquet(written)
+    written.replace(path)
 
 
 def write_page(experiment: hip.Experiment, out: Path) -> None:
@@ -108,7 +120,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", type=Path, required=True, help="HiPlot page to write")
     parser.add_argument("--from-parquet", type=Path, help="render the trials of this Parquet file instead of searching")
-    parser.add_argument("--parquet", type=Path, help="also write the trials as Parquet")
+    parser.add_argument(
+        "--parquet",
+        type=Path,
+        help="where the search saves its trials as Parquet (default: the page's path with .parquet)",
+    )
+    parser.add_argument(
+        "--save-every", type=float, default=300.0, help="seconds between saves of the trials during the search"
+    )
     parser.add_argument("--trials", type=int, default=10_000)
     parser.add_argument("--round", type=int, default=1000, help="trials proposed at once")
     parser.add_argument("--group", type=int, default=250, help="trials trained at once")
@@ -129,6 +148,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Imported here so that rendering from Parquet needs neither torch nor optuna.
     from search import SearchSettings, run_search
 
+    parquet = args.parquet if args.parquet is not None else args.out.with_suffix(".parquet")
     rows = run_search(
         SearchSettings(
             trials=args.trials,
@@ -139,14 +159,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             seed=args.seed,
             rescore_top=args.rescore_top,
             rescore_seeds=args.rescore_seeds,
-        )
+        ),
+        save=lambda trials: write_trials(trials, parquet),
+        save_every_s=args.save_every,
     )
     # Trials are written before the page, so a failed render never loses a search.
-    if args.parquet is not None:
-        args.parquet.parent.mkdir(parents=True, exist_ok=True)
-        # Baseline rows have no hyperparameters; infer the schema from every row.
-        pl.DataFrame(rows, infer_schema_length=None).write_parquet(args.parquet)
-        print(f"wrote {args.parquet}")
+    write_trials(rows, parquet)
+    print(f"wrote {parquet}")
     experiment = hip.Experiment.from_iterable(rows)
     write_page(experiment, args.out)
     print(f"wrote {args.out}")
