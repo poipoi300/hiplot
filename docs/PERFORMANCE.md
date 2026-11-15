@@ -522,8 +522,10 @@ its actual unmasked GL renderer (never infer hardware from requested flags).
 Both use a 1,000 × 700 viewport and device pixel ratio 1. The scroll phase narrows
 the viewport to 360 × 700 so even short integer tick labels overflow. Forced
 full quality disables row sampling/resolution reduction, but brushing and axis
-dragging retain the existing plain-line draft path above 20,000 rows. Release,
-initial and standalone redraw frames are full-quality anti-aliased frames.
+dragging retained the plain-line draft path above 20,000 rows when these
+measurements were taken. Brushing on a GPU now sums retained blocks instead
+(see **Real-time exact brushing from retained blocks**). Release, initial and
+standalone redraw frames are full-quality anti-aliased frames.
 
 Per-step samples include brush callback CPU time, filtering, object selection
 materialization, cached selection flags, per-column geometry/color lookup,
@@ -3242,3 +3244,471 @@ p50/p95/max of 8/8/17 ms and zero stalls in 120 frames. Median full redraw is
 measurements at phone dimensions, not phone hardware measurements or a speedup
 claim. The paired report is `outputs/brush-mode-switch/phone-density.json`;
 refreshed offline samples are in `outputs/mobile-samples-brush-fix/`.
+
+## Real-time exact brushing from retained blocks
+
+Measured 2026-11-12 from `56ad6da` on the RTX 5090 (ANGLE D3D11), 1M × 10
+seeded benchmark rows, 1000 × 700 viewport, device pixel ratio 1, exact
+(`full`) mode. The goal is a completed exact frame for every brush move
+within one 60 Hz frame (16.6 ms), with no draft, sampling or resolution
+reduction.
+
+### Method
+
+During a brush gesture only the brushed axis's selection changes. Rows that
+fail another axis's brushes stay deselected; the others switch between
+selected and deselected in long runs when sorted by the brushed axis. The
+exact renderer therefore:
+
+- ranks the rows passing the other axes (`BrushMasks.passingExcept`) by their
+  pixel on the brushed axis, a linear two-pass radix sort of the Float32
+  pixels, and groups them in near-equal blocks; rows outside the focus form one
+  more block. A block keeps the plot's draw order: consecutive rows of a sorted
+  block all start at the same pixels of the brushed axis, and blending one
+  pixel back to back serializes the GPU (about 10% slower partial draws);
+- draws each block once, every row as if selected, into a layer of float array
+  textures with the density targets' own layout: sums, a categorical coverage
+  sum, the "lowest"/"highest" line on top. This build is one full-quality pass
+  over every row, in the existing fenced batches;
+- per frame, counts selected rows per block from the rows whose flags changed
+  (a word-at-a-time comparison), redraws only partly selected blocks, and sums
+  every other layer as selected or deselected into the density targets, then
+  runs the unchanged tone map;
+- keeps up to four partly selected blocks drawn in slots, each split into its
+  selected and its deselected rows in two layers of the same format. A slot
+  draws only what its rows' flags changed: rows that joined a half are drawn
+  onto it, and only a half that lost rows is drawn again, so a fixed brush edge
+  costs nothing and an edge moving within its block redraws the rows beyond it.
+  One 16-byte target per fragment halves blending compared with the line pass's
+  two targets: two partial blocks took 5.4 ms with two targets, 2.9 ms with one.
+  GPU timer queries at 1M rows put an edge drag's slot drawing at a median
+  1.37 ms rather than 3.1–3.3 ms for whole halves. A brush moving 1.5 pixels a
+  frame enters a fresh block every second frame, which still draws whole.
+
+A frame never subtracts a row's contribution: per-pixel peaks and the line on
+top are maxima, which have no inverse (see **Incremental density subtraction:
+rejected**). Blocks are classified from the actual selection, so the picture
+does not depend on the focus flags; flags that disagree with the brushes only
+leave more rows to draw one by one, and a frame with more than half the rows
+partly selected draws every row instead. Overflowing slots draw directly into
+the density targets.
+
+The layers take at most 1 GiB (`BLOCK_MEMORY_BYTES`): 153 layers of
+944 × 465 RGBA32F at device pixel ratio 1, 143 blocks of about 7,000 rows
+(142 since the block count follows the rows' square root; see **The first
+gesture on a new axis**).
+When fewer than 16 focus blocks fit, as at device pixel ratio 2 on a large
+plot, and on software rasterizers, brushing keeps its draft frames. Blocks stay
+allocated while the plot can reuse them (the next gesture on the same axis, the
+release frame); the first frame that cannot use them frees them.
+
+Building a fresh axis's blocks costs a full frame, so the plot prepares the
+axis a brush is likely to start on (a touch only warms its column; see **The
+first gesture on a new axis**): after the pointer rests 120 ms on an axis's
+brush band, it builds and sorts that axis's selection column
+(`BrushMasks.warm`) and redraws the same selection with that axis as an active
+focus, which builds its blocks in the worker: the same selection, within the
+summation-order difference above. A pointer only crossing the band prepares
+nothing, nor does a plot without a brush selection to focus or one mid-gesture.
+A build cannot be interrupted: a press on another axis right after a rest
+waits for the rested axis's build before its own.
+
+Host-side costs mattered once GPU work fell to a few milliseconds:
+
+- Worker fence polling created a `MessageChannel` per poll, about 400 per
+  frame. Every ~20 frames a collection stalled the worker for 10–13 ms, seen
+  as single 10–13 ms gaps between polls. One channel per wait removes them.
+- Timers nested this deeply wait at least 4 ms; the earlier `setTimeout`
+  completion wait added up to 4 ms per frame.
+- A brush move arriving while a frame renders waited for the next animation
+  frame; it now runs as soon as the image arrives.
+- Each brush frame read the theme's context color with `getComputedStyle`,
+  forcing a style recalculation after the brush's SVG changed, and counted the
+  million selection flags; the color is now kept per theme and the brush masks
+  count selected rows as flags change. Brush CPU fell from about 1.3 to 0.6 ms.
+
+### Picture equivalence
+
+`tests/brush-blocks.spec.ts` compares block frames with full frames of the same
+selection, byte for byte, on the worker's premultiplied RGBA8 output (read back
+through a texture: a 2D canvas's unpremultiplied readback rounds by up to half
+a level). Cases cover numeric mean/highest/lowest and categorical colors,
+curved and straight lines, missing values on both axes, a second brushed axis,
+three brushes on the brushed axis (six edges, more than the slots), and focus
+flags that disagree with the brushes. Every frame differs by at most one 8-bit
+level, in 2–52 of about 1.5 million channels: float summation order. A real
+brush gesture draws no drafts and reuses the blocks through release.
+
+At 1M rows the release frame from blocks against a full redraw:
+
+| Data / shape | Max difference | Differing channels / 1,755,840 |
+|---|---:|---:|
+| Continuous / curved | 1 | 57 |
+| Continuous / straight | 1 | 77 |
+| Integer / curved | 1 | 683 |
+| Integer / straight | 1 | 189 |
+
+### Measurements
+
+`measureParallelBenchmark` gained four phases after the settled brush steps:
+`drag` moves the brush by its body (both edges move) and `dragEdge` its top
+edge, across a fifth of the axis and back in one second, a move on every
+animation frame; `drag60` and `dragEdge60` move at most 60 times a second, as
+a 60 Hz pointer. `inputToImage` is brush input to the image arriving on the
+page, without the two extra animation frames of `inputToVisible`. The display
+ran at 120 Hz, so in the every-frame phases a frame slower than 8.3 ms also
+delays the next input: stricter than one 60 Hz frame.
+
+First measurements, before incremental halves and the host-side trims, one
+load per variant:
+
+| Data / shape | Move input → image p50 / p95 / max | Edge p50 / p95 / max | Release | First gesture frame |
+|---|---|---|---:|---:|
+| Before, every variant | draft frames, 254–264 ms | same | ~500 ms | 254–264 ms |
+| Continuous / curved | 10.3–11.8 / 14.7–16.6 / 16.3–19.8 | 6.3–6.5 / 9.2–10.1 / 10.8–12.7 | 2.7 | 451–616 |
+| Continuous / straight | 7.5 / 10.7 / 12.0 | 5.9 / 8.9 / 13.5 | 2.9 | 437 |
+| Integer / curved | 3.9 / 7.9 / 10.5 | 3.3 / 6.3 / 7.8 | 3.4 | 432 |
+| Integer / straight | 3.3 / 6.8 / 10.6 | 3.2 / 6.5 / 7.5 | 2.1 | 434 |
+
+The continuous curved rows give the range of three loads. Every drag delivered
+111–119 images for 120 inputs. Brush frames are now full-quality anti-aliased
+frames, not drafts.
+
+The final round ran while the workstation was heavily loaded by other work: the
+same block build took 0.67–0.76 s instead of 0.43–0.48 s, and these wall-clock
+figures are about 40% slower than the table above; they are retained as
+measured, to be repeated on an idle machine. Input → image p50 / p95, one load
+per variant (two for continuous curved):
+
+| Data / shape | `drag60` | `dragEdge60` | `drag` | `dragEdge` |
+|---|---|---|---|---|
+| Continuous / curved | 9.8–10.3 / 13.8–14.7 | 6.9–7.3 / 11.3–11.9 | 12.6–13.0 / 18.6–19.2 | 6.3–6.7 / 10.5–10.6 |
+| Continuous / straight | 10.9 / 14.5 | 8.0 / 10.5 | 12.8 / 19.4 | 7.1 / 11.1 |
+| Integer / curved | 4.7 / 9.8 | 4.5 / 7.8 | 4.8 / 10.0 | 4.7 / 10.2 |
+| Integer / straight | 4.8 / 9.2 | 4.3 / 8.4 | 5.1 / 10.8 | 4.8 / 9.8 |
+
+The first move on a fresh axis, under the same load: 0.66–0.76 s without
+preparation, 34–43 ms after resting on its brush band. Of the latter, 21–34 ms
+is the selection's first update of a newly active axis, which counts every
+rejected row (about 700,000 here).
+
+Limitations, not hidden by the steady-state numbers:
+
+- Without a rest on the brush band, the first frame of a gesture on a newly
+  brushed axis builds the blocks: about 0.43–0.62 s on an idle machine, slower
+  than the 0.25 s draft it replaces. Later gestures on the same axis, while
+  the other axes' brushes stay, start at once.
+- Moving a whole brush on continuous data with a move every 120 Hz frame
+  exceeds 16.6 ms at p95 under load (18.6–19.4 ms); at 60 Hz input it stays
+  below (13.8–14.7 ms).
+- Up to 1 GiB of GPU memory stays allocated between gestures, and resting on a
+  brush band allocates it too.
+- These are one workstation's measurements at device pixel ratio 1.
+
+Reproduce after `bun run build`:
+
+```bash
+bun build bench/parallel.ts --target=node --packages=external --outfile=./node_modules/.cache/parallel-bench.mjs
+node node_modules/.cache/parallel-bench.mjs --quality full --backend hardware --rows 1000000 --reps 1 --steps 3 --out <blocks.json>
+```
+
+### Worker from the first frame, exact lines on every GPU
+
+With brushing real-time, the maintainer decided on 2026-11-12 that lines
+render on a worker from the first frame, and that Automatic picks exact lines on
+a GPU at any size. Before, a plot drew on the page until two frames exceeded
+50 ms; a freshly opened million-row page then drew its first gesture on the page,
+hitched while moving to the worker, and only then built blocks. Automatic also
+chose continuous density above 250,000 rows on hardware, whose brushing takes
+75–150 ms per frame at 1M rows against 5–15 ms for exact blocks.
+
+Continuous density remains the software rasterizer's picture (above 6,000 rows
+or after slow frames) and the explicit "low" choice: exact lines cost about
+100 s per frame at 1M rows on SwiftShader. On a GPU, scrolling, axis drags and
+the first frame of exact lines still draw every row (about 0.25 s drafts at 1M
+rows), where continuous density composites cached pair images. Gesture drafts
+now follow full frames' cost rather than where the plot renders: two full
+frames in a row over 50 ms turn them on, one under 25 ms turns them off.
+
+Worker frames cost small plots their page-side speed. The standalone benchmark
+(RTX 5090, 1600 × 1000, machine heavily loaded, two loads per version and
+interleaved runs; ranges across runs):
+
+| Size | Version | Initial drawn ms | Full redraw ms | Brush end → lines ms |
+|---|---|---:|---:|---:|
+| 5k × 20 | Page until promoted | 326–432 | 12–14 | 1–2 |
+| 5k × 20 | Worker | 476–579 | 39 | 15 |
+| 50k × 50 | Page until promoted | 1286–1502 | 305–320 | 71–83 |
+| 50k × 50 | Worker | 1539–1689 | 336–342 | 71–72 |
+
+The worker's first frame waits for its startup, WebGL context and shaders; each
+later frame for a message round trip, completion polling and the bitmap's return.
+Worker frames first restarted their GPU batches at 128 rows, waiting for each:
+a 5k redraw took 46–47 ms and a 50k one 366–374 ms. Keeping the learned batch
+size between frames gives the figures above. Brush drags stayed at 4 ms frames.
+
+### Scrolling by moving the previous density
+
+A horizontal scroll moves every axis by the same offset. Frames drawn while
+scrolling are marked transient. When a transient frame's offset is a whole
+number of target pixels, the renderer copies its previous frame's float density
+targets moved by it into spare targets, draws into the exposed columns only the
+run of segments whose lines, stubs and corners can reach them
+(`segmentsCovering`, under a scissor, in the usual cooperative batches), and
+tone-maps as usual; a transient frame identical to the previous one only
+tone-maps. The renderer records what its targets hold (geometry, rows, draw
+order, colors, selection revision, style), so any other change draws every row,
+as does a move whose exposed columns need every segment. The redraw when the
+scroll settles ends the scroll itself rather than waiting for the clock, so it
+is never transient and draws every row: the picture at rest is always a full
+frame. Moved frames report that they did not draw every row, so their time does
+not turn gesture drafts off. The spare targets (48 bytes per pixel) are kept
+through the scroll and freed by the next settled frame.
+
+Exposed columns are drawn exactly as a full frame draws them: zero differing
+channels in every test. Moved columns keep the earlier frame's picture, which
+differs from a full frame at the new offset: vertex positions are float32
+(curve evaluation, normals, corners, normalized device coordinates), which a
+whole-pixel move does not translate exactly, so fragments at line joins can
+fall in or out. `tests/scroll-shift.spec.ts` measures, against full frames:
+
+| Plot | Max difference, levels | Differing channels |
+|---|---:|---:|
+| 4,000 rows, curved | 2 | 628–739 of 1,086,240 |
+| 4,000 rows, straight | 2–3 | 164–272 of 1,086,240 |
+| 3,000 rows, device pixel ratio 2, missing values | 2 | 3,001 of 4,344,960 |
+| 30 rows, curved | 7–8 | 78–217 of 1,086,240 |
+
+With few lines, a fragment that falls in or out carries a whole line's
+coverage, hence the sparse plot's larger differences. They last only while the
+scroll moves; the settled frame removes them. A move that is not a whole number
+of target pixels draws every row; at a fractional device pixel ratio, where a
+CSS pixel is not a whole number of target pixels, that is most moves.
+
+Cooperative batches (about 6 ms of GPU time each) used to wait for each batch
+to finish before submitting the next, so the GPU idled for every completion
+round trip. One batch now stays queued behind the one in flight. Each finished
+batch adapts the size it was drawn with from its own rows and time; a short last
+batch of a range only shrinks it, after an overrun. Scrolled strips keep their
+own size, since their scissored rows skip most fragment work and a size learned
+on them would make the next full frame's first batches too long; a strip's copy
+pass is a batch of its own, so its time is not charged to the strip's rows. At
+1M rows, one load per run (machine loaded by other work):
+
+| Batching | First brush frame (block build) ms | Brush move input → image p95 ms | Brush edge input → image p95 ms |
+|---|---:|---:|---:|
+| One batch at a time (2 runs) | 451.5–467.1 | 12.4–13.4 | 8.1–9.8 |
+| One queued behind (2 runs) | 355.7–358.5 | 9.9–10.5 | 6.6–7.4 |
+
+At 1M rows on the RTX 5090, 40 scroll steps of 7 CSS pixels, one per animation
+frame, in a scroller 344 pixels wide (a 304-pixel canvas); the settle frame is
+not counted:
+
+| Version | Images for 40 steps | Input → image p50 / p95 ms | Worker frame p50 / p95 ms |
+|---|---:|---:|---:|
+| Full frames | 1 | 217.5 / 217.5 | 153.3 / 212.3 |
+| Moved density, one batch at a time (2 runs) | 4 | 48.8–50.1 / 63.2–65.2 | 41.0–41.1 / 57.7–60.2 |
+| Moved density, one queued behind (2 runs) | 9–13 | 5.7–26.8 / 40.7–60.1 | 0.9–11.9 / 35.6–55.1 |
+
+Scroll runs vary more than these ranges: nine runs of builds that queue a
+batch behind the one in flight, during this work, gave 7–13 images with p95
+38.5–62.3 ms. Scrolling at 1M rows is faster but not real-time. Frames whose exposed columns
+fall past the last axis only copy and tone-map (about 1 ms); the others draw
+every row through the segments that reach the strip. Worker batch logs show
+those strips are GPU-bound, not wait-bound: a frame takes 20–47 ms in batches
+of about 5 ms each, growing with the strip's width and its segments (two
+segments cost about twice one). Slow frames widen the next strip, because the
+inputs that arrive meanwhile add up to one larger move: strips of 42–70 pixels,
+a sixth to a quarter of this canvas, at 1M rows. Drawing only the curve points
+whose strip pieces reach the exposed columns (a curve's x depends on t alone)
+did not change these numbers and was not kept: the strips here lay near axes,
+where stubs of rows with missing values need almost every point. Strip batches
+reached the 32,768-row cap at about 5 ms, so their own batch size does not
+speed them up either. Scrolling invalidates the brushed axis's retained
+blocks, so the next brush gesture builds them again unless the pointer rests on
+a brush band first.
+
+Axis drags remain full frames. Dragging axis k changes only segments k and
+k + 1, and with curves also k - 1 and k + 2 through their neighbors' slopes, so
+a frame could keep the rest of the density and redraw that region. It would
+still draw those segments for every row: about 2/11 (straight) to 4/11 (curved)
+of a full frame, roughly 50–200 ms at 1M rows, not real-time.
+
+### One render worker that shows its own frames
+
+The worker above drew into its own canvas, turned each finished frame into an
+`ImageBitmap` and posted it back; the page then showed it, and a brush move
+waited for that image before posting the next state. Every frame therefore
+waited for the page's main thread twice, and an image that finished while a
+newer request waited was thrown away. Continuous density took a second worker
+and was shown by the page's renderer, so the two modes paced differently.
+
+Since 2026-11-13, one render worker owns the lines canvas
+(`transferControlToOffscreen`) and draws both modes on it, showing each finished
+frame itself; only a small reply comes back for timing and busy state. The page
+posts state at most once per display frame (a brush move's first input at once,
+the latest of the others at the next frame), never waiting for the worker; the
+worker applies each request's deltas on arrival and draws the newest state when
+a frame starts. Exact frames always finish; a continuous refinement gives way to
+a gesture's draft or the other mode. A worker canvas shows whatever it holds
+after each worker task, so a frame drawn over several tasks writes and resizes
+the canvas only in its last: the tone-map composite, the continuous image, or,
+without float targets, a blit from an 8-bit offscreen target.
+
+Redraw call to GPU completion, the same measurement on both versions (page
+renderer's fence on `main`, the worker's reply here), RTX 5090, 1600 × 1000,
+15 redraws per load, two interleaved loads, machine loaded by other work:
+
+| Size | `main` p50 ms | Render worker p50 ms | First frame `main` / worker ms |
+|---|---:|---:|---:|
+| 1k × 10 | 1.7–2.1 | 2.5–3.0 | 516–520 / 617–645 |
+| 5k × 20 | 5.2 | 5.4–5.7 | 185–200 / 243–253 |
+| 50k × 50 | 78.5 | 53.3–53.5 | 1962–2087 / 1914–2057 |
+
+Small plots pay two message hops (under a millisecond) and, once, the worker's
+startup: about 50–125 ms more before the first frame. The standalone benchmark
+(`bench/run.ts`) times `main` when it submits its draw calls but the worker at its
+reply, after the GPU finished and the page's main thread received it, so its
+"full redraw" column overstates the difference (7–8 against 20–22 ms at 1k).
+
+At 1M rows, brush input to the frame's reply (the worker showed the frame
+before), p50 / p95 ms, one load per data kind, the display at 30 Hz under load:
+
+| Data | `drag` | `dragEdge` | `drag60` | `dragEdge60` |
+|---|---|---|---|---|
+| Continuous | 10.8 / 13.9 | 8.2 / 11.5 | 10.6 / 12.3 | 8.0 / 10.9 |
+| Integer | 5.1 / 10.9 | 4.9 / 8.7 | 5.9 / 20.4 | 5.3 / 10.5 |
+
+The integer `drag60` p95 comes from two slow GPU frames (fence p95 14.2 ms);
+every other phase stays under 16.6 ms.
+
+### The first gesture on a new axis
+
+A brush gesture on an axis without retained blocks builds them in its first
+frame. The block count was one per 256 focus rows up to what the 1 GiB layer
+budget held: about 60 canvas-sized layers at 1000 × 700 coloring by the highest
+value, whatever the row count above 15,000 rows. At 50,000 rows the first frame
+allocated and cleared about 1 GiB to spare redrawing a few hundred rows a frame.
+A brush frame sums every layer and redraws the rows of the blocks a brush's
+edges cut, so B blocks of R rows cost about B layers plus a few times R / B
+rows. The count is now sqrt(R / 50), at least 16 and at most one per 256 rows,
+within the budget (`blockCountFor`). Worker frame times for a gesture on a fresh
+axis, RTX 5090, 1000 × 700, highest-value coloring, two runs each, at 50,000
+rows (first frame; steady frame p50):
+
+| Axis | One per 256 rows, to the budget (≈60) | 32 blocks |
+|---|---|---|
+| First brushed | 104–114; 2.2–2.5 ms | 67–68; 2.5–2.6 ms |
+| Second brushed | 47; 1.2–1.6 ms | 43–44; 1.3–1.4 ms |
+| Third brushed | 25–26; 1.1–1.2 ms | 25–28; 1.2 ms |
+
+Fewer blocks build faster still (8: 52–57 ms; 16: 57–63 ms) but grow steady
+frames at larger counts: at 1M rows coloring by the mean, where the budget holds
+about 134 layers, sqrt(R / 200) = 71 blocks built 10–18% faster but took about
+1 ms more per brush frame (first axis p50 5.5 → 6.7 ms). With sqrt(R / 50) =
+142, 1M rows keep what the budget holds in every coloring mode, as before. With
+fatter blocks, an axis carrying several separate brushes reaches the
+half-the-rows-partly-selected fallback sooner: 16 blocks fall back to full frames
+from about five brushes on one axis. The rest of a first frame draws every focus
+row once, about a full frame, which only preparing the axis ahead removes.
+
+A finger never rests on a brush band before it brushes, so the 120 ms rest
+never prepared a touch's axis. A touch's pointer entering a band now builds the
+axis's selection column and starts sorting it at once, before its pointer down,
+without drawing blocks: a tap, which removes brushes, does not wait for a block
+build, and the gesture's first move builds them. On the page's main thread,
+under a 6× CPU slowdown at 50,000 rows, the first moves of a gesture on a fresh
+axis took 89, 35, 27, 25 ms without it and 57, 27, 22, 14 ms with it (19 ms of
+column building before the gesture). Until the sorted index returns, a move
+still scans every row; on an axis whose index is ready, a move takes about
+10 ms at that slowdown. Phones whose canvases exceed the block budget (25
+layers at device pixel ratio 3 rarely fit) or that lack float blending draw full
+frames, so for them the main thread's share is the first gesture's whole cost.
+
+### Selecting rows on a brush worker
+
+After those changes, a brush's first move on an axis still held the page's
+main thread for its selection: activating an axis visited every row its brush
+left out (about every row, for a new brush), a scattered write per row in the
+column's sorted order, and every move read and copied the whole selection there.
+Since 2026-11-13 the selection state (`BrushMasks`) lives on a brush worker
+(`connectBrushWorker`), which sorts columns through the selection worker over a
+port of its own. The page builds each brushed column from the rows once (when
+the pointer reaches its brush band, or at its first brush), sends it, and then
+sends only brush ranges; the brush worker returns the selection, its count and,
+for retained blocks, the rows the other axes pass. One request is in flight at
+a time and a newer one replaces the request waiting, so the worker always works
+on the newest brushes; a selection made elsewhere drops brush results still in
+flight. Selection buffers travel back and forth between the page and the worker
+instead of one allocated per move. Without workers, or after they fail (the
+error is rethrown), the same selection runs on the page. The flow badges also
+skip their per-axis DOM pass on plots that show none.
+
+First gesture on fresh axes of 50,000 rows × 10 numeric columns, real mouse
+events, 6× CPU slowdown, headless Chromium, three interleaved loads each against
+the previous commit (`7b95d70`) on a machine loaded by other work. Main-thread
+long tasks during the gesture and input-to-next-frame latency of its 30 moves:
+
+| First brushed axis | `7b95d70` | Brush worker |
+|---|---|---|
+| Long tasks, total ms | 764 / 450 / 150 | 127 / 66 / 59 |
+| Longest task ms | 115 / 79 / 84 | 72 / 66 / 59 |
+| Move latency p95 ms | 89 / 87 / 44 | 64 / 63 / 50 |
+
+A profile of the first three moves shows no selection work left on the main
+thread; what remains is drawing the SVG brush and its value tags, about 9 ms a
+move at that slowdown (1.5 ms without it).
+
+### One bit per row per brushed axis
+
+On the brush worker, a brush's first move still cost a pass over about every
+row: each row its new axis left out had its count of failing axes raised, a
+scattered write per row in the column's sorted order (4 bytes of counts and a
+byte of flags per row per brushed axis, and 5 bytes per row overall). Each
+brushed axis now keeps one bit per row (and a byte per row counting how many of
+its columns select it, for axes brushed through several), and the selection is
+the intersection of the active axes' bits. Adding or removing an axis
+intersects them again a 32-row word at a time and writes only the flags that
+change, in row order; a move rechecks only the rows whose bit it flipped,
+against each active axis's bit. Memory per brushed axis falls from 5 to 1.125
+bytes per row, and the selection's own state from 5 to 1.125.
+
+The selection engine alone on the CPU (Bun, indexes ready, two numeric columns,
+a new tiny brush on the second axis while the first is brushed, then 60 moves
+growing it by 0.2% of the range each; medians of seven interleaved repetitions,
+three runs on a machine heavily loaded by other work):
+
+| Rows | First brush, counts → bits ms | Move, counts → bits ms |
+|---|---|---|
+| 50,000 | 0.96 / 0.86 / 1.30 → 0.42 / 0.54 / 0.77 | 0.018 / 0.016 / 0.024 → 0.045 / 0.019 / 0.029 |
+| 1,000,000 | 99 / 95 / 75 → 3.4 / 3.0 / 2.8 | 0.34 / 0.25 / 0.30 → 0.40 / 0.23 / 0.29 |
+
+A first brush's scattered writes suffer most from the contention (16 ms on a
+quieter run of the same machine, against 2.3 ms with bits); moves stay within
+the run-to-run noise. Rechecking a flipped row's whole word instead of its own
+bit made moves at a million rows about 40% slower on the quieter run, so a move
+sets only the flags it can change.
+
+### Brush selections straight to the render worker
+
+Each brush selection still crossed the page: the brush worker returned a byte
+per row, and the page copied it, compared it with the last one sent and
+transferred it to the render worker. The page now links the two workers with a
+`MessageChannel`, one link id per pair. The brush worker sends each selection
+there first, as the 32-row words of its bits that changed since the last it
+sent (or every word when half of them or more did), with its link, version and
+count, and replies to the page after; a newly linked render worker gets the
+current selection at once. A frame names the link and version; the render
+worker draws the newest selection it holds of that link, at or past that
+version, with that selection's own count, waiting for it if the frame overtook
+it. A move at a million rows that grows a brush by 0.2% of an axis flips about
+2,000 rows: at most 2,000 words, 16 KB with their indices, where the page copied,
+compared and moved a megabyte. The page's own selections (no brush, a lasso, a
+selection made elsewhere, or selection on the page) are sent as before.
+
+What remains per move: the brush worker still returns the byte-per-row
+selection to the page, which the flow badges, hover and publication read, and
+the render worker still compares and uploads every row's flag before drawing.
+These are bytes moved, not timings: the machine was too loaded for the
+benchmark to separate the change from noise, so its frame times are still to
+be measured.

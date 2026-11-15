@@ -12,8 +12,17 @@ interface Box {
   height: number;
 }
 
+interface PlotProbe {
+  geometry(): unknown;
+  selectionMask(geometry: unknown): Uint8Array;
+}
+
 interface HiPlotWindow {
-  hiplot_last_instance: { state: { rows_filtered: Record<string, unknown>[] } };
+  hiplot_last_instance: {
+    state: { rows_filtered: Record<string, unknown>[]; rows_selected_filter: unknown };
+    parallelPlot(): PlotProbe;
+  };
+  __plotBeforeExclude?: PlotProbe;
 }
 
 const axis = (page: Page, dimension: string): Locator =>
@@ -294,8 +303,36 @@ test("brushes are restored after a reload", async ({ page }) => {
     expect(Math.abs(after.height - box.height)).toBeLessThanOrEqual(1);
   }
   await expect(page.getByRole("button", { name: "Reset brushes" })).toBeEnabled();
-  const { selected: count, total } = await counts(page);
-  expect(count).toBeLessThan(total);
+  // The restored brushes' selection arrives from the brush worker.
+  const total = (await counts(page)).total;
+  await expect.poll(() => selected(page)).toBeLessThan(total);
+});
+
+test("Refresh reloads the experiment with the brushes' selection still counted", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  const total = (await counts(page)).total;
+  // A categorical brush saves the categories it selects, which load back as the same filter.
+  await brushAxis(page, "c", 0, 0.15);
+  await expect.poll(() => selected(page)).toBeLessThan(total);
+  const brushed = await selected(page);
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(bands(page, "c")).toHaveCount(1);
+  await expect.poll(() => counts(page)).toEqual({ selected: brushed, total });
+});
+
+test("Refresh keeps the rows Keep left", async ({ page }) => {
+  await loadDemo(page);
+  const total = (await counts(page)).total;
+  await brushAxis(page, "seed", 0.1, 0.3);
+  await expect.poll(() => selected(page)).toBeLessThan(total);
+  const kept = await selected(page);
+  await page.getByRole("button", { name: "Keep" }).click();
+  await expect.poll(() => counts(page)).toEqual({ selected: kept, total: kept });
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(page.locator("svg g.dimension").first()).toBeAttached();
+  await expect.poll(() => counts(page)).toEqual({ selected: kept, total: kept });
 });
 
 test("a brush that selects nothing is restored in place after a reload, still selecting nothing", async ({
@@ -400,4 +437,42 @@ test("Keep saves the brushes of an axis as one multi-range filter", async ({ pag
   await expect.poll(() => counts(page)).toEqual({ selected: kept, total: kept });
   await expect(bands(page, "seed")).toHaveCount(0);
   await expect.poll(() => decodeURIComponent(page.url())).toContain('"type":"Any"');
+});
+
+test("Exclude leaves every remaining row selected, on the plot that was there", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  const { total } = await counts(page);
+  await brushAxis(page, "seed", 0.05, 0.45);
+  await expect.poll(() => selected(page)).toBeLessThan(total);
+  const excluded = await selected(page);
+  expect(excluded).toBeGreaterThan(0);
+  await page.evaluate(() => {
+    const probe = window as unknown as HiPlotWindow;
+    probe.__plotBeforeExclude = probe.hiplot_last_instance.parallelPlot();
+  });
+  await page.getByRole("button", { name: "Exclude" }).click();
+  const left = total - excluded;
+  await expect.poll(() => counts(page)).toEqual({ selected: left, total: left });
+  await expect(bands(page, "seed")).toHaveCount(0);
+  // The plot publishes the selection its cleared brushes make over the rows left.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as unknown as HiPlotWindow).hiplot_last_instance.state.rows_selected_filter,
+      ),
+    )
+    .toEqual({ type: "All", data: [] });
+  // A plot that drew rows filtered out throws, and is rebuilt as another instance.
+  expect(
+    await page.evaluate(() => {
+      const probe = window as unknown as HiPlotWindow;
+      const plot = probe.hiplot_last_instance.parallelPlot();
+      return {
+        same: plot === probe.__plotBeforeExclude,
+        drawn: plot.selectionMask(plot.geometry()).reduce((sum, flag) => sum + flag, 0),
+      };
+    }),
+  ).toEqual({ same: true, drawn: left });
 });

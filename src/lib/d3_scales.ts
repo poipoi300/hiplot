@@ -314,7 +314,8 @@ export function d3_scale_percentile_values_sorted(
     return values[upper] * a + values[lower] * (1 - a);
   }
   function setDomain(d: readonly number[]): void {
-    domain_idx = [d3.bisect(values, d[0]), d3.bisect(values, d[1])];
+    // Bounds that are values keep their index, so a scale given its own domain back is unchanged.
+    domain_idx = [d3.bisectLeft(values, d[0]), d3.bisectLeft(values, d[1])];
     if (domain_idx[0] === domain_idx[1]) {
       domain_idx[0] -= 1;
       domain_idx[1] += 1;

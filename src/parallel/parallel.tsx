@@ -52,6 +52,7 @@ import {
   tickCountFor,
   valueFormatter,
 } from "./axisformat";
+import { BrushSelection, type SelectionResult } from "./brush_selection";
 import {
   type AxisBrush,
   brushesAfterClick,
@@ -67,9 +68,8 @@ import {
   savedBrushIntervals,
 } from "./brushes";
 import { categoryTagTexts, placeBrushTags, type TagTexts } from "./brushtags";
-import { type ContinuousImage, continuousHistogramMinimumBytes } from "./continuous_types";
-import { ContinuousRenderer } from "./continuous_worker";
-import { ExactRenderer } from "./exact_worker";
+import { ContinuousRenderer } from "./continuous_renderer";
+import type { ContinuousImage } from "./continuous_types";
 import { categoryIndices, countByCategory, type FlowAxis, flowAxes } from "./flow";
 import { LineGeometry } from "./geometry";
 import { defaultHiddenColumns } from "./hidden";
@@ -77,15 +77,25 @@ import { type ColorOrientation, colorOrientation, NO_ORIENTATION } from "./orien
 import pstyle from "./parallel.module.css";
 import {
   continuousRendering,
+  DraftPolicy,
   FramePerformance,
   isRenderQuality,
   RENDER_QUALITIES,
-  RenderExecution,
   type RenderQuality,
 } from "./performance";
-import { type AxisSelection, BrushMasks } from "./selection";
+import type { ContinuousMetrics } from "./render_types";
+import { RenderWorker, type WorkerFrame } from "./render_worker";
+import type { AxisSelection } from "./selection";
+import type { BrushVersion } from "./selection_delta";
 import { monotoneSlope, SPLINE_HANDLE, splineParameter, splineY } from "./spline";
-import { type FinishedFrame, type LineColors, type LineFrame, WebGLLineRenderer } from "./webgl";
+import {
+  type FinishedFrame,
+  type LineColors,
+  type LineFocus,
+  type LineFrame,
+  WebGLLineRenderer,
+} from "./webgl";
+import { blockLayerBytes, blocksFit } from "./webgl_blocks";
 
 interface ParallelPlotState {
   height: number;
@@ -112,8 +122,11 @@ interface ParallelPlotState {
 
 interface PPlotInternal {
   redraw_axis: () => void;
-  /** Recomputes the selection from the brushes; `publish` hands it to HiPlot. */
-  brush: (publish: boolean) => void;
+  /**
+   * Recomputes the selection from the brushes; `publish` hands it to HiPlot.
+   * Resolves once the selection is drawn, or replaced by a newer one.
+   */
+  brush: (publish: boolean) => Promise<void>;
 }
 
 // DISPLAYS_DATA_DOC_BEGIN
@@ -302,6 +315,12 @@ const BRUSH_HANDLE_PIXELS = 6;
  * brush; elsewhere on the axis, every brush of the axis.
  */
 const BRUSH_CLICK_PIXELS = 2;
+/**
+ * A pointer resting this long on an axis's brush band is likely to brush it
+ * next: its blocks are drawn ahead (see prepareBrushFocus). Shorter, a
+ * pointer crossing several axes on its way would draw each one's blocks.
+ */
+const BRUSH_PREPARE_MS = 120;
 /** Brushes on one axis this close merge when a gesture ends. */
 const BRUSH_TOUCH_PIXELS = 1;
 /** Where the plot keeps its brushes in the persistent state. */
@@ -364,6 +383,9 @@ function fitText(element: SVGTextElement, fullText: string, maxLength: number): 
   textNode.textContent = `${fullText.slice(0, low)}…`;
   return element.getComputedTextLength();
 }
+
+/** The full text each brush tag element shows, fitted and measured when it changes. */
+const brushTagTexts = new WeakMap<SVGGElement, string>();
 
 /**
  * Like `fitText`, with a measuring function instead of the DOM: brush tags
@@ -440,7 +462,7 @@ const SCROLL_SETTLE_MS = 150;
 const RENDER_QUALITY_LABELS: Record<RenderQuality, { label: string; title: string }> = {
   auto: {
     label: "Automatic",
-    title: "Continuous density for large datasets or when exact frames are slow",
+    title: "Exact lines on a GPU; continuous density on software renderers with large data",
   },
   low: {
     label: "Continuous density",
@@ -449,7 +471,7 @@ const RENDER_QUALITY_LABELS: Record<RenderQuality, { label: string; title: strin
   },
   full: {
     label: "Exact lines",
-    title: "Draw individual rows, however slow",
+    title: "Draw individual rows; brushing redraws only what it changes",
   },
 };
 /** Peak opacity of the deselected-rows layer per theme. */
@@ -518,16 +540,26 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   dimensions_dom: d3.Selection<SVGGElement, string, SVGGElement, unknown> | null = null;
   /** Cached per-row pixels, colors and draw order of the filtered rows. */
   private lineGeometry: LineGeometry | null = null;
-  /** Per-axis brush masks over the filtered rows. */
-  private masks: BrushMasks | null = null;
+  /** The brushes' selection over the filtered rows, computed on the brush worker. */
+  private masks: BrushSelection | null = null;
+  /**
+   * Incremented when a selection made elsewhere replaces the brushes' one,
+   * or other rows are plotted: brush selections requested before then are
+   * dropped when they arrive.
+   */
+  private selectionEpoch = 0;
+  /** The rows every brushed axis but the focus passes, from the latest brush selection. */
+  private brushPassing: { dimension: string; rows: Uint8Array } | null = null;
   /** Line renderer on the GPU; null when WebGL2 is unavailable and Canvas 2D draws. */
   webgl: WebGLLineRenderer | null = null;
+  /** Continuous density on the page, where no render worker draws it. */
   continuous: ContinuousRenderer | null = null;
-  exact: ExactRenderer | null = null;
-  private exactUnavailable = false;
-  private exactImageContext: ImageBitmapRenderingContext | null = null;
+  /** The plot's renderer, which owns `workerCanvas`, wherever workers can draw on a canvas. */
+  worker: RenderWorker | null = null;
+  /** The render worker failed: the page draws from then on. */
+  private workerFailed = false;
   continuousFrame = 0;
-  continuousMetrics: ContinuousImage | null = null;
+  continuousMetrics: ContinuousMetrics | null = null;
   /** The selection flags last computed, reused while the selection is unchanged. */
   private maskMemo: {
     geometry: LineGeometry;
@@ -537,7 +569,17 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** The rows whose lines are drawn: the brush selection, or a selection made elsewhere. */
   private drawnSelection: ReadonlyArray<Datapoint> | null = null;
   /** Live brushes stay columnar until publication; row identity rejects masks from old datasets. */
-  private liveBrushMask: { rows: ReadonlyArray<Datapoint>; mask: Uint8Array } | null = null;
+  private liveBrushMask: {
+    rows: ReadonlyArray<Datapoint>;
+    mask: Uint8Array;
+    count: number;
+    /** The version the render worker holds this selection as, for frames to name. */
+    version: BrushVersion | null;
+  } | null = null;
+  /** The brush selection and render worker linked by a channel (see BrushSelection.attachRender). */
+  private linkedSelection: { masks: BrushSelection; worker: RenderWorker; link: number } | null =
+    null;
+  private links = 0;
   /** The last selection this plot handed to HiPlot. */
   private publishedSelection: ReadonlyArray<Datapoint> | null = null;
   /** Incremented by every draw, so a progressive draw stops once superseded. */
@@ -571,7 +613,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** Width of all the axes, in plot coordinates. */
   contentW = 0;
   foreground_ref = React.createRef<HTMLCanvasElement>();
-  exact_image_ref = React.createRef<HTMLCanvasElement>();
+  /**
+   * The render worker's canvas, made for each mount: the worker takes its
+   * control for good, which a remounted element could not give again.
+   */
+  workerCanvas: HTMLCanvasElement | null = null;
   foreground: CanvasRenderingContext2D | null = null;
   highlighted_ref = React.createRef<HTMLCanvasElement>();
   highlighted: CanvasRenderingContext2D | null = null;
@@ -722,14 +768,17 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.cancelDrawing();
     this.continuous?.dispose();
     this.continuous = null;
-    this.exact?.dispose();
-    this.exact = null;
+    this.worker?.dispose();
+    this.worker = null;
+    this.workerCanvas?.remove();
+    this.workerCanvas = null;
     this.masks?.dispose();
     this.masks = null;
     this.webgl?.dispose();
     this.webgl = null;
     this.props.context_menu_ref?.current?.removeCallbacks(this);
     this.cancelBrushMove();
+    this.cancelBrushPreparation();
     this.sendBrushExtents.cancel();
     this.fitTickLabelsAfterTransition.cancel();
     if (this.scrollFrame !== null) {
@@ -743,8 +792,19 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
   }
   componentDidUpdate(prevProps: ParallelPlotData, prevState: ParallelPlotState) {
-    if (prevProps.rows_filtered !== this.props.rows_filtered) {
+    // A selection made elsewhere (table search, Keep/Exclude, a lasso) or a
+    // change of the plotted rows replaces the drawn selection, whose rows may
+    // not be plotted anymore. This comes first: everything below draws the
+    // selection, and a brush selection requested below must carry the new
+    // epoch to be shown. Our own brush selections are drawn when published.
+    const selectionChanged =
+      prevProps.rows_selected !== this.props.rows_selected &&
+      this.props.rows_selected !== this.publishedSelection;
+    if (selectionChanged || prevProps.rows_filtered !== this.props.rows_filtered) {
+      this.selectionEpoch += 1;
       this.liveBrushMask = null;
+      this.maskMemo = null;
+      this.drawnSelection = this.props.rows_selected;
     }
     if (prevState.height !== this.state.height || prevState.width !== this.state.width) {
       this.on_resize?.();
@@ -856,18 +916,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       this.update_ticks();
       this.cancelDrawing();
     }
-    // A selection made elsewhere (table search, Keep/Exclude, a lasso): draw
-    // it. Our own brush selections are already drawn when they are published.
-    const selectionChanged =
-      prevProps.rows_selected !== this.props.rows_selected &&
-      this.props.rows_selected !== this.publishedSelection;
-    if (selectionChanged) {
-      this.liveBrushMask = null;
-      this.maskMemo = null;
-      this.drawnSelection = this.props.rows_selected;
-      if (isLassoSelection(this.props.rows_selected_filter) && this.brushes.size > 0) {
-        this.dropBrushesReplacedByLasso();
-      }
+    if (
+      selectionChanged &&
+      isLassoSelection(this.props.rows_selected_filter) &&
+      this.brushes.size > 0
+    ) {
+      this.dropBrushesReplacedByLasso();
     }
     if (
       selectionChanged ||
@@ -922,6 +976,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       throw new Error("A brush gesture started outside the brush band");
     }
     this.interacting = true;
+    this.focusDimension = dimension;
+    this.cancelBrushPreparation();
     this.clearHover();
     this.props.context_menu_ref?.current?.hide();
     const origin = Math.max(0, Math.min(this.h, event.y));
@@ -1085,7 +1141,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     });
     this.props.persistentState.set(PSTATE_BRUSHES, saved);
     this.sendBrushExtents();
-    this.pplot?.brush(true);
+    void this.pplot?.brush(true);
   }
 
   /**
@@ -1143,34 +1199,44 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     }
   }
 
-  /** Busy drafts coalesce; a new gesture can interrupt refinement without another vsync. */
+  /**
+   * A brush move selects rows and posts a frame at most once per display
+   * frame: the first move of a frame at once, the latest of the others when
+   * the next frame starts. On the render worker nothing waits for the
+   * renderer, which draws the newest selection it holds; lines the page
+   * draws wait for its renderer to finish a frame instead, so frames do not
+   * queue behind the pointer, though a new gesture interrupts refinement.
+   */
   private brushMoveFrame: number | null = null;
+  /** A move arrived since the last selection, which the next display frame selects. */
+  private brushMovePending = false;
   private scheduleBrushFrame(): void {
-    if (
-      this.interacting &&
-      (!this.continuous?.busy || this.continuous.refining) &&
-      !this.linesBusy
-    ) {
-      this.cancelBrushMove();
-      this.pplot?.brush(false);
-      return;
-    }
-    if (this.brushMoveFrame !== null) {
-      return;
-    }
-    this.brushMoveFrame = requestAnimationFrame(() => {
-      this.brushMoveFrame = null;
-      if (
-        this.linesBusy ||
-        (this.continuous?.busy && !(this.interacting && this.continuous.refining))
-      ) {
-        this.scheduleBrushFrame();
-        return;
-      }
-      this.pplot?.brush(false);
-    });
+    this.brushMovePending = true;
+    if (this.brushMoveFrame !== null) return;
+    this.runBrushMove();
   }
+
+  private runBrushMove = (): void => {
+    this.brushMoveFrame = null;
+    if (!this.brushMovePending) return;
+    if (!this.brushMoveBlocked()) {
+      this.brushMovePending = false;
+      void this.pplot?.brush(false);
+    }
+    this.brushMoveFrame = requestAnimationFrame(this.runBrushMove);
+  };
+
+  /** Whether a brush move waits for the page's renderer to finish its frame. */
+  private brushMoveBlocked(): boolean {
+    if (this.linesOnWorker()) return false;
+    return (
+      Boolean(this.webgl?.busy) ||
+      Boolean(this.continuous?.busy && !(this.interacting && this.continuous.refining))
+    );
+  }
+
   cancelBrushMove(): void {
+    this.brushMovePending = false;
     if (this.brushMoveFrame !== null) {
       cancelAnimationFrame(this.brushMoveFrame);
       this.brushMoveFrame = null;
@@ -1266,7 +1332,6 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
           >
             <div ref={this.plot_ref} className={pstyle.plot}>
               <canvas ref={this.foreground_ref}></canvas>
-              <canvas ref={this.exact_image_ref} style={{ visibility: "hidden" }}></canvas>
               <canvas ref={this.highlighted_ref}></canvas>
               <svg
                 ref={this.svg_ref}
@@ -1576,6 +1641,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       foreground.globalCompositeOperation = "destination-over";
       me.foreground = foreground;
     }
+    const workerCanvas = document.createElement("canvas");
+    workerCanvas.style.visibility = "hidden";
+    mounted(this.highlighted_ref).before(workerCanvas);
+    me.workerCanvas = workerCanvas;
+    // Lines draw on the render worker: start it now, while the page lays the plot out.
+    me.lineWorker()?.start();
     // Highlight canvas for temporary interactions
     const highlighted = mounted(this.highlighted_ref).getContext("2d");
     if (highlighted === null) {
@@ -1809,20 +1880,29 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         .append("title")
         .text("Drag up or down to add a brush on this axis; click to remove all its brushes");
       brushBands.call(me.brushDrag);
+      brushBands
+        .on("pointerenter", (event: PointerEvent, dimension: string) => {
+          // A finger never rests before it brushes: its axis's column is warmed
+          // at once, its blocks drawn by its first move, as a tap draws none.
+          if (event.pointerType === "touch") me.warmBrushColumn(dimension);
+          else me.prepareBrushFocus(dimension);
+        })
+        .on("pointerleave", () => me.cancelBrushPreparation());
       me.drawBrushes();
       me.fitTickLabels();
     }
 
-    function brush(publish: boolean): void {
+    function brush(publish: boolean): Promise<void> {
       /**
-       * Called whenever a brush changes. Draws the brushes, recomputes and
-       * draws the selected lines right away; with `publish`, also hands the
-       * selection to HiPlot, which updates the other displays (done when a
-       * brush gesture ends).
+       * Called whenever a brush changes. Asks the brush worker for the
+       * selected rows and draws their lines once they arrive; with `publish`,
+       * also draws every brush and hands the selection to HiPlot, which
+       * updates the other displays (done when a brush gesture ends). A
+       * gesture's moves draw their brush themselves (see
+       * continueBrushGesture), ahead of the selection.
        */
       me.props.context_menu_ref?.current?.hide();
-      // Mid-gesture only the axis under the pointer changes.
-      me.drawBrushes(me.brushGesture?.dimension);
+      if (publish) me.drawBrushes();
       const actives = me.brushedDimensions();
       if (me.state.brushed !== actives.length > 0) {
         me.setState({ brushed: actives.length > 0 });
@@ -1830,33 +1910,15 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
       me.markBrushedTitles(actives);
 
-      // Get lines within the brushes: in any brush of each brushed axis.
-      const selections = new Map<string, AxisSelection>(
-        actives.map((dimension) => [dimension, me.axisRanges(dimension)]),
-      );
-      const masks = me.brushMasks();
-      const mask = masks.select(selections);
-      const canvasSelection =
-        me.webgl === null && !me.continuousMode() ? masks.selectedRows(mask) : null;
-      me.updateFlowBadges(new Set(actives), mask);
-      me.liveBrushMask = { rows: masks.rows, mask };
-      me.maskMemo = null;
-      me.drawnSelection = canvasSelection;
-      me.redrawLines();
-      if (!publish) {
-        return;
-      }
-
-      const selected = canvasSelection ?? masks.selectedRows(mask);
-      const filters = Array.from(selections.values(), (selection) => anyOfRanges(selection));
-      me.drawnSelection = selected;
-      if (me.props.asserts) {
-        me.assertPixelSelectionMatches(actives, filters, selected);
-      }
-      me.publishedSelection = selected;
-      me.props.setSelected(selected, {
-        type: FilterType.All,
-        data: filters,
+      // Lines within the brushes: in any brush of each brushed axis, selected on the brush worker.
+      const selections = me.brushSelections(actives);
+      const masks = me.brushSelection();
+      const epoch = me.selectionEpoch;
+      const focus = me.brushBlocks() ? me.focusDimension : null;
+      return masks.select(selections, focus, publish).then((result) => {
+        if (me.currentBrushResult(masks, epoch, result)) {
+          me.showBrushSelection(masks, actives, selections, result);
+        }
       });
     }
 
@@ -1891,8 +1953,71 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     };
 
     // Initial selection and full foreground
-    brush(true);
+    void brush(true);
     me.sendBrushExtents();
+  }
+
+  /** The ranges each brushed axis selects. */
+  private brushSelections(
+    actives: ReadonlyArray<string> = this.brushedDimensions(),
+  ): Map<string, AxisSelection> {
+    return new Map(actives.map((dimension) => [dimension, this.axisRanges(dimension)]));
+  }
+
+  /**
+   * Whether `result` still applies: requested over the rows shown, from the
+   * brush selection in use, since the last selection made elsewhere.
+   */
+  private currentBrushResult(
+    masks: BrushSelection,
+    epoch: number,
+    result: SelectionResult | null,
+  ): result is SelectionResult {
+    return (
+      result !== null &&
+      this.masks === masks &&
+      masks.rows === this.props.rows_filtered &&
+      this.selectionEpoch === epoch
+    );
+  }
+
+  /**
+   * Draws a brush selection the brush worker returned; when its request
+   * publishes, also hands it to HiPlot, which updates the other displays.
+   */
+  private showBrushSelection(
+    masks: BrushSelection,
+    actives: string[],
+    selections: ReadonlyMap<string, AxisSelection>,
+    result: SelectionResult,
+  ): void {
+    const { mask, count } = result;
+    const previous = this.liveBrushMask?.mask;
+    const canvasSelection =
+      this.webgl === null && !this.continuousMode() && !this.linesOnWorker()
+        ? masks.selectedRows(mask)
+        : null;
+    this.updateFlowBadges(new Set(actives), mask);
+    this.liveBrushMask = { rows: masks.rows, mask, count, version: result.version };
+    // Nothing reads the replaced mask now: frames carrying it were copied, and the badges hold this one.
+    if (previous !== undefined && previous !== mask) masks.recycle(previous);
+    // Passing rows belong to this selection: a request without a focus leaves none to draw blocks from.
+    this.brushPassing = result.passing;
+    this.maskMemo = null;
+    this.drawnSelection = canvasSelection;
+    this.redrawLines();
+    if (!result.publish) return;
+    const selected = canvasSelection ?? masks.selectedRows(mask);
+    const filters = Array.from(selections.values(), (selection) => anyOfRanges(selection));
+    this.drawnSelection = selected;
+    if (this.props.asserts) {
+      this.assertPixelSelectionMatches(actives, filters, selected);
+    }
+    this.publishedSelection = selected;
+    this.props.setSelected(selected, {
+      type: FilterType.All,
+      data: filters,
+    });
   }
 
   /** What the brushes of one axis select, one value range per brush that selects any value. */
@@ -2256,9 +2381,21 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       )
       .classed(pstyle.tagActive, (label) => label.brush === active)
       .classed(pstyle.tagDimmed, (label) => active !== null && label.brush !== active);
-    tags.filter((label) => label.brush === active).raise();
+    // The active brush's tags go on top of the axis's other elements, unless they
+    // already are its last children: moving a node costs a layout on every move.
+    const raised = tags.filter((label) => label.brush === active).nodes();
+    const parent = raised[0]?.parentNode;
+    if (parent !== undefined && parent !== null) {
+      const last = Array.from(parent.childNodes).slice(-raised.length);
+      if (raised.some((node, index) => last[index] !== node)) {
+        for (const node of raised) parent.appendChild(node);
+      }
+    }
     const measure = this.tagTextMeasure();
     tags.each(function (this: SVGGElement, label) {
+      // A drag changes a tag's text on few frames: it is measured and set only then.
+      if (brushTagTexts.get(this) === label.text) return;
+      brushTagTexts.set(this, label.text);
       const text = d3.select(this).select<SVGTextElement>("text").node();
       if (text === null) {
         throw new Error("Brush tag lost its text");
@@ -2276,6 +2413,8 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   /** The brushes and selection the flow badges were last drawn for. */
   private lastFlow: { brushed: ReadonlySet<string>; mask: Uint8Array } | null = null;
+  /** Whether an axis may show flow badges, which a selection without flows must remove. */
+  private flowBadgesDrawn = false;
   /** Each row's category on a categorical axis, kept while the rows and categories are. */
   private categoryIndexCache = new Map<
     string,
@@ -2309,7 +2448,10 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
         (dimension) => this.yscale[dimension]?.kind === "categorical",
       ).map((flow) => [flow.dimension, flow.from]),
     );
-    const rows = this.brushMasks().rows;
+    // Without badges to draw or remove, a brush move's selection touches no axis.
+    if (flows.size === 0 && !this.flowBadgesDrawn) return;
+    this.flowBadgesDrawn = flows.size > 0;
+    const rows = this.brushSelection().rows;
     const measure = this.textMeasure(FLOW_FONT_WEIGHT, FLOW_FONT_PIXELS);
     this.dimensions_dom?.each((dimension, index, nodes) => {
       const from = flows.get(dimension);
@@ -2402,7 +2544,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     );
   }
   private scrollFrame: number | null = null;
-  /** Scrolling counts as a gesture until this time (see interactiveFrame). */
+  /** Scrolling counts as a gesture until this time or its settle redraw, whichever is first (see interactiveFrame). */
   private scrollingUntil = 0;
   private scrollSettle: ReturnType<typeof setTimeout> | null = null;
   /** Horizontal wheel and trackpad gestures, or shift+wheel, scroll the axes. */
@@ -2428,9 +2570,11 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (this.scrollSettle !== null) {
       clearTimeout(this.scrollSettle);
     }
-    // Once scrolling stops, the picture is drawn at full quality.
+    // Once scrolling stops, the picture is drawn at full quality. The scroll
+    // ends here, not by the clock: a timer and performance.now() need not agree.
     this.scrollSettle = setTimeout(() => {
       this.scrollSettle = null;
+      this.scrollingUntil = 0;
       this.redrawLines();
     }, SCROLL_SETTLE_MS);
     if (this.scrollFrame === null) {
@@ -2467,7 +2611,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     this.pixelRatio = window.devicePixelRatio;
     div
       .selectAll("canvas")
-      .filter((_, index, nodes) => nodes[index] !== this.exact_image_ref.current)
+      .filter((_, index, nodes) => nodes[index] !== this.workerCanvas)
       .attr("width", Math.round(this.w * this.pixelRatio))
       .attr("height", Math.round(this.h * this.pixelRatio));
     div
@@ -2518,10 +2662,14 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return this.lineGeometry;
   }
 
-  brushMasks(): BrushMasks {
+  brushSelection(): BrushSelection {
     if (this.masks === null || this.masks.rows !== this.props.rows_filtered) {
       this.masks?.dispose();
-      this.masks = new BrushMasks(this.props.rows_filtered);
+      this.masks = new BrushSelection(this.props.rows_filtered);
+      // Loaded now, from the first draw: a brush's first move would otherwise wait for them.
+      this.masks.start();
+      this.brushPassing = null;
+      this.linkSelection();
     }
     return this.masks;
   }
@@ -2548,19 +2696,132 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     return mask;
   }
 
-  /** The theme's color for deselected lines, read from the --hip-context-line token. */
+  /**
+   * The theme's color for deselected lines, read from the --hip-context-line
+   * token once per theme: reading computed style after a brush moved its SVG
+   * recalculates styles, which a brush frame cannot afford.
+   */
+  private contextColorMemo: { dark: boolean; color: RGB } | null = null;
   private contextColor(): RGB {
+    const memo = this.contextColorMemo;
+    if (memo !== null && memo.dark === this.props.dark) return memo.color;
     const token = getComputedStyle(mounted(this.root_ref)).getPropertyValue("--hip-context-line");
     const parsed = d3.color(token.trim())?.rgb();
     if (!parsed) {
       throw new Error(`--hip-context-line is not a color: "${token}"`);
     }
-    return { r: parsed.r, g: parsed.g, b: parsed.b };
+    const color = { r: parsed.r, g: parsed.g, b: parsed.b };
+    this.contextColorMemo = { dark: this.props.dark, color };
+    return color;
   }
 
-  /** Gesture previews omit anti-aliasing; accumulation precision never changes. */
+  /**
+   * Gesture previews omit anti-aliasing; accumulation precision never
+   * changes. Brush gestures with retained blocks draw full frames instead.
+   */
   draftFrame(): boolean {
-    return this.interacting && this.renderExecution.useWorker;
+    return (
+      this.interacting &&
+      !(this.brushGesture !== null && this.brushBlocks()) &&
+      this.drafts.drafting
+    );
+  }
+
+  /**
+   * Whether brushing sums retained blocks (see LineFocus): the render worker
+   * has float targets on a GPU, and enough of the blocks fit in their memory
+   * at this size. A software rasterizer would draw the first frame of every
+   * gesture in full and read every layer of every pixel each frame on the CPU,
+   * and a few large blocks leave about every row to draw: both slower than
+   * draft frames.
+   */
+  private brushBlocks(): boolean {
+    if (this.worker?.blockFrames !== true) return false;
+    const numeric = this.props.color_binning.legend.kind === "numeric";
+    const pixels =
+      Math.max(1, Math.round(this.w * this.pixelRatio)) *
+      Math.max(1, Math.round(this.h * this.pixelRatio));
+    return blocksFit(pixels, blockLayerBytes(numeric, numeric && this.props.color_mode !== "mean"));
+  }
+
+  /** The axis of the latest brush gesture, whose blocks the render worker retains. */
+  private focusDimension: string | null = null;
+  /** The axis whose blocks the next frame draws ahead of a gesture (see prepareBrushFocus). */
+  private preparedDimension: string | null = null;
+  private brushPreparation: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * After the pointer rests on an axis's brush band for BRUSH_PREPARE_MS,
+   * readies a brush gesture on it: warms its selection column, and draws the
+   * current brush selection once more from its blocks, drawing them if the
+   * worker lacks them. The gesture's first move then reads neither every row
+   * nor draws every line.
+   */
+  private prepareBrushFocus(dimension: string): void {
+    this.cancelBrushPreparation();
+    if (this.interactiveFrame()) return;
+    this.brushPreparation = setTimeout(() => {
+      this.brushPreparation = null;
+      // Gestures and scrolls draw their own frames; a removed axis has nothing to brush.
+      if (this.interactiveFrame() || !this.state.dimensions.includes(dimension)) return;
+      this.warmBrushColumn(dimension);
+      // Without a brush selection to focus, the redraw would draw every row for nothing.
+      if (!this.brushBlocks() || this.liveBrushMask?.rows !== this.props.rows_filtered) return;
+      const masks = this.brushSelection();
+      const epoch = this.selectionEpoch;
+      const actives = this.brushedDimensions();
+      const selections = this.brushSelections(actives);
+      void masks.select(selections, dimension, false).then((result) => {
+        if (!this.currentBrushResult(masks, epoch, result)) return;
+        // Shown even once a gesture began: it may carry the publication of a request it replaced.
+        const prepared = !this.interactiveFrame();
+        if (prepared) {
+          this.focusDimension = dimension;
+          this.preparedDimension = dimension;
+        }
+        try {
+          this.showBrushSelection(masks, actives, selections, result);
+        } finally {
+          this.preparedDimension = null;
+        }
+      });
+    }, BRUSH_PREPARE_MS);
+  }
+
+  /**
+   * Builds `dimension`'s selection column and starts sorting it: until the
+   * sorted index returns, every brush move on the axis scans every row.
+   */
+  private warmBrushColumn(dimension: string): void {
+    const whole = brushRange(dimension, scale_pixels_range(this.yscale[dimension], [0, this.h]));
+    if (whole !== null) this.brushSelection().warm(whole);
+  }
+
+  private cancelBrushPreparation(): void {
+    if (this.brushPreparation !== null) clearTimeout(this.brushPreparation);
+    this.brushPreparation = null;
+  }
+
+  /** The latest brushed axis and the rows the other axes' brushes pass, for brush selections. */
+  private brushFocus(geometry: LineGeometry): LineFocus | null {
+    const dimension = this.focusDimension;
+    const passing = this.brushPassing;
+    if (
+      dimension === null ||
+      !this.brushBlocks() ||
+      passing?.dimension !== dimension ||
+      this.masks?.rows !== geometry.rows ||
+      this.liveBrushMask?.rows !== geometry.rows
+    ) {
+      return null;
+    }
+    const axis = this.state.dimensions.indexOf(dimension);
+    if (axis === -1) return null;
+    return {
+      axis,
+      rows: passing.rows,
+      active: this.brushGesture?.dimension === dimension || this.preparedDimension === dimension,
+    };
   }
 
   /** Whether a frame is drawn during a gesture: a brush or axis drag, or a scroll. */
@@ -2581,19 +2842,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   /** Measures each full-quality frame on the GPU, for the "auto" quality. */
   private frameWatch: number | null = null;
   private framePerformance = new FramePerformance();
-  readonly renderExecution = new RenderExecution();
-  private localPreparationMs: number | null = null;
+  private readonly drafts = new DraftPolicy();
 
   private collectFrame(webgl: WebGLLineRenderer): boolean {
     const busy = webgl.busy;
     const finished = webgl.finishedFrame();
-    if (finished !== null) {
-      if (this.localPreparationMs !== null) {
-        this.renderExecution.record(finished.milliseconds + this.localPreparationMs);
-        this.localPreparationMs = null;
-      }
-      this.recordFrame(finished);
-    }
+    if (finished !== null) this.recordFrame(finished);
     return busy;
   }
 
@@ -2617,62 +2871,153 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
   }
 
   private recordFrame(finished: FinishedFrame): void {
-    if (finished.fullQuality && this.framePerformance.recordFullFrame(finished.milliseconds)) {
+    if (!finished.fullQuality || !finished.drewEveryRow) return;
+    this.drafts.record(finished.milliseconds);
+    // Only automatic quality on a software rasterizer switches pictures on slow frames.
+    if (this.state.renderQuality !== "auto" || !(this.webgl?.softwareRendering ?? true)) return;
+    if (this.framePerformance.recordFullFrame(finished.milliseconds)) {
       this.setState({ slowFrames: this.framePerformance.slow });
     }
   }
 
+  /** Whether the renderer drawing this mode's lines has a frame in flight. */
   get linesBusy(): boolean {
-    return Boolean(this.exact?.busy || this.webgl?.busy);
+    const worker = this.worker;
+    const onWorker = worker !== null && (this.continuousMode() || worker.presents !== false);
+    return Boolean((onWorker && worker.busy) || this.webgl?.busy);
   }
 
   private lineCanvases() {
-    return d3.selectAll([mounted(this.foreground_ref), mounted(this.exact_image_ref)]);
+    return d3.selectAll(
+      [mounted(this.foreground_ref), this.workerCanvas].filter((canvas) => canvas !== null),
+    );
   }
 
   private showDirectLines(): void {
-    mounted(this.exact_image_ref).style.visibility = "hidden";
+    if (this.workerCanvas !== null) this.workerCanvas.style.visibility = "hidden";
     mounted(this.foreground_ref).style.visibility = "visible";
   }
 
-  private drawExactWorker(
-    frame: LineFrame,
-    geometry: LineGeometry,
-    colors: LineColors,
-    mask: Uint8Array,
-  ): boolean {
+  private showWorkerLines(): void {
+    if (this.workerCanvas === null) throw new Error("Worker lines need the worker's canvas");
+    this.workerCanvas.style.visibility = "visible";
+    mounted(this.foreground_ref).style.visibility = "hidden";
+  }
+
+  /** The render worker, created on first use; null where no worker can draw on a canvas. */
+  private lineWorker(): RenderWorker | null {
     if (
-      this.exactUnavailable ||
+      this.workerFailed ||
+      this.workerCanvas === null ||
       typeof Worker === "undefined" ||
       typeof OffscreenCanvas === "undefined" ||
-      typeof OffscreenCanvas.prototype.transferToImageBitmap !== "function"
+      typeof HTMLCanvasElement.prototype.transferControlToOffscreen !== "function"
     )
-      return false;
-    this.exactImageContext ??= mounted(this.exact_image_ref).getContext("bitmaprenderer");
-    if (this.exactImageContext === null) {
-      this.exactUnavailable = true;
-      return false;
-    }
-    this.exact ??= new ExactRenderer(
-      (bitmap, finished) => {
-        const canvas = mounted(this.exact_image_ref);
-        if (canvas.width !== bitmap.width) canvas.width = bitmap.width;
-        if (canvas.height !== bitmap.height) canvas.height = bitmap.height;
-        this.exactImageContext?.transferFromImageBitmap(bitmap);
-        canvas.style.visibility = "visible";
-        mounted(this.foreground_ref).style.visibility = "hidden";
-        this.recordFrame(finished);
-      },
+      return null;
+    this.worker ??= new RenderWorker(
+      this.workerCanvas,
+      (frame) => this.showWorkerFrame(frame),
       () => {
-        this.exact = null;
-        this.exactUnavailable = true;
-        this.redrawLines();
+        // The worker failed, or cannot draw on its canvas: the page draws instead, after this call returns.
+        if (this.worker?.failed) {
+          this.worker = null;
+          this.workerFailed = true;
+        }
+        queueMicrotask(() => this.redrawLines());
       },
     );
-    this.exact.draw(frame, colors, mask, geometry.order, () =>
-      geometry.colorOrder(colors.bins, colors.colorMapBins, frame.colorMode),
+    this.linkSelection();
+    return this.worker;
+  }
+
+  /**
+   * Gives the brush worker a channel to the render worker, which then holds
+   * every brush selection: frames name it instead of carrying it.
+   */
+  private linkSelection(): void {
+    const { masks, worker } = this;
+    if (masks === null || worker === null || typeof MessageChannel === "undefined") return;
+    if (this.linkedSelection?.masks === masks && this.linkedSelection.worker === worker) return;
+    const channel = new MessageChannel();
+    const link = ++this.links;
+    masks.attachRender(channel.port1, link);
+    worker.attachBrush(channel.port2, link);
+    this.linkedSelection = { masks, worker, link };
+  }
+
+  /** Whether the render worker draws this mode's lines (see redrawLines), starting it if needed. */
+  private linesOnWorker(): boolean {
+    const worker = this.lineWorker();
+    return worker !== null && (this.continuousMode() || worker.presents !== false);
+  }
+
+  private showWorkerFrame(frame: WorkerFrame): void {
+    if (frame.mode === "continuous") {
+      if (!this.continuousMode()) return;
+      this.continuousFrame += 1;
+      this.continuousMetrics = frame.continuous;
+      if (frame.pixels !== null && frame.continuous !== null) {
+        this.presentContinuous({ ...frame.continuous, pixels: frame.pixels });
+        return;
+      }
+    } else if (frame.finished !== null) {
+      this.recordFrame(frame.finished);
+    }
+    this.showWorkerLines();
+  }
+
+  /** Shows a continuous image on the page's canvas. */
+  private presentContinuous(image: ContinuousImage): void {
+    if (this.webgl !== null) {
+      this.webgl.present(image, { width: this.w, height: this.h, pixelRatio: this.pixelRatio });
+      this.watchFrames(this.webgl);
+    } else if (this.foreground !== null) {
+      const source = document.createElement("canvas");
+      source.width = image.width;
+      source.height = image.height;
+      const context = source.getContext("2d");
+      if (context === null) {
+        throw new Error("No density image context");
+      }
+      context.putImageData(
+        new ImageData(new Uint8ClampedArray(image.pixels), image.width, image.height),
+        0,
+        0,
+      );
+      this.foreground.clearRect(0, 0, this.w, this.h);
+      this.foreground.drawImage(source, 0, 0, this.w, this.h);
+    }
+    this.showDirectLines();
+  }
+
+  /** Posts the current lines to the render worker, which draws the newest it holds. */
+  private drawOnWorker(worker: RenderWorker, continuous: boolean): void {
+    const geometry = this.geometry();
+    const mask = this.selectionMask(geometry);
+    const colors = this.lineColors(geometry);
+    const frame = this.lineFrame(geometry, mask);
+    // The worker holds the brush worker's selections: a frame names the one it draws.
+    const live = this.liveBrushMask;
+    const linked = this.linkedSelection;
+    const selection =
+      live?.mask === mask &&
+      live.version !== null &&
+      linked?.worker === worker &&
+      linked.link === live.version.link
+        ? live.version
+        : mask;
+    if (continuous) {
+      worker.drawContinuous({ ...frame, draft: this.interacting }, colors, selection);
+      return;
+    }
+    worker.drawExact(
+      frame,
+      colors,
+      selection,
+      geometry.order,
+      () => geometry.colorOrder(colors.bins, colors.colorMapBins, frame.colorMode),
+      this.brushFocus(geometry),
     );
-    return true;
   }
 
   /** Curves between axes unless the user chose straight lines. */
@@ -2682,8 +3027,12 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
 
   private lineFrame(geometry: LineGeometry, mask: Uint8Array): LineFrame {
     let selectedCount = 0;
-    for (let i = 0; i < mask.length; ++i) {
-      selectedCount += mask[i];
+    if (this.liveBrushMask?.mask === mask) {
+      selectedCount = this.liveBrushMask.count;
+    } else {
+      for (let i = 0; i < mask.length; ++i) {
+        selectedCount += mask[i];
+      }
     }
     return {
       axes: this.state.dimensions.map((dimension) => ({
@@ -2700,6 +3049,7 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
       pixelRatio: this.pixelRatio,
       curved: this.curvedLines(),
       draft: this.draftFrame(),
+      transient: this.interactiveFrame(),
       resolution: 1,
       drawnRows: geometry.rows.length,
       selectedCount,
@@ -2710,21 +3060,13 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     };
   }
 
-  /** Draws every original row; used by exact mode and its pixel-equivalence tests. */
+  /** Draws every original row on the page's renderer, where no render worker draws them. */
   private drawWithWebGL(webgl: WebGLLineRenderer): void {
     this.collectFrame(webgl);
-    const started = performance.now();
     const geometry = this.geometry();
     const mask = this.selectionMask(geometry);
     const colors = this.lineColors(geometry);
     const frame = this.lineFrame(geometry, mask);
-    this.renderExecution.recordWorkingSet(
-      frame.axes.reduce((bytes, axis) => bytes + axis.pixels.byteLength, 0),
-    );
-    if (this.renderExecution.useWorker && this.drawExactWorker(frame, geometry, colors, mask))
-      return;
-    this.exact?.dispose();
-    this.exact = null;
     this.showDirectLines();
     webgl.setRows(geometry.rows.length, geometry.order);
     webgl.setDrawOrder(
@@ -2734,56 +3076,21 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     );
     webgl.setColors(colors);
     webgl.setSelection(mask);
-    this.localPreparationMs = performance.now() - started;
     webgl.draw(frame);
     this.watchFrames(webgl);
   }
 
+  /** Continuous density on the page, where no render worker draws it. */
   private drawContinuous(): void {
-    this.renderExecution.recordWorkingSet(
-      continuousHistogramMinimumBytes(this.state.dimensions.length, this.h),
-    );
-    const execution =
-      this.renderExecution.useWorker && typeof Worker !== "undefined" ? "worker" : "local";
-    if (this.continuous !== null && this.continuous.execution !== execution) {
-      this.continuous.dispose();
-      this.continuous = null;
-    }
-    if (this.continuous === null) {
-      this.continuous = new ContinuousRenderer(
-        (image) => {
-          if (!this.continuousMode()) {
-            return;
-          }
-          this.continuousFrame += 1;
-          this.continuousMetrics = image;
-          if (execution === "local") this.renderExecution.record(image.milliseconds);
-          this.localPreparationMs = null;
-          if (this.webgl !== null) {
-            this.webgl.present(image.pixels, image.width, image.height);
-            this.watchFrames(this.webgl);
-          } else if (this.foreground !== null) {
-            const source = document.createElement("canvas");
-            source.width = image.width;
-            source.height = image.height;
-            const context = source.getContext("2d");
-            if (context === null) {
-              throw new Error("No density image context");
-            }
-            context.putImageData(
-              new ImageData(new Uint8ClampedArray(image.pixels), image.width, image.height),
-              0,
-              0,
-            );
-            this.foreground.clearRect(0, 0, this.w, this.h);
-            this.foreground.drawImage(source, 0, 0, this.w, this.h);
-          }
-          this.showDirectLines();
-        },
-        undefined,
-        execution,
-      );
-    }
+    this.continuous ??= new ContinuousRenderer((image) => {
+      if (!this.continuousMode()) {
+        return;
+      }
+      this.continuousFrame += 1;
+      const { pixels: _, ...metrics } = image;
+      this.continuousMetrics = metrics;
+      this.presentContinuous(image);
+    });
     const geometry = this.geometry();
     const mask = this.selectionMask(geometry);
     // Pixel integration cost follows occupied bins, not the exact renderer's row threshold.
@@ -2859,9 +3166,18 @@ export class ParallelPlot extends React.Component<ParallelPlotData, ParallelPlot
     if (this.webgl === null && this.foreground === null) {
       return;
     }
-    if (this.continuousMode()) {
-      this.exact?.dispose();
-      this.exact = null;
+    const continuous = this.continuousMode();
+    // The render worker draws the newest state it holds: nothing here waits for it.
+    const worker = this.lineWorker();
+    if (worker !== null && (continuous || worker.presents !== false)) {
+      this.drawGeneration += 1;
+      this.cancelDrawing();
+      this.continuous?.dispose();
+      this.continuous = null;
+      this.drawOnWorker(worker, continuous);
+      return;
+    }
+    if (continuous) {
       // Pace active drafts, but let a new gesture interrupt full-width refinement.
       if (
         this.interactiveFrame() &&

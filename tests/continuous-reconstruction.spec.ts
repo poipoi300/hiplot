@@ -1,27 +1,32 @@
 import { loadParallelBenchmark } from "../bench/parallel";
-import type { ContinuousImage } from "../src/parallel/continuous_types";
-import type { ContinuousRenderer } from "../src/parallel/continuous_worker";
+import type { ContinuousMetrics } from "../src/parallel/render_types";
+import type { RenderWorker } from "../src/parallel/render_worker";
 import type { LineColors, LineFrame } from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
+import { exposeShownPixels, type ShownPixelsWindow } from "./plot";
 
-interface ReconstructionProbe {
+interface ReconstructionProbe extends ShownPixelsWindow {
   __parallelProbe: {
     instance: {
       parallelPlot: () => {
         continuousFrame: number;
-        continuousMetrics: ContinuousImage;
-        continuous: Pick<ContinuousRenderer, "draw" | "busy">;
+        continuousMetrics: ContinuousMetrics;
+        worker: Pick<RenderWorker, "drawContinuous">;
+        workerCanvas: HTMLCanvasElement;
+        linesBusy: boolean;
       };
     };
   };
   __reconstructionCase: { frame: LineFrame; colors: LineColors; selection: Uint8Array };
-  __reconstructionDraft: Uint8ClampedArray;
+  /** The draft image's premultiplied pixels, as the render worker showed them. */
+  __reconstructionDraft: Uint8Array;
 }
 
 for (const curved of [false, true]) {
   test(`six-column ${curved ? "eased" : "straight"} worker images retain the idle brush envelope`, async ({
     page,
   }) => {
+    await exposeShownPixels(page);
     await loadParallelBenchmark(
       page,
       { rows: 3, columns: 2, discrete: false, seed: 20261109 },
@@ -55,6 +60,7 @@ for (const curved of [false, true]) {
         pixelRatio: 1,
         curved,
         draft: true,
+        transient: false,
         resolution: 1,
         drawnRows: rows,
         selectedCount,
@@ -69,33 +75,35 @@ for (const curved of [false, true]) {
         colorMapBins: 0,
       };
       win.__reconstructionCase = { frame, colors, selection };
-      plot.continuous.draw(frame, colors, selection);
+      plot.worker.drawContinuous(frame, colors, selection);
       return plot.continuousFrame;
     }, curved);
     await page.waitForFunction((before) => {
       const plot = (
         window as unknown as ReconstructionProbe
       ).__parallelProbe.instance.parallelPlot();
-      return plot.continuousFrame > before && !plot.continuous.busy;
+      return plot.continuousFrame > before && !plot.linesBusy;
     }, before);
     const draft = await page.evaluate(() => {
       const win = window as unknown as ReconstructionProbe;
       const plot = win.__parallelProbe.instance.parallelPlot();
       const image = plot.continuousMetrics;
-      win.__reconstructionDraft = image.pixels.slice();
+      win.__reconstructionDraft = win.shownPixels(plot.workerCanvas, image);
       const { frame, colors, selection } = win.__reconstructionCase;
-      plot.continuous.draw({ ...frame, draft: false }, colors, selection);
+      plot.worker.drawContinuous({ ...frame, draft: false }, colors, selection);
       return { columns: image.evaluatedColumns, rows: image.rows, after: plot.continuousFrame };
     });
     await page.waitForFunction((before) => {
       const plot = (
         window as unknown as ReconstructionProbe
       ).__parallelProbe.instance.parallelPlot();
-      return plot.continuousFrame > before && !plot.continuous.busy;
+      return plot.continuousFrame > before && !plot.linesBusy;
     }, draft.after);
     const error = await page.evaluate(() => {
       const win = window as unknown as ReconstructionProbe;
-      const idle = win.__parallelProbe.instance.parallelPlot().continuousMetrics;
+      const plot = win.__parallelProbe.instance.parallelPlot();
+      const idle = plot.continuousMetrics;
+      const idlePixels = win.shownPixels(plot.workerCanvas, idle);
       const gesture = win.__reconstructionDraft;
       let absolute = 0;
       let energy = 0;
@@ -105,20 +113,12 @@ for (const curved of [false, true]) {
         let gestureBoundary = -1;
         for (let y = 0; y < idle.height; ++y) {
           const offset = (y * idle.width + x) * 4;
-          if (idleBoundary < 0 && idle.pixels[offset] * idle.pixels[offset + 3] > 6000)
-            idleBoundary = y;
-          if (gestureBoundary < 0 && gesture[offset] * gesture[offset + 3] > 6000)
-            gestureBoundary = y;
+          // Premultiplied red above 6000 / 255: red times coverage above 6000.
+          if (idleBoundary < 0 && idlePixels[offset] * 255 > 6000) idleBoundary = y;
+          if (gestureBoundary < 0 && gesture[offset] * 255 > 6000) gestureBoundary = y;
           for (let channel = 0; channel < 4; ++channel) {
-            const reference =
-              channel === 3
-                ? idle.pixels[offset + 3]
-                : (idle.pixels[offset + channel] * idle.pixels[offset + 3]) / 255;
-            const candidate =
-              channel === 3
-                ? gesture[offset + 3]
-                : (gesture[offset + channel] * gesture[offset + 3]) / 255;
-            absolute += Math.abs(candidate - reference);
+            const reference = idlePixels[offset + channel];
+            absolute += Math.abs(gesture[offset + channel] - reference);
             energy += reference;
           }
         }
@@ -145,6 +145,7 @@ for (const curved of [false, true]) {
 
 for (const kind of ["crossing", "near-crossing", "stationary-context"] as const) {
   test(`worker reconstruction preserves ${kind} geometry`, async ({ page }) => {
+    await exposeShownPixels(page);
     await loadParallelBenchmark(
       page,
       { rows: 3, columns: 2, discrete: false, seed: 20261109 },
@@ -171,7 +172,7 @@ for (const kind of ["crossing", "near-crossing", "stationary-context"] as const)
       else add(56, 56, 0, 10_000);
       const width = kind === "crossing" ? 80 : 32;
       const selectedCount = selected.reduce((sum, value) => sum + value, 0);
-      plot.continuous.draw(
+      plot.worker.drawContinuous(
         {
           axes: [
             { x: 0, pixels: new Float32Array(left) },
@@ -183,6 +184,7 @@ for (const kind of ["crossing", "near-crossing", "stationary-context"] as const)
           pixelRatio: 1,
           curved: false,
           draft: true,
+          transient: false,
           resolution: 1,
           drawnRows: left.length,
           selectedCount,
@@ -200,30 +202,33 @@ for (const kind of ["crossing", "near-crossing", "stationary-context"] as const)
       const plot = (
         window as unknown as ReconstructionProbe
       ).__parallelProbe.instance.parallelPlot();
-      return plot.continuousFrame > before && !plot.continuous.busy;
+      return plot.continuousFrame > before && !plot.linesBusy;
     }, before);
     const rgba = await page.evaluate((kind) => {
-      const image = (
-        window as unknown as ReconstructionProbe
-      ).__parallelProbe.instance.parallelPlot().continuousMetrics;
+      const win = window as unknown as ReconstructionProbe;
+      const plot = win.__parallelProbe.instance.parallelPlot();
+      const image = plot.continuousMetrics;
+      const pixels = win.shownPixels(plot.workerCanvas, image);
       const offset =
         kind === "crossing"
           ? (120 * image.width + 32) * 4
           : kind === "near-crossing"
             ? (30 * image.width + 1) * 4
             : (56 * image.width + 15) * 4;
-      return Array.from(image.pixels.slice(offset, offset + 4));
+      return Array.from(pixels.slice(offset, offset + 4));
     }, kind);
     if (kind !== "stationary-context") expect(rgba).toEqual([0, 0, 0, 0]);
     else {
-      expect(rgba.slice(0, 3)).toEqual([0, 255, 0]);
+      // Premultiplied: pure context green has green equal to coverage.
+      expect(rgba).toEqual([0, rgba[3], 0, rgba[3]]);
       expect(rgba[3]).toBeGreaterThan(0);
     }
     if (kind !== "stationary-context") {
       const coverage = await page.evaluate((kind) => {
-        const image = (
-          window as unknown as ReconstructionProbe
-        ).__parallelProbe.instance.parallelPlot().continuousMetrics;
+        const win = window as unknown as ReconstructionProbe;
+        const plot = win.__parallelProbe.instance.parallelPlot();
+        const image = plot.continuousMetrics;
+        const pixels = win.shownPixels(plot.workerCanvas, image);
         const locations =
           kind === "crossing"
             ? [
@@ -236,7 +241,7 @@ for (const kind of ["crossing", "near-crossing", "stationary-context"] as const)
                 [1, 83],
                 [8, 67],
               ];
-        return locations.map(([x, y]) => image.pixels[(y * image.width + x) * 4 + 3]);
+        return locations.map(([x, y]) => pixels[(y * image.width + x) * 4 + 3]);
       }, kind);
       for (const alpha of coverage) expect(alpha).toBeGreaterThan(0);
     }
@@ -244,6 +249,7 @@ for (const kind of ["crossing", "near-crossing", "stationary-context"] as const)
 }
 
 test("draft reconstruction retains the device maximum pair width", async ({ page }) => {
+  await exposeShownPixels(page);
   await loadParallelBenchmark(
     page,
     { rows: 3, columns: 2, discrete: false, seed: 20261109 },
@@ -259,7 +265,7 @@ test("draft reconstruction retains the device maximum pair width", async ({ page
       Number(Math.floor(row / 25) >= 8 && Math.floor(row / 25) <= 15),
     );
     const plot = (window as unknown as ReconstructionProbe).__parallelProbe.instance.parallelPlot();
-    plot.continuous.draw(
+    plot.worker.drawContinuous(
       {
         axes: [
           {
@@ -274,6 +280,7 @@ test("draft reconstruction retains the device maximum pair width", async ({ page
         pixelRatio: 1,
         curved: false,
         draft: true,
+        transient: false,
         resolution: 1,
         drawnRows: rows,
         selectedCount: 200,
@@ -292,21 +299,22 @@ test("draft reconstruction retains the device maximum pair width", async ({ page
       const plot = (
         window as unknown as ReconstructionProbe
       ).__parallelProbe.instance.parallelPlot();
-      return plot.continuousFrame > before && !plot.continuous.busy;
+      return plot.continuousFrame > before && !plot.linesBusy;
     }, request.before),
     page.waitForEvent("pageerror").then((error) => {
       throw error;
     }),
   ]);
   const image = await page.evaluate(() => {
-    const image = (window as unknown as ReconstructionProbe).__parallelProbe.instance.parallelPlot()
-      .continuousMetrics;
+    const win = window as unknown as ReconstructionProbe;
+    const plot = win.__parallelProbe.instance.parallelPlot();
+    const image = plot.continuousMetrics;
     return {
       width: image.width,
       height: image.height,
       rows: image.rows,
       columns: image.evaluatedColumns,
-      nonblank: image.pixels.some((value) => value > 0),
+      nonblank: win.shownPixels(plot.workerCanvas, image).some((value) => value > 0),
     };
   });
   expect(image).toEqual({

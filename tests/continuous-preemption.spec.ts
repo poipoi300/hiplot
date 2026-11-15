@@ -1,17 +1,18 @@
 import { loadParallelBenchmark } from "../bench/parallel";
-import type { ContinuousImage } from "../src/parallel/continuous_types";
-import type { ContinuousRenderer } from "../src/parallel/continuous_worker";
+import type { ContinuousMetrics, RenderMessage, RenderReply } from "../src/parallel/render_types";
+import type { RenderWorker } from "../src/parallel/render_worker";
 import type { LineColors, LineFrame } from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
-import { warmParallelWorker } from "./plot";
+import { renderWorker, warmParallelWorker } from "./plot";
 
 interface PreemptionWindow {
   __parallelProbe: {
     instance: {
       parallelPlot: () => {
-        continuous: ContinuousRenderer;
+        worker: RenderWorker;
+        linesBusy: boolean;
         continuousFrame: number;
-        continuousMetrics: ContinuousImage;
+        continuousMetrics: ContinuousMetrics;
         geometry: () => never;
         selectionMask: (geometry: never) => Uint8Array;
         lineColors: (geometry: never) => LineColors;
@@ -23,8 +24,8 @@ interface PreemptionWindow {
 }
 interface WorkerEvents {
   events: { kind: "request" | "image"; id: number; draft?: boolean }[];
-  onmessage: ((event: MessageEvent<{ id: number; draft: boolean }>) => Promise<void>) | null;
-  postMessage: (message: { id: number }, transfer: Transferable[]) => void;
+  onmessage: ((event: MessageEvent<RenderMessage>) => void) | null;
+  postMessage: (reply: RenderReply, transfer: Transferable[]) => void;
 }
 
 test("a real new gesture overtakes release refinement before its image is published", async ({
@@ -36,36 +37,40 @@ test("a real new gesture overtakes release refinement before its image is publis
     "low",
   );
   await warmParallelWorker(page);
-  const worker = page.workers()[0];
+  const worker = await renderWorker(page);
   await worker.evaluate(() => {
     const scope = self as unknown as WorkerEvents;
     scope.events = [];
     const receive = scope.onmessage;
     if (receive === null) throw new Error("Missing production worker entry");
-    scope.onmessage = async (event) => {
-      scope.events.push({ kind: "request", id: event.data.id, draft: event.data.draft });
-      await receive(event);
+    scope.onmessage = (event) => {
+      if (event.data.kind === "frame")
+        scope.events.push({ kind: "request", id: event.data.id, draft: event.data.draft });
+      receive(event);
     };
     const post = scope.postMessage.bind(scope);
-    scope.postMessage = (message, transfer) => {
-      scope.events.push({ kind: "image", id: message.id });
-      post(message, transfer);
+    scope.postMessage = (reply, transfer) => {
+      if (reply.kind === "frame") scope.events.push({ kind: "image", id: reply.id });
+      post(reply, transfer);
     };
   });
-  const before = await page.evaluate(() => {
+  const before = await page.evaluate(async () => {
     const plot = (window as unknown as PreemptionWindow).__parallelProbe.instance.parallelPlot();
     const geometry = plot.geometry();
     const mask = plot.selectionMask(geometry).slice();
     const colors = plot.lineColors(geometry);
     const frame = { ...plot.lineFrame(geometry, mask), curved: !plot.curvedLines(), draft: false };
-    plot.continuous.draw(frame, colors, mask);
+    plot.worker.drawContinuous(frame, colors, mask);
+    // Draws requested together send only the last: the refinement is posted
+    // on its own, then the gesture's draft right behind it in the same task.
+    await Promise.resolve();
     mask[0] = 0;
-    plot.continuous.draw({ ...frame, draft: true }, colors, mask);
+    plot.worker.drawContinuous({ ...frame, draft: true }, colors, mask);
     return plot.continuousFrame;
   });
   await page.waitForFunction((before) => {
     const plot = (window as unknown as PreemptionWindow).__parallelProbe.instance.parallelPlot();
-    return plot.continuousFrame > before && !plot.continuous.busy;
+    return plot.continuousFrame > before && !plot.linesBusy;
   }, before);
   const events = await worker.evaluate(() => (self as unknown as WorkerEvents).events);
   const requests = events.filter((event) => event.kind === "request");

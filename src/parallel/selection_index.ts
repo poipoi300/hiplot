@@ -1,6 +1,5 @@
 import type { FilterRange } from "../filters";
 import { ParamType } from "../types";
-import { rustKernels } from "../wasm/kernels";
 
 export type SelectionColumn =
   | { kind: "numeric"; values: Float64Array; missing: Uint8Array }
@@ -34,17 +33,6 @@ export interface SelectionIndexResponse {
   id: number;
   index: SelectionIndex;
   wasmMemoryBytes?: number;
-}
-
-/** Builds an exact, stable original-row permutation. Called only by the inline worker. */
-export function buildSelectionIndex(column: SelectionColumn): SelectionIndex {
-  const kernels = rustKernels();
-  if (kernels !== null) {
-    return column.kind === "numeric"
-      ? kernels.numericIndex(column.values, column.missing)
-      : kernels.categoricalIndex(column.codes, column.categories);
-  }
-  return buildSelectionIndexCPU(column);
 }
 
 /** JavaScript reference and fallback when WebAssembly compilation is unavailable. */

@@ -10,7 +10,7 @@ import $ from "jquery";
 import React from "react";
 import _ from "underscore";
 import { ContextMenu } from "./contextmenu";
-import { lassoFilter } from "./filters";
+import { apply_filter, lassoFilter } from "./filters";
 import style from "./hiplot.module.css";
 import { create_d3_scale, type ParamDef, type ParamScale } from "./infertypes";
 import { IS_MOBILE } from "./lib/browsercompat";
@@ -24,13 +24,14 @@ import { mounted } from "./lib/refs";
 import { ResizableH } from "./lib/resizable";
 import { isString, readState } from "./lib/savedstate";
 import { columnAxisStyle, valueFormatter } from "./parallel/axisformat";
-import { LASSO_GESTURE, lassoed, type ScreenPoint } from "./plots/lasso";
+import { LASSO_GESTURE, type ScreenPoint } from "./plots/lasso";
+import { lassoAxis, lassoPolygon, type PlaneLasso, planeCoordinate } from "./plots/lassoshape";
 import { LassoSurface } from "./plots/lassosurface";
 import pstyle from "./plots/plots.module.css";
 import { type FitMode, isFitMode, type ScatterStats, scatterStats } from "./plots/scatterstats";
 import type { HiPlotPluginData } from "./plugin";
 import { formatParameter } from "./stats/distributions";
-import { type Datapoint, type DatapointValue, ParamType } from "./types";
+import { type Datapoint, ParamType } from "./types";
 
 // DISPLAYS_DATA_DOC_BEGIN
 // Corresponds to values in the dict of `exp.display_data(hip.Displays.XY)`
@@ -193,7 +194,7 @@ function buildAxis(
 interface PlotXYInternal {
   svg: SvgSelection;
   clear_canvas: () => void;
-  lassoed_rows: (polygon: ReadonlyArray<ScreenPoint>) => Datapoint[];
+  lasso_shape: (polygon: ReadonlyArray<ScreenPoint>) => PlaneLasso;
   update_axis: () => void;
   recompute_scale: () => void;
   draw_selected_rows: () => void;
@@ -681,51 +682,31 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
 
     hover(svg);
 
-    function is_err(value: DatapointValue, scaled_value: number, def: ParamDef) {
-      return (
-        value === undefined ||
-        value === null ||
-        Number.isNaN(scaled_value) ||
-        (def.numeric && (value === "inf" || value === "-inf"))
-      );
-    }
     /** Where a row's point is drawn, in the SVG's pixels; null when it lacks a value. */
     function svg_position(point: Datapoint, axes: { x: string; y: string }): ScreenPoint | null {
-      const x = x_scale(point[axes.x]);
-      const y = y_scale(point[axes.y]);
-      if (
-        is_err(point[axes.x], x, me.props.params_def[axes.x]) ||
-        is_err(point[axes.y], y, me.props.params_def[axes.y])
-      ) {
-        return null;
-      }
-      return { x, y };
+      const x = planeCoordinate(point[axes.x], x_scale, me.props.params_def[axes.x].numeric);
+      const y = planeCoordinate(point[axes.y], y_scale, me.props.params_def[axes.y].numeric);
+      return x === null || y === null ? null : { x, y };
     }
     /**
-     * The rows Keep and Exclude left, selected or not, whose points fall inside
-     * a lasso drawn over the plot, at the current zoom: points zoomed out of
-     * the plot area are not drawn, so a lasso cannot take them.
+     * A lasso drawn over the plot, with the scales of its axes at the current
+     * zoom: it takes the points inside it and inside the plot area, where
+     * points zoomed out of view are not drawn.
      */
-    function lassoed_rows(polygon: ReadonlyArray<ScreenPoint>): Datapoint[] {
+    function lasso_shape(polygon: ReadonlyArray<ScreenPoint>): PlaneLasso {
       const axes = me.requireAxes();
-      const rows = me.props.rows_filtered;
-      const right = me.state.width - margin.right;
-      const bottom = me.state.height - margin.bottom;
-      const inside = lassoed(
-        rows.length,
-        (index) => {
-          const point = svg_position(rows[index], axes);
-          return point !== null &&
-            point.x >= margin.left &&
-            point.x <= right &&
-            point.y >= margin.top &&
-            point.y <= bottom
-            ? point
-            : null;
-        },
-        polygon,
-      );
-      return inside.map((index) => rows[index]);
+      return {
+        kind: "plane",
+        x: lassoAxis(axes.x, x_scale.paramType, x_scale),
+        y: lassoAxis(axes.y, y_scale.paramType, y_scale),
+        area: [
+          margin.left,
+          margin.top,
+          me.state.width - margin.right,
+          me.state.height - margin.bottom,
+        ],
+        polygon: lassoPolygon(polygon),
+      };
     }
 
     function render_dp(
@@ -1003,7 +984,7 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
     return {
       svg: svg,
       clear_canvas: clear_canvas,
-      lassoed_rows: lassoed_rows,
+      lasso_shape: lasso_shape,
       update_axis: update_axis,
       recompute_scale: recompute_scale,
       draw_selected_rows: draw_selected_rows,
@@ -1021,13 +1002,13 @@ export class PlotXY extends React.Component<PlotXYProps, PlotXYState> {
       this.setState({ height: height, width: width });
     }
   }, 100);
-  /** A lasso's rows replace the selection. */
+  /** The rows inside a lasso, selected or not, replace the selection. */
   onLasso = (polygon: ReadonlyArray<ScreenPoint>): void => {
     if (this.plot === null) {
       throw new Error("A lasso was drawn over an XY plot that is not drawn");
     }
-    const rows = this.plot.lassoed_rows(polygon);
-    this.props.setSelected(rows, lassoFilter(rows));
+    const filter = lassoFilter(this.plot.lasso_shape(polygon));
+    this.props.setSelected(apply_filter(this.props.rows_filtered, filter), filter);
   };
   disable(): void {
     if (this.props.onClose !== undefined) {

@@ -8,8 +8,8 @@ test.use({ viewport: { width: 1900, height: 1000 } });
 interface HiPlotWindow {
   hiplot_last_instance: {
     state: {
-      rows_selected: { uid: string }[];
-      rows_filtered: { uid: string }[];
+      rows_selected: { uid: string; [column: string]: unknown }[];
+      rows_filtered: { uid: string; [column: string]: unknown }[];
     };
   };
 }
@@ -19,6 +19,19 @@ const selectedUids = (page: Page): Promise<string[]> =>
     (window as unknown as HiPlotWindow).hiplot_last_instance.state.rows_selected.map(
       (row) => row.uid,
     ),
+  );
+/**
+ * The selected or the filtered rows by their values in the columns lassoed
+ * here, sorted. Each load of the demo draws new uids and timestamps, but the
+ * same values in these columns.
+ */
+const rowValues = (page: Page, rows: "rows_selected" | "rows_filtered"): Promise<string[]> =>
+  page.evaluate(
+    (key) =>
+      (window as unknown as HiPlotWindow).hiplot_last_instance.state[key]
+        .map((row) => JSON.stringify(["lr", "exp_metric", "r", "pct_success"].map((c) => row[c])))
+        .sort(),
+    rows,
   );
 const filteredCount = (page: Page): Promise<number> =>
   page.evaluate(
@@ -35,8 +48,16 @@ async function boxOf(
   return box;
 }
 
-/** Brushes the parallel plot's `dimension` axis between two fractions of its height. */
+/**
+ * Brushes the parallel plot's `dimension` axis between two fractions of its
+ * height, and waits for the selection it publishes once the brush worker
+ * returns it.
+ */
 async function brushAxis(page: Page, dimension: string, from: number, to: number): Promise<void> {
+  await page.evaluate(() => {
+    const win = window as unknown as HiPlotWindow & { __beforeBrush?: unknown };
+    win.__beforeBrush = win.hiplot_last_instance.state.rows_selected;
+  });
   const overlay = await boxOf(
     page
       .locator("svg g.dimension")
@@ -48,6 +69,10 @@ async function brushAxis(page: Page, dimension: string, from: number, to: number
   await page.mouse.down();
   await page.mouse.move(x, overlay.y + overlay.height * to, { steps: 6 });
   await page.mouse.up();
+  await page.waitForFunction(() => {
+    const win = window as unknown as HiPlotWindow & { __beforeBrush?: unknown };
+    return win.hiplot_last_instance.state.rows_selected !== win.__beforeBrush;
+  });
 }
 
 /**
@@ -259,32 +284,48 @@ test("clearing a lasso selects every row again", async ({ page }) => {
   expect((await selectedUids(page)).length).toBe(all);
 });
 
+test("Refresh drops a lasso selection, which is not saved, and selects every row", async ({
+  page,
+}) => {
+  await loadDemo(page);
+  const all = await filteredCount(page);
+  await lasso(page, await open3D(page), [0.3, 0.3], [0.7, 0.7]);
+  const chip = page.getByTestId("lasso-selection");
+  await expect(chip).toBeVisible();
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(page.getByRole("img", { name: /3D scatter plot/ })).toBeVisible();
+  await expect(chip).toBeHidden();
+  await expect.poll(async () => (await selectedUids(page)).length).toBe(all);
+});
+
 /** The filters Keep and Exclude saved in the page state, which replay on reload. */
 const savedFilters = (page: Page): unknown =>
   JSON.parse(new URL(page.url()).searchParams.get("hip.filters") ?? "null");
 
-test("Keep and Exclude apply to a lasso's rows and are saved by uid", async ({ page }) => {
+test("Keep and Exclude save the shapes of lassos, which replay the same rows on reload", async ({
+  page,
+}) => {
   await loadDemo(page);
   const all = await filteredCount(page);
-  const canvas = await open3D(page);
-  await lasso(page, canvas, [0.3, 0.3], [0.7, 0.7]);
+  await lasso(page, await open3D(page), [0.3, 0.3], [0.7, 0.7]);
   const excluded = await selectedUids(page);
   await page.getByRole("button", { name: "Exclude" }).click();
   await expect.poll(() => filteredCount(page)).toBe(all - excluded.length);
   await expect(page.getByTestId("lasso-selection")).toBeHidden();
-  await expect
-    .poll(() => savedFilters(page))
-    .toEqual([{ type: "Not", data: { type: "Lasso", data: excluded } }]);
 
-  await lasso(page, canvas, [0.2, 0.2], [0.8, 0.8]);
+  await lasso(page, await openXY(page), [0.2, 0.2], [0.8, 0.8]);
   const kept = await selectedUids(page);
   expect(kept.some((uid) => excluded.includes(uid))).toBe(false);
+  const keptValues = await rowValues(page, "rows_selected");
   await page.getByRole("button", { name: "Keep" }).click();
   await expect.poll(() => filteredCount(page)).toBe(kept.length);
-  await expect
-    .poll(() => savedFilters(page))
-    .toEqual([
-      { type: "Not", data: { type: "Lasso", data: excluded } },
-      { type: "Lasso", data: kept },
-    ]);
+  await expect.poll(() => savedFilters(page)).toHaveLength(2);
+  expect(savedFilters(page)).toEqual([
+    { type: "Not", data: { type: "Lasso", data: expect.objectContaining({ kind: "view" }) } },
+    { type: "Lasso", data: expect.objectContaining({ kind: "plane" }) },
+  ]);
+
+  await page.reload();
+  await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
+  expect(await rowValues(page, "rows_filtered")).toEqual(keptValues);
 });

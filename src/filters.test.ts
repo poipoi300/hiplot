@@ -10,6 +10,7 @@ import {
   isLassoSelection,
   lassoFilter,
   parseColumnCondition,
+  rowsExcept,
 } from "./filters";
 import { type Datapoint, ParamType } from "./types";
 
@@ -59,8 +60,14 @@ describe("filters", () => {
     expect(apply_filter(table, { type: FilterType.None, data: {} })).toEqual([]);
   });
 
-  test("a lasso's filter keeps exactly the rows it drew around", () => {
-    const lasso = lassoFilter([table[3], table[1]]);
+  test("a lasso across a categorical axis keeps the categories it spanned", () => {
+    const lasso = lassoFilter({ kind: "categories", col: "opt", values: ["sgd", "rmsprop"] });
+    expect(uids(apply_filter(table, lasso))).toEqual(["b", "d"]);
+    expect(isLassoSelection(lasso)).toBe(true);
+  });
+
+  test("a lasso saved as the uids of its rows still keeps exactly those rows", () => {
+    const lasso: Filter = { type: FilterType.Lasso, data: ["d", "b"] };
     expect(uids(apply_filter(table, lasso))).toEqual(["b", "d"]);
     expect(isLassoSelection(lasso)).toBe(true);
     expect(isLassoSelection(lossRange(0, 1))).toBe(false);
@@ -77,11 +84,34 @@ describe("filters", () => {
   });
 });
 
+describe("excluding rows", () => {
+  test("rows are left in their order, compared by identity", () => {
+    const twin = { ...table[1] };
+    expect(uids(rowsExcept(table, [table[2], table[0], twin]))).toEqual(["b", "d"]);
+    expect(rowsExcept(table, [])).toEqual(table);
+    expect(rowsExcept(table, table)).toEqual([]);
+  });
+
+  // The timeout fails a search of the excluded rows per row, which takes tens of seconds here.
+  test("half of 300,000 rows are excluded in one pass", () => {
+    const rows = Array.from({ length: 300_000 }, (_, index) => ({
+      uid: String(index),
+      from_uid: null,
+    }));
+    const excluded = rows.filter((_, index) => index % 2 === 0);
+    const left = rowsExcept(rows, excluded);
+    expect(left).toHaveLength(150_000);
+    expect(left[0]).toBe(rows[1]);
+    expect(left[149_999]).toBe(rows[299_999]);
+  }, 2000);
+});
+
 describe("filter validation", () => {
   test("well-formed filters, including nested ones, are accepted", () => {
     expect(isFilter(lossRange(0, 1))).toBe(true);
     expect(isFilter({ type: FilterType.Not, data: { type: FilterType.All, data: [] } })).toBe(true);
     expect(isFilter({ type: FilterType.Lasso, data: ["a", "b"] })).toBe(true);
+    expect(isFilter(lassoFilter({ kind: "categories", col: "opt", values: ["sgd"] }))).toBe(true);
   });
 
   test("malformed filters from storage are rejected", () => {
@@ -93,6 +123,8 @@ describe("filter validation", () => {
       { type: FilterType.Search, data: 3 },
       { type: FilterType.All, data: [{ type: FilterType.None }] },
       { type: FilterType.Lasso, data: [1, 2] },
+      { type: FilterType.Lasso, data: { kind: "categories", col: "opt", values: [1] } },
+      { type: FilterType.Lasso, data: { kind: "circle" } },
     ]) {
       expect(isFilter(value)).toBe(false);
     }

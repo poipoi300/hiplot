@@ -1054,6 +1054,8 @@ export class ContinuousDensityEvaluator {
   private gpu: ContinuousWebGLEvaluator | null;
   private software: boolean;
   private readonly cache = new Map<string, CachedPairImage>();
+  /** A context the evaluator created, released with it rather than left to the collector. */
+  private readonly ownContext: WebGL2RenderingContext | null;
 
   constructor(options: ContinuousDensityOptions = {}) {
     const gl =
@@ -1062,6 +1064,7 @@ export class ContinuousDensityEvaluator {
           ? null
           : new OffscreenCanvas(1, 1).getContext("webgl2", { antialias: false })
         : options.gl;
+    this.ownContext = options.gl === undefined ? gl : null;
     this.gpu = gl === null ? null : new ContinuousWebGLEvaluator(gl);
     this.software = options.software ?? this.gpu?.software ?? true;
   }
@@ -1220,6 +1223,8 @@ export class ContinuousDensityEvaluator {
   dispose(): void {
     this.cache.clear();
     this.gpu?.dispose();
+    this.gpu = null;
+    this.ownContext?.getExtension("WEBGL_lose_context")?.loseContext();
   }
 }
 

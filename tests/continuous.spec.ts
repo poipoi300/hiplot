@@ -1,23 +1,22 @@
 import type { Page } from "@playwright/test";
 import { loadParallelBenchmark } from "../bench/parallel";
 import type { ParamScale } from "../src/infertypes";
-import type { ContinuousImage } from "../src/parallel/continuous_types";
-import type { ContinuousRenderer } from "../src/parallel/continuous_worker";
+import type { BrushSelection } from "../src/parallel/brush_selection";
 import type { LineGeometry } from "../src/parallel/geometry";
-import type { BrushMasks } from "../src/parallel/selection";
+import type { ContinuousMetrics } from "../src/parallel/render_types";
+import type { RenderWorker } from "../src/parallel/render_worker";
 import type { LineColors, LineFrame, WebGLLineRenderer } from "../src/parallel/webgl";
 import type { Datapoint } from "../src/types";
 import { expect, test } from "./fixtures";
-import { warmParallelWorker } from "./plot";
+import { exposeShownPixels, hideWebGL2, type ShownPixelsWindow, warmParallelWorker } from "./plot";
 
 interface PlotProbe {
   linesBusy: boolean;
-  exact: { busy: boolean } | null;
-  exact_image_ref: { current: HTMLCanvasElement };
+  worker: Pick<RenderWorker, "drawContinuous" | "presents"> | null;
+  workerCanvas: HTMLCanvasElement;
   webgl: WebGLLineRenderer;
-  continuous: Pick<ContinuousRenderer, "draw" | "busy"> | null;
   continuousFrame: number;
-  continuousMetrics: ContinuousImage | null;
+  continuousMetrics: ContinuousMetrics | null;
   state: { dimensions: string[]; lineShape: string };
   props: {
     rows_filtered: Datapoint[];
@@ -43,8 +42,8 @@ interface PlotProbe {
 }
 interface CanvasPlotProbe extends Omit<PlotProbe, "webgl"> {
   webgl: null;
-  brushMasks: () => BrushMasks;
-  pplot: { brush: (publish: boolean) => void };
+  brushSelection: () => BrushSelection;
+  pplot: { brush: (publish: boolean) => Promise<void> };
   startBrushGesture: (event: { sourceEvent: { target: Element }; y: number }, axis: string) => void;
   continueBrushGesture: (y: number) => void;
   cancelBrushMove: () => void;
@@ -61,7 +60,7 @@ interface Image {
   width: number;
   height: number;
 }
-interface ProbeWindow {
+interface ProbeWindow extends ShownPixelsWindow {
   __parallelProbe: {
     instance: {
       parallelPlot: () => PlotProbe;
@@ -69,6 +68,8 @@ interface ProbeWindow {
     };
   };
   __continuousImages?: Record<string, Image>;
+  /** Premultiplied pixels the render worker showed, by name. */
+  __shownImages?: Record<string, Uint8Array>;
   __sourceColumns?: { column: Float32Array; length: number; samples: number[] }[];
   __sourceBins?: { bins: Uint32Array; length: number; samples: number[] };
   __latestRequest?: { frame: LineFrame; colors: LineColors; mask: Uint8Array };
@@ -78,27 +79,19 @@ interface ProbeWindow {
 async function waitForContinuous(page: Page, after = 0): Promise<void> {
   await page.waitForFunction((after) => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
-    return (
-      pp.continuousFrame > after && pp.continuous !== null && !pp.continuous.busy && !pp.webgl.busy
-    );
+    return pp.continuousFrame > after && !pp.linesBusy;
   }, after);
 }
 
 async function saveImage(page: Page, name: string, exact: boolean): Promise<void> {
   await page.evaluate(
-    async ({ name, exact }) => {
+    ({ name, exact }) => {
       const win = window as unknown as ProbeWindow;
       const pp = win.__parallelProbe.instance.parallelPlot();
-      if (exact) {
-        pp.drawWithWebGL(pp.webgl);
-        while (pp.exact?.busy) await new Promise(requestAnimationFrame);
-      } else {
-        const image = pp.continuousMetrics;
-        if (image === null) throw new Error("No accepted density image");
-        pp.webgl.present(image.pixels, image.width, image.height);
-      }
-      const canvas =
-        exact && pp.exact !== null ? pp.exact_image_ref.current : pp.foreground_ref.current;
+      // Exact lines drawn on the page's renderer; density as the render worker shows it.
+      if (exact) pp.drawWithWebGL(pp.webgl);
+      else if (pp.continuousMetrics === null) throw new Error("No accepted density image");
+      const canvas = exact ? pp.foreground_ref.current : pp.workerCanvas;
       const copy = document.createElement("canvas");
       copy.width = canvas.width;
       copy.height = canvas.height;
@@ -119,6 +112,7 @@ async function saveImage(page: Page, name: string, exact: boolean): Promise<void
 test("the all-row worker preserves dense populations across row-order permutations", async ({
   page,
 }) => {
+  await exposeShownPixels(page);
   await loadParallelBenchmark(
     page,
     { rows: 8192, columns: 2, discrete: false, seed: 20261109 },
@@ -149,9 +143,10 @@ test("the all-row worker preserves dense populations across row-order permutatio
         right[row] = group * 128 + (member % 64) + 0.5;
         bins[row] = group;
       }
+      if (pp.worker === null) throw new Error("No render worker");
       const geometry = pp.geometry();
       const mask = new Uint8Array(rows).fill(1);
-      pp.continuous?.draw(
+      pp.worker.drawContinuous(
         {
           ...pp.lineFrame(geometry, mask),
           axes: [
@@ -181,14 +176,15 @@ test("the all-row worker preserves dense populations across row-order permutatio
       const pp = win.__parallelProbe.instance.parallelPlot();
       const image = pp.continuousMetrics;
       if (image === null) throw new Error("Missing population image");
-      win.__continuousImages ??= {};
-      win.__continuousImages[order] = { ...image, pixels: image.pixels.slice() };
-      const reference = win.__continuousImages.alternating;
+      const pixels = win.shownPixels(pp.workerCanvas, image);
+      win.__shownImages ??= {};
+      win.__shownImages[order] = pixels;
+      const reference = win.__shownImages.alternating;
       let maximumDifference = 0;
-      for (let channel = 0; channel < image.pixels.length; ++channel) {
+      for (let channel = 0; channel < pixels.length; ++channel) {
         maximumDifference = Math.max(
           maximumDifference,
-          Math.abs(image.pixels[channel] - reference.pixels[channel]),
+          Math.abs(pixels[channel] - reference[channel]),
         );
       }
       const alpha = [0, 0];
@@ -197,9 +193,8 @@ test("the all-row worker preserves dense populations across row-order permutatio
         for (let y = group * 128; y < group * 128 + 64; ++y) {
           for (let x = 35; x < 65; ++x) {
             const pixel = (y * image.width + x) * 4;
-            alpha[group] += image.pixels[pixel + 3];
-            if (image.pixels[pixel + 3] > 0)
-              wrongColor[group] += image.pixels[pixel + (group === 0 ? 2 : 0)];
+            alpha[group] += pixels[pixel + 3];
+            if (pixels[pixel + 3] > 0) wrongColor[group] += pixels[pixel + (group === 0 ? 2 : 0)];
           }
         }
       }
@@ -212,11 +207,15 @@ test("the all-row worker preserves dense populations across row-order permutatio
     expect(result.maximumDifference).toBeLessThanOrEqual(1);
   }
   const image = await page.evaluate(() => {
-    const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
-    const image = pp.continuousMetrics;
-    if (image === null) throw new Error("Missing population image");
-    pp.webgl.present(image.pixels, image.width, image.height);
-    return pp.foreground_ref.current.toDataURL("image/png");
+    const canvas = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot()
+      .workerCanvas;
+    const copy = document.createElement("canvas");
+    copy.width = canvas.width;
+    copy.height = canvas.height;
+    const context = copy.getContext("2d");
+    if (context === null) throw new Error("No readback context");
+    context.drawImage(canvas, 0, 0);
+    return copy.toDataURL("image/png");
   });
   await test.info().attach("dense-populations", {
     body: Buffer.from(image.split(",")[1], "base64"),
@@ -233,37 +232,57 @@ test("an idle all-row brush starts before RAF and busy moves remain coalesced", 
     "low",
   );
   await warmParallelWorker(page);
-  const result = await page.evaluate(() => {
+  const result = await page.evaluate(async () => {
     const pp = (
       window as unknown as ProbeWindow
     ).__parallelProbe.instance.parallelPlot() as PlotProbe &
-      Pick<CanvasPlotProbe, "startBrushGesture" | "continueBrushGesture" | "endBrushGesture"> & {
+      Pick<
+        CanvasPlotProbe,
+        "brushSelection" | "startBrushGesture" | "continueBrushGesture" | "endBrushGesture"
+      > & {
         brushMoveFrame: number | null;
       };
-    if (pp.continuous === null) throw new Error("No continuous renderer");
+    const worker = pp.worker;
+    if (worker === null) throw new Error("No render worker");
     const dimension = pp.state.dimensions[1];
     const target = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
       .find((node) => (node as SVGGElement & { __data__: string }).__data__ === dimension)
       ?.querySelector(".overlay");
     if (!target) throw new Error("No brush overlay");
-    const draw = pp.continuous.draw.bind(pp.continuous);
+    const masks = pp.brushSelection();
+    const select = masks.select.bind(masks);
+    const selections: ReturnType<typeof select>[] = [];
+    masks.select = (...args) => {
+      const selection = select(...args);
+      selections.push(selection);
+      return selection;
+    };
+    const draw = worker.drawContinuous.bind(worker);
     let requests = 0;
-    pp.continuous.draw = (...args) => {
+    worker.drawContinuous = (...args) => {
       requests += 1;
       draw(...args);
     };
     pp.startBrushGesture({ sourceEvent: { target }, y: pp.h * 0.2 }, dimension);
     pp.continueBrushGesture(pp.h * 0.5);
-    const first = { requests, scheduled: pp.brushMoveFrame };
+    // The first move selects at once; the next display frame takes the latest of those after it.
+    const first = { selections: selections.length, scheduled: pp.brushMoveFrame !== null };
     pp.continueBrushGesture(pp.h * 0.6);
     const pending = pp.brushMoveFrame;
     pp.continueBrushGesture(pp.h * 0.7);
-    const busy = { requests, coalesced: pending !== null && pending === pp.brushMoveFrame };
+    const busy = {
+      selections: selections.length,
+      coalesced: pending !== null && pending === pp.brushMoveFrame,
+    };
+    // The first selection draws its density as soon as the brush worker returns it.
+    await selections[0];
+    const drawn = { requests };
     pp.endBrushGesture();
-    return { first, busy, cancelled: pp.brushMoveFrame === null };
+    return { first, busy, drawn, cancelled: pp.brushMoveFrame === null };
   });
-  expect(result.first).toEqual({ requests: 1, scheduled: null });
-  expect(result.busy).toEqual({ requests: 1, coalesced: true });
+  expect(result.first).toEqual({ selections: 1, scheduled: true });
+  expect(result.busy).toEqual({ selections: 1, coalesced: true });
+  expect(result.drawn).toEqual({ requests: 1 });
   expect(result.cancelled).toBe(true);
 });
 
@@ -371,7 +390,8 @@ test("gesture images retain every source row and refine only image columns", asy
     const geometry = pp.geometry();
     const mask = new Uint8Array(geometry.rows.length);
     mask[mask.length - 1] = 1;
-    pp.continuous?.draw(
+    if (pp.worker === null) throw new Error("No render worker");
+    pp.worker.drawContinuous(
       { ...pp.lineFrame(geometry, mask), draft: true },
       pp.lineColors(geometry),
       mask,
@@ -386,7 +406,8 @@ test("gesture images retain every source row and refine only image columns", asy
     const geometry = pp.geometry();
     const mask = new Uint8Array(geometry.rows.length);
     mask[mask.length - 1] = 1;
-    pp.continuous?.draw(
+    if (pp.worker === null) throw new Error("No render worker");
+    pp.worker.drawContinuous(
       { ...pp.lineFrame(geometry, mask), draft: false },
       pp.lineColors(geometry),
       mask,
@@ -543,6 +564,7 @@ test("hover draws the original unquantized row exactly above the continuous pict
 test("numeric extrema and missing-color means survive incremental removal in the worker", async ({
   page,
 }) => {
+  await exposeShownPixels(page);
   await loadParallelBenchmark(page, { rows: 3, columns: 2, discrete: true, seed: 20261109 }, "low");
   const colors: number[][] = [];
   for (const mode of ["mean", "highest", "lowest", "remaining"] as const) {
@@ -567,7 +589,8 @@ test("numeric extrema and missing-color means survive incremental removal in the
         },
       };
       const { pixels } = win.__numericFixture;
-      pp.continuous?.draw(
+      if (pp.worker === null) throw new Error("No render worker");
+      pp.worker.drawContinuous(
         {
           ...pp.lineFrame(geometry, mask),
           axes: [
@@ -593,11 +616,15 @@ test("numeric extrema and missing-color means survive incremental removal in the
     await waitForContinuous(page, before);
     colors.push(
       await page.evaluate(() => {
-        const image = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot()
-          .continuousMetrics;
+        const win = window as unknown as ProbeWindow;
+        const pp = win.__parallelProbe.instance.parallelPlot();
+        const image = pp.continuousMetrics;
         if (!image) throw new Error("No numeric worker image");
         const pixel = (32 * image.width + 48) * 4;
-        return Array.from(image.pixels.slice(pixel, pixel + 4));
+        const [r, g, b, alpha] = win.shownPixels(pp.workerCanvas, image).slice(pixel, pixel + 4);
+        // The colors the image holds, from the premultiplied ones the canvas shows.
+        const color = alpha === 0 ? [0, 0, 0] : [r, g, b].map((c) => Math.round((c * 255) / alpha));
+        return [...color, alpha];
       }),
     );
   }
@@ -612,6 +639,7 @@ test("numeric extrema and missing-color means survive incremental removal in the
 test("horizontal translation composites cached pair images without pixel evaluation", async ({
   page,
 }) => {
+  await exposeShownPixels(page);
   await loadParallelBenchmark(
     page,
     { rows: 400, columns: 4, discrete: false, seed: 20261109 },
@@ -619,10 +647,11 @@ test("horizontal translation composites cached pair images without pixel evaluat
   );
   const before = await page.evaluate(() => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
+    if (pp.worker === null) throw new Error("No render worker");
     const geometry = pp.geometry();
     const mask = pp.selectionMask(geometry);
     const frame = pp.lineFrame(geometry, mask);
-    pp.continuous?.draw(
+    pp.worker.drawContinuous(
       { ...frame, axes: frame.axes.map((axis) => ({ ...axis, x: axis.x - 20 })) },
       pp.lineColors(geometry),
       mask,
@@ -631,12 +660,16 @@ test("horizontal translation composites cached pair images without pixel evaluat
   });
   await waitForContinuous(page, before);
   const image = await page.evaluate(() => {
-    const image = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot()
-      .continuousMetrics;
+    const win = window as unknown as ProbeWindow;
+    const pp = win.__parallelProbe.instance.parallelPlot();
+    const image = pp.continuousMetrics;
+    if (image === null) throw new Error("No translated image");
     return {
-      evaluated: image?.evaluatedPairs,
-      rows: image?.rows,
-      painted: image?.pixels.some((value, channel) => channel % 4 === 3 && value > 0),
+      evaluated: image.evaluatedPairs,
+      rows: image.rows,
+      painted: win
+        .shownPixels(pp.workerCanvas, image)
+        .some((value, channel) => channel % 4 === 3 && value > 0),
     };
   });
   expect(image.evaluated).toBe(0);
@@ -692,6 +725,7 @@ test("curved highlights retain identical original spline commands in both modes"
 test("worker coalescing presents only the latest selection without detaching source columns", async ({
   page,
 }) => {
+  await exposeShownPixels(page);
   await loadParallelBenchmark(
     page,
     { rows: 1000, columns: 4, discrete: false, seed: 20261109 },
@@ -700,9 +734,9 @@ test("worker coalescing presents only the latest selection without detaching sou
   const initial = await page.evaluate(() => {
     const win = window as unknown as ProbeWindow;
     const pp = win.__parallelProbe.instance.parallelPlot();
-    const renderer = pp.continuous;
+    const worker = pp.worker;
     const image = pp.continuousMetrics;
-    if (renderer === null || image === null) throw new Error("No continuous renderer");
+    if (worker === null || image === null) throw new Error("No render worker image");
     const geometry = pp.geometry();
     win.__sourceColumns = pp.state.dimensions.map((dimension) => {
       const column = geometry.pixels(
@@ -718,14 +752,14 @@ test("worker coalescing presents only the latest selection without detaching sou
       length: colors.bins.byteLength,
       samples: [colors.bins[0], colors.bins[499], colors.bins[999]],
     };
-    win.__continuousImages = { initial: { ...image, pixels: image.pixels.slice() } };
+    win.__shownImages = { initial: win.shownPixels(pp.workerCanvas, image) };
     const initial = pp.continuousFrame;
     for (let step = 0; step < 20; ++step) {
       const mask = Uint8Array.from({ length: geometry.rows.length }, (_, row) =>
         Number(step === 19 ? row % 3 === 0 : row % 7 <= step % 7),
       );
       const frame = pp.lineFrame(geometry, mask);
-      renderer.draw(frame, colors, mask);
+      worker.drawContinuous(frame, colors, mask);
       win.__latestRequest = { frame, colors, mask };
     }
     return initial;
@@ -734,15 +768,12 @@ test("worker coalescing presents only the latest selection without detaching sou
   const accepted = await page.evaluate(() => {
     const win = window as unknown as ProbeWindow;
     const pp = win.__parallelProbe.instance.parallelPlot();
-    if (!win.__continuousImages || !pp.continuousMetrics || !pp.continuous || !win.__latestRequest)
+    if (!win.__shownImages || !pp.continuousMetrics || !pp.worker || !win.__latestRequest)
       throw new Error("Missing queued frame");
-    win.__continuousImages.queued = {
-      ...pp.continuousMetrics,
-      pixels: pp.continuousMetrics.pixels.slice(),
-    };
+    win.__shownImages.queued = win.shownPixels(pp.workerCanvas, pp.continuousMetrics);
     const accepted = pp.continuousFrame;
     const { frame, colors, mask } = win.__latestRequest;
-    pp.continuous.draw(frame, colors, mask);
+    pp.worker.drawContinuous(frame, colors, mask);
     return accepted;
   });
   expect(accepted - initial).toBe(1);
@@ -750,17 +781,18 @@ test("worker coalescing presents only the latest selection without detaching sou
   const result = await page.evaluate(() => {
     const win = window as unknown as ProbeWindow;
     const pp = win.__parallelProbe.instance.parallelPlot();
-    const queued = win.__continuousImages?.queued;
-    const initial = win.__continuousImages?.initial;
-    const fresh = pp.continuousMetrics;
+    const queued = win.__shownImages?.queued;
+    const initial = win.__shownImages?.initial;
+    const image = pp.continuousMetrics;
     const bins = win.__sourceBins;
-    if (!queued || !initial || !fresh || !bins || !win.__sourceColumns)
+    if (!queued || !initial || !image || !bins || !win.__sourceColumns)
       throw new Error("Missing comparison state");
+    const fresh = win.shownPixels(pp.workerCanvas, image);
     let freshDifferences = 0;
     let selectionDifferences = 0;
-    for (let channel = 0; channel < queued.pixels.length; ++channel) {
-      freshDifferences += Number(queued.pixels[channel] !== fresh.pixels[channel]);
-      selectionDifferences += Number(queued.pixels[channel] !== initial.pixels[channel]);
+    for (let channel = 0; channel < queued.length; ++channel) {
+      freshDifferences += Number(queued[channel] !== fresh[channel]);
+      selectionDifferences += Number(queued[channel] !== initial[channel]);
     }
     return {
       freshDifferences,
@@ -783,10 +815,11 @@ test("worker coalescing presents only the latest selection without detaching sou
   expect(result.freshDifferences).toBe(0);
 });
 
-test("the inline density worker starts and redraws without any network access", async ({
+test("the inline render worker draws and redraws density without any network access", async ({
   page,
   context,
 }) => {
+  await exposeShownPixels(page);
   await loadParallelBenchmark(page, { rows: 300, columns: 4, discrete: false, seed: 20261109 });
   const requests: string[] = [];
   context.on("request", (request) => requests.push(request.url()));
@@ -797,19 +830,22 @@ test("the inline density worker starts and redraws without any network access", 
   const frame = await page.evaluate(() => {
     const pp = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
     const image = pp.continuousMetrics;
-    if (image === null || pp.continuous === null)
+    if (image === null || pp.worker === null)
       throw new Error("Offline worker did not produce an image");
     const geometry = pp.geometry();
     const mask = Uint8Array.from({ length: geometry.rows.length }, (_, row) => row % 2);
-    pp.continuous.draw(pp.lineFrame(geometry, mask), pp.lineColors(geometry), mask);
+    pp.worker.drawContinuous(pp.lineFrame(geometry, mask), pp.lineColors(geometry), mask);
     return pp.continuousFrame;
   });
   await waitForContinuous(page, frame);
-  const painted = await page.evaluate(() =>
-    (window as unknown as ProbeWindow).__parallelProbe.instance
-      .parallelPlot()
-      .continuousMetrics?.pixels.some((value, channel) => channel % 4 === 3 && value > 0),
-  );
+  const painted = await page.evaluate(() => {
+    const win = window as unknown as ProbeWindow;
+    const pp = win.__parallelProbe.instance.parallelPlot();
+    if (pp.continuousMetrics === null) throw new Error("Offline worker did not redraw");
+    return win
+      .shownPixels(pp.workerCanvas, pp.continuousMetrics)
+      .some((value, channel) => channel % 4 === 3 && value > 0);
+  });
   expect(painted).toBe(true);
   expect(requests.filter((url) => /^https?:/.test(url))).toEqual([]);
 });
@@ -817,16 +853,7 @@ test("the inline density worker starts and redraws without any network access", 
 test("Canvas-only continuous images draw and brushes stay columnar until publication", async ({
   page,
 }) => {
-  await page.addInitScript(() => {
-    const getContext = HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.getContext = function (
-      this: HTMLCanvasElement,
-      kind: string,
-      options?: unknown,
-    ) {
-      return kind === "webgl2" ? null : getContext.call(this, kind, options);
-    } as typeof HTMLCanvasElement.prototype.getContext;
-  });
+  await hideWebGL2(page);
   await page.goto(
     `/?provider=upload&hip.PARALLEL_PLOT.renderQuality=${encodeURIComponent('"low"')}`,
   );
@@ -839,16 +866,23 @@ test("Canvas-only continuous images draw and brushes stay columnar until publica
   await page.waitForSelector("svg g.dimension", { state: "attached", timeout: 15000 });
   await page.waitForFunction(() => {
     const pp = (window as unknown as CanvasWindow).hiplot_last_instance.parallelPlot();
-    return pp.continuousFrame > 0 && pp.continuous !== null && !pp.continuous.busy;
+    return pp.continuousFrame > 0 && !pp.linesBusy;
   });
-  const result = await page.evaluate(() => {
+  const result = await page.evaluate(async () => {
     const pp = (window as unknown as CanvasWindow).hiplot_last_instance.parallelPlot();
-    const masks = pp.brushMasks();
+    const masks = pp.brushSelection();
     const selectedRows = masks.selectedRows.bind(masks);
     let materializations = 0;
     masks.selectedRows = (mask) => {
       materializations += 1;
       return selectedRows(mask);
+    };
+    // Selections arrive from the brush worker: the newest brush settles once it is drawn.
+    const brush = pp.pplot.brush;
+    let brushing = Promise.resolve();
+    pp.pplot.brush = (publish) => {
+      brushing = brush(publish);
+      return brushing;
     };
     const canvas = pp.foreground_ref.current;
     const context = canvas.getContext("2d");
@@ -866,13 +900,24 @@ test("Canvas-only continuous images draw and brushes stay columnar until publica
     pp.startBrushGesture({ sourceEvent: { target }, y: 0.2 * pp.h }, dimension);
     pp.continueBrushGesture(0.65 * pp.h);
     pp.cancelBrushMove();
-    pp.pplot.brush(false);
+    await pp.pplot.brush(false);
     const during = materializations;
     const selected = pp.selectionMask(pp.geometry()).reduce((count, value) => count + value, 0);
     pp.endBrushGesture();
-    return { webgl: pp.webgl, painted, frame, during, published: materializations, selected };
+    await brushing;
+    return {
+      webgl: pp.webgl,
+      workerPresents: pp.worker?.presents,
+      painted,
+      frame,
+      during,
+      published: materializations,
+      selected,
+    };
   });
   expect(result.webgl).toBeNull();
+  // The render worker computes the density; the page shows its images on the foreground.
+  expect(result.workerPresents).toBe(false);
   expect(result.painted).toBeGreaterThan(1000);
   expect(result.during).toBe(0);
   expect(result.published).toBe(1);
@@ -880,7 +925,7 @@ test("Canvas-only continuous images draw and brushes stay columnar until publica
   expect(result.selected).toBeLessThan(200);
   await page.waitForFunction((frame) => {
     const pp = (window as unknown as CanvasWindow).hiplot_last_instance.parallelPlot();
-    return pp.continuousFrame > frame && pp.continuous !== null && !pp.continuous.busy;
+    return pp.continuousFrame > frame && !pp.linesBusy;
   }, result.frame);
   await expect
     .poll(() =>

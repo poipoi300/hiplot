@@ -3,6 +3,8 @@ import type { ContinuousImage, ContinuousRequest } from "./continuous_types";
 import type { LineColors, LineFrame } from "./webgl";
 import { WorkerFrameCache } from "./worker_payload";
 
+type LocalRuntime = Pick<ContinuousRuntime, "renderCooperative" | "dispose">;
+
 interface PendingFrame {
   id: number;
   frame: LineFrame;
@@ -10,13 +12,14 @@ interface PendingFrame {
   selection: Uint8Array;
 }
 
-export type ContinuousWorkerFactory = () => Promise<Worker>;
-
-/** Retained all-row channel, local or worker; drafts can preempt refinement. */
+/**
+ * Continuous density on the page's main thread, where no render worker
+ * exists (no workers, or no transferControlToOffscreen; see RenderWorker):
+ * the retained kernel counts deltas, and a draft can preempt refinement.
+ */
 export class ContinuousRenderer {
-  private worker: Worker | null = null;
   private readonly frameCache = new WorkerFrameCache();
-  private local: ContinuousRuntime | null = null;
+  private runtime: LocalRuntime | null = null;
   private nextFrameId = 0;
   private activeId = 0;
   private running = false;
@@ -28,11 +31,8 @@ export class ContinuousRenderer {
 
   constructor(
     private readonly onImage: (image: ContinuousImage) => void,
-    private readonly createWorker: ContinuousWorkerFactory = async () => {
-      const { default: InlineWorker } = await import("./continuous_entry?worker&inline");
-      return new InlineWorker();
-    },
-    readonly execution: "local" | "worker" = "worker",
+    private readonly createRuntime: () => Promise<LocalRuntime> = () =>
+      import("./continuous_runtime").then(({ ContinuousRuntime }) => new ContinuousRuntime()),
   ) {}
 
   get busy(): boolean {
@@ -62,25 +62,17 @@ export class ContinuousRenderer {
       colors,
       selection: selection.slice(),
     };
-    if (this.worker === null && this.local === null) {
+    if (this.runtime === null) {
       this.pending = pending;
       if (!this.running) {
         this.running = true;
-        void (
-          this.execution === "local"
-            ? import("./continuous_runtime").then(
-                ({ ContinuousRuntime }) => new ContinuousRuntime(),
-              )
-            : this.createWorker()
-        )
-          .then((worker) => {
+        void this.createRuntime()
+          .then((runtime) => {
             if (this.disposed) {
-              if ("terminate" in worker) worker.terminate();
-              else worker.dispose();
+              runtime.dispose();
               return;
             }
-            if ("terminate" in worker) this.connect(worker);
-            else this.local = worker;
+            this.runtime = runtime;
             this.dispatchPending();
           })
           .catch((error: unknown) => {
@@ -98,32 +90,8 @@ export class ContinuousRenderer {
     this.dispatch(pending);
   }
 
-  private connect(worker: Worker): void {
-    this.worker = worker;
-    worker.onmessage = ({
-      data,
-    }: MessageEvent<{ id: number; image?: ContinuousImage; error?: string }>) => {
-      this.finish(data);
-    };
-    worker.onerror = (event) => this.fail(new Error(`Continuous worker failed: ${event.message}`));
-    worker.onmessageerror = () =>
-      this.fail(new Error("Continuous worker returned an unreadable image"));
-  }
-
-  private finish(data: { id: number; image?: ContinuousImage; error?: string }): void {
-    if (this.disposed || data.id < this.activeId) return;
-    if (data.id !== this.activeId) {
-      this.fail(new Error("Continuous worker returned an unexpected frame"));
-      return;
-    }
-    if (data.error !== undefined) {
-      this.fail(new Error(`Continuous renderer: ${data.error}`));
-      return;
-    }
-    if (data.image === undefined) {
-      this.fail(new Error("Continuous worker returned an unexpected frame"));
-      return;
-    }
+  private finish(id: number, image: ContinuousImage): void {
+    if (this.disposed || id !== this.activeId) return;
     // The host paces gesture requests. Unpaced finite bursts retain latest-only rejection.
     if (this.pending !== null) {
       this.dispatchPending();
@@ -132,7 +100,7 @@ export class ContinuousRenderer {
     // Publication still counts as busy, but completed refinement can no longer be preempted.
     this.activeDraft = true;
     try {
-      this.onImage(data.image);
+      this.onImage(image);
     } finally {
       this.running = false;
       if (!this.disposed) this.dispatchPending();
@@ -146,13 +114,12 @@ export class ContinuousRenderer {
   }
 
   private dispatch({ id, frame, colors, selection }: PendingFrame): void {
-    if (this.worker === null && this.local === null)
-      throw new Error("Continuous renderer has not initialized");
-    const transfer: Transferable[] = [];
+    const runtime = this.runtime;
+    if (runtime === null) throw new Error("Continuous renderer has not initialized");
     const request: ContinuousRequest = {
       ...frame,
       id,
-      ...this.frameCache.encode(frame.axes, colors, transfer),
+      ...this.frameCache.encode(frame.axes, colors, []),
     };
     let selectionChanged = this.selection === null || this.selection.length !== selection.length;
     if (!selectionChanged && this.selection !== null) {
@@ -166,19 +133,14 @@ export class ContinuousRenderer {
     if (selectionChanged) {
       this.selection = selection.slice();
       request.selection = selection;
-      transfer.push(selection.buffer);
     }
     this.activeId = id;
     this.activeDraft = frame.draft;
     this.running = true;
-    if (this.worker !== null) {
-      this.worker.postMessage(request, transfer);
-      return;
-    }
     const isCurrent = (): boolean => !this.disposed && id === this.activeId;
-    void this.local?.renderCooperative(request, isCurrent).then(
+    void runtime.renderCooperative(request, isCurrent).then(
       (image) => {
-        if (image !== null && isCurrent()) this.finish({ id, image });
+        if (image !== null && isCurrent()) this.finish(id, image);
       },
       (error: unknown) => {
         if (isCurrent()) this.fail(error instanceof Error ? error : new Error(String(error)));
@@ -190,8 +152,7 @@ export class ContinuousRenderer {
     this.failure = error;
     this.running = false;
     this.pending = null;
-    this.worker?.terminate();
-    // Async worker failures must be visible, not an indefinitely busy plot.
+    // Asynchronous failures must be visible, not an indefinitely busy plot.
     setTimeout(() => {
       throw error;
     }, 0);
@@ -203,9 +164,7 @@ export class ContinuousRenderer {
     this.pending = null;
     this.selection = null;
     this.frameCache.clear();
-    this.worker?.terminate();
-    this.worker = null;
-    this.local?.dispose();
-    this.local = null;
+    this.runtime?.dispose();
+    this.runtime = null;
   }
 }

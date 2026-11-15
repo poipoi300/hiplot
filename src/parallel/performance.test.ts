@@ -2,44 +2,36 @@ import { describe, expect, test } from "bun:test";
 import {
   CONTINUOUS_ABOVE_ROWS,
   continuousRendering,
+  DraftPolicy,
   FAST_FRAME_MS,
   FramePerformance,
-  HARDWARE_CONTINUOUS_ABOVE_ROWS,
   isRenderQuality,
-  MAX_LOCAL_RENDER_BYTES,
   MEASURED_FRAMES,
-  RenderExecution,
   SLOW_FRAME_MS,
 } from "./performance";
 
-describe("render execution", () => {
-  test("large working sets skip local calibration independently of row count or mode", () => {
-    const execution = new RenderExecution();
-    execution.recordWorkingSet(MAX_LOCAL_RENDER_BYTES);
-    expect(execution.useWorker).toBe(false);
-    execution.recordWorkingSet(MAX_LOCAL_RENDER_BYTES + 1);
-    expect(execution.useWorker).toBe(true);
-    execution.recordWorkingSet(1);
-    execution.record(1);
-    expect(execution.useWorker).toBe(true);
-  });
-  test("cheap completed draws keep either rendering mode local", () => {
-    const execution = new RenderExecution();
-    for (const milliseconds of [0, 8, 16, SLOW_FRAME_MS]) execution.record(milliseconds);
-    expect(execution.useWorker).toBe(false);
+describe("gesture drafts", () => {
+  test("start after two slow full frames in a row, not after one-time costs", () => {
+    const drafts = new DraftPolicy();
+    drafts.record(SLOW_FRAME_MS + 1);
+    expect(drafts.drafting).toBe(false);
+    drafts.record(8);
+    drafts.record(SLOW_FRAME_MS + 1);
+    expect(drafts.drafting).toBe(false);
+    drafts.record(SLOW_FRAME_MS + 1);
+    expect(drafts.drafting).toBe(true);
   });
 
-  test("a cold slow draw needs confirmation before the session promotes permanently", () => {
-    const execution = new RenderExecution();
-    execution.record(5);
-    execution.record(SLOW_FRAME_MS + 1);
-    expect(execution.useWorker).toBe(false);
-    execution.record(1);
-    expect(execution.useWorker).toBe(false);
-    execution.record(SLOW_FRAME_MS + 1);
-    expect(execution.useWorker).toBe(true);
-    execution.record(1);
-    expect(execution.useWorker).toBe(true);
+  test("stop only once a full frame is fast, so frames near the limit do not alternate", () => {
+    const drafts = new DraftPolicy();
+    drafts.record(SLOW_FRAME_MS + 1);
+    drafts.record(SLOW_FRAME_MS + 1);
+    drafts.record(SLOW_FRAME_MS - 1);
+    expect(drafts.drafting).toBe(true);
+    drafts.record(FAST_FRAME_MS);
+    expect(drafts.drafting).toBe(true);
+    drafts.record(FAST_FRAME_MS - 1);
+    expect(drafts.drafting).toBe(false);
   });
 });
 
@@ -84,22 +76,16 @@ describe("detecting slow frames", () => {
 });
 
 describe("render quality settings", () => {
-  test("auto follows the measurement; low and full force it", () => {
-    expect(continuousRendering("auto", true, 100)).toBe(true);
-    expect(continuousRendering("auto", false, CONTINUOUS_ABOVE_ROWS)).toBe(false);
-    expect(continuousRendering("auto", false, CONTINUOUS_ABOVE_ROWS + 1)).toBe(true);
-    expect(continuousRendering("low", false, 100)).toBe(true);
-    expect(continuousRendering("full", true, 1_000_000)).toBe(false);
+  test("a GPU draws exact lines at any size or speed unless density is chosen", () => {
+    expect(continuousRendering("auto", true, 10_000_000, false)).toBe(false);
+    expect(continuousRendering("low", false, 100, false)).toBe(true);
+    expect(continuousRendering("full", true, 10_000_000, false)).toBe(false);
   });
 
-  test("fast hardware keeps moderate datasets exact without delaying software startup", () => {
-    expect(continuousRendering("auto", false, 50_000, false)).toBe(false);
-    expect(continuousRendering("auto", false, 50_000, true)).toBe(true);
-    expect(continuousRendering("auto", false, HARDWARE_CONTINUOUS_ABOVE_ROWS, false)).toBe(false);
-    expect(continuousRendering("auto", false, HARDWARE_CONTINUOUS_ABOVE_ROWS + 1, false)).toBe(
-      true,
-    );
-    expect(continuousRendering("auto", true, 100, false)).toBe(true);
+  test("a software rasterizer draws density above a few thousand rows or once slow", () => {
+    expect(continuousRendering("auto", false, CONTINUOUS_ABOVE_ROWS, true)).toBe(false);
+    expect(continuousRendering("auto", false, CONTINUOUS_ABOVE_ROWS + 1, true)).toBe(true);
+    expect(continuousRendering("auto", true, 100, true)).toBe(true);
     expect(continuousRendering("full", true, 1_000_000, true)).toBe(false);
   });
 

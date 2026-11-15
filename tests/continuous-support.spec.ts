@@ -1,16 +1,19 @@
 import { loadParallelBenchmark } from "../bench/parallel";
-import type { ContinuousImage } from "../src/parallel/continuous_types";
-import type { ContinuousRenderer } from "../src/parallel/continuous_worker";
+import type { ContinuousMetrics } from "../src/parallel/render_types";
+import type { RenderWorker } from "../src/parallel/render_worker";
 import type { LineColors, LineFrame } from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
+import { exposeShownPixels, type ShownPixelsWindow } from "./plot";
 
-interface SupportWindow {
+interface SupportWindow extends ShownPixelsWindow {
   __parallelProbe: {
     instance: {
       parallelPlot: () => {
         continuousFrame: number;
-        continuous: Pick<ContinuousRenderer, "draw" | "busy">;
-        continuousMetrics: ContinuousImage;
+        worker: Pick<RenderWorker, "drawContinuous">;
+        workerCanvas: HTMLCanvasElement;
+        linesBusy: boolean;
+        continuousMetrics: ContinuousMetrics;
       };
     };
   };
@@ -19,6 +22,7 @@ interface SupportWindow {
 
 for (const kind of ["isolated", "left-stub", "right-stub"] as const) {
   test(`dense worker preserves ${kind} finite strip support`, async ({ page }) => {
+    await exposeShownPixels(page);
     await loadParallelBenchmark(
       page,
       { rows: 3, columns: 2, discrete: false, seed: 20261109 },
@@ -51,6 +55,7 @@ for (const kind of ["isolated", "left-stub", "right-stub"] as const) {
                 pixelRatio: 1,
                 curved: false,
                 draft,
+                transient: false,
                 resolution: 1,
                 drawnRows: left.length,
                 selectedCount: 1,
@@ -68,19 +73,21 @@ for (const kind of ["isolated", "left-stub", "right-stub"] as const) {
             };
           }
           const { frame, colors, mask } = win.__supportCase;
-          plot.continuous.draw({ ...frame, draft }, colors, mask);
+          plot.worker.drawContinuous({ ...frame, draft }, colors, mask);
           return plot.continuousFrame;
         },
         { kind, draft },
       );
       await page.waitForFunction((before) => {
         const plot = (window as unknown as SupportWindow).__parallelProbe.instance.parallelPlot();
-        return plot.continuousFrame > before && !plot.continuous.busy;
+        return plot.continuousFrame > before && !plot.linesBusy;
       }, before);
       const image = await page.evaluate((kind) => {
-        const image = (window as unknown as SupportWindow).__parallelProbe.instance.parallelPlot()
-          .continuousMetrics;
-        const alpha = (x: number) => image.pixels[(64 * image.width + x) * 4 + 3];
+        const win = window as unknown as SupportWindow;
+        const plot = win.__parallelProbe.instance.parallelPlot();
+        const image = plot.continuousMetrics;
+        const pixels = win.shownPixels(plot.workerCanvas, image);
+        const alpha = (x: number) => pixels[(64 * image.width + x) * 4 + 3];
         return {
           positive: alpha(kind === "right-stub" ? 80 : kind === "left-stub" ? 4 : 42),
           absent: alpha(kind === "right-stub" ? 66 : 18),

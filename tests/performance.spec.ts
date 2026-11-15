@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import type { FinishedFrame } from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
 import { warmParallelWorker } from "./plot";
 
@@ -16,22 +17,17 @@ interface QualityProbe {
     mask: Uint8Array,
   ) => DrawnFrame & { selectedCount: number; contextCount: number };
   drawWithWebGL: (renderer: QualityProbe["webgl"]) => void;
-  recordFrame: (frame: { milliseconds: number; fullQuality: boolean }) => void;
+  recordFrame: (frame: FinishedFrame) => void;
   webgl: {
     draw: (frame: DrawnFrame) => void;
     drawCooperative: (frame: DrawnFrame, isCurrent?: () => boolean) => Promise<void>;
-    present: (pixels: Uint8ClampedArray, width: number, height: number) => void;
     finishedFrame: () => { milliseconds: number; fullQuality: boolean } | null;
     busy: boolean;
     rowCount: number;
   };
-  continuous: {
-    busy: boolean;
-    draw: (
-      frame: DrawnFrame & { selectedCount: number; contextCount: number },
-      colors: unknown,
-      mask: Uint8Array,
-    ) => void;
+  worker: {
+    drawExact: (frame: DrawnFrame, ...rest: unknown[]) => void;
+    drawContinuous: (frame: DrawnFrame, colors: unknown, mask: Uint8Array) => void;
   } | null;
   continuousFrame: number;
   continuousMode: () => boolean;
@@ -43,7 +39,8 @@ interface QualityProbe {
 interface HiPlotWindow {
   hiplot_last_instance?: { parallelPlot: () => QualityProbe | null };
   __frames?: DrawnFrame[];
-  __presentations?: number;
+  /** The continuous frame count when recordFrames started. */
+  __presentedFrom?: number;
   __continuousRows?: number[];
 }
 
@@ -62,7 +59,7 @@ async function upload(page: Page, count: number, state = ""): Promise<void> {
 async function recordFrames(page: Page): Promise<void> {
   const before = await page.evaluate(() => {
     const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot();
-    if (!pp?.continuous) return null;
+    if (!pp?.continuousMode()) return null;
     const before = pp.continuousFrame;
     pp.redrawLines();
     return before;
@@ -73,7 +70,7 @@ async function recordFrames(page: Page): Promise<void> {
     const pp = win.hiplot_last_instance?.parallelPlot();
     if (!pp) throw new Error("No parallel plot");
     win.__frames = [];
-    win.__presentations = 0;
+    win.__presentedFrom = pp.continuousFrame;
     win.__continuousRows = [];
     const lineFrame = pp.lineFrame.bind(pp);
     pp.lineFrame = (geometry, mask) => {
@@ -87,34 +84,48 @@ async function recordFrames(page: Page): Promise<void> {
       }
       return frame;
     };
-    const draw = pp.drawWithWebGL.bind(pp);
-    pp.drawWithWebGL = (renderer) => {
+    // Exact frames of every original row, on the render worker or the page's renderer.
+    const recordExact = (): void => {
       win.__frames?.push({
         draft: pp.draftFrame(),
         resolution: 1,
         drawnRows: pp.geometry().rows.length,
       });
+    };
+    const draw = pp.drawWithWebGL.bind(pp);
+    pp.drawWithWebGL = (renderer) => {
+      recordExact();
       draw(renderer);
     };
-    const present = pp.webgl.present.bind(pp.webgl);
-    pp.webgl.present = (...args) => {
-      win.__presentations = (win.__presentations ?? 0) + 1;
-      present(...args);
-    };
+    const worker = pp.worker;
+    if (worker !== null) {
+      const drawExact = worker.drawExact.bind(worker);
+      worker.drawExact = (...args) => {
+        recordExact();
+        drawExact(...args);
+      };
+    }
   });
 }
 
 async function waitForContinuous(page: Page, after = 0): Promise<void> {
   await page.waitForFunction((after) => {
     const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot();
-    return (
-      pp?.continuousMode() && pp.continuousFrame > after && !pp.continuous?.busy && !pp.webgl.busy
-    );
+    return pp?.continuousMode() && pp.continuousFrame > after && !pp.linesBusy;
   }, after);
 }
 
 const frames = (page: Page) =>
   page.evaluate(() => (window as unknown as HiPlotWindow).__frames ?? []);
+/** Continuous frames shown since recordFrames, whichever renderer showed them. */
+const presentations = (page: Page) =>
+  page.evaluate(() => {
+    const win = window as unknown as HiPlotWindow;
+    const pp = win.hiplot_last_instance?.parallelPlot();
+    if (!pp) throw new Error("No parallel plot");
+    if (win.__presentedFrom === undefined) throw new Error("Frames are not being recorded");
+    return pp.continuousFrame - win.__presentedFrom;
+  });
 const qualityButton = (page: Page) => page.getByTestId("render-quality-button");
 
 async function chooseQuality(page: Page, name: string): Promise<void> {
@@ -152,9 +163,7 @@ test("forced continuous density counts every row at rest, while brushing and aft
   await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.2);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.6, { steps: 6 });
-  await expect
-    .poll(() => page.evaluate(() => (window as unknown as HiPlotWindow).__presentations ?? 0))
-    .toBeGreaterThan(1);
+  await expect.poll(() => presentations(page)).toBeGreaterThan(1);
   const during = await page.evaluate(() => {
     const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot();
     if (!pp) throw new Error("No parallel plot");
@@ -200,7 +209,8 @@ test("slow exact frames engage automatic binning and the menu can force exact li
     const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot();
     if (!pp) throw new Error("No parallel plot");
     const recordFrame = pp.recordFrame.bind(pp);
-    pp.recordFrame = () => recordFrame({ milliseconds: 200, fullQuality: true });
+    pp.recordFrame = () =>
+      recordFrame({ milliseconds: 200, fullQuality: true, fromBlocks: false, drewEveryRow: true });
     for (let i = 0; i < 5; ++i) {
       pp.redrawLines();
       do {
@@ -221,7 +231,7 @@ test("slow exact frames engage automatic binning and the menu can force exact li
   expect(
     await page.evaluate(() => {
       const pp = (window as unknown as HiPlotWindow).hiplot_last_instance?.parallelPlot();
-      return pp?.continuous === null && pp.state.slowFrames;
+      return pp?.continuousMode() === false && pp.state.slowFrames;
     }),
   ).toBe(true);
 });
@@ -271,9 +281,7 @@ test("scrolling and its settle redraw remain continuous without sampling or exac
   );
   await page.clock.runFor(150);
   await waitForContinuous(page, scrolling);
-  await expect
-    .poll(() => page.evaluate(() => (window as unknown as HiPlotWindow).__presentations ?? 0))
-    .toBeGreaterThanOrEqual(2);
+  await expect.poll(() => presentations(page)).toBeGreaterThanOrEqual(2);
   await expect(qualityButton(page)).toHaveText("Continuous density");
   expect(await frames(page)).toEqual([]);
   const counts = await page.evaluate(
@@ -283,7 +291,7 @@ test("scrolling and its settle redraw remain continuous without sampling or exac
   expect(counts.every((count) => count === 50)).toBe(true);
 });
 
-test("continuous brushing presents density while worker jobs are slower than input", async ({
+test("continuous brushing presents density while render worker jobs are slower than input", async ({
   page,
 }) => {
   await upload(page, 12_000, `&hip.PARALLEL_PLOT.renderQuality=${encodeURIComponent('"low"')}`);
@@ -303,12 +311,17 @@ test("continuous brushing presents density while worker jobs are slower than inp
           endBrushGesture: () => void;
         })
       | null;
-    if (!pp || pp.continuous === null) throw new Error("No continuous parallel plot");
+    if (!pp?.continuousMode() || pp.worker === null)
+      throw new Error("No continuous parallel plot on the render worker");
+    const worker = pp.worker;
     const dimension = pp.state.dimensions[1];
     const target = Array.from(document.querySelectorAll<SVGGElement>("g.dimension"))
       .find((node) => (node as SVGGElement & { __data__: string }).__data__ === dimension)
       ?.querySelector(".overlay");
     if (!target) throw new Error("No continuous brush overlay");
+    // Only the render worker is slow: brush selections still arrive at their own pace.
+    const renderWorker = (worker as unknown as { worker: Worker | null }).worker;
+    if (renderWorker === null) throw new Error("The render worker has not started");
     const postMessage = Worker.prototype.postMessage;
     let workerJobs = 0;
     Worker.prototype.postMessage = function (
@@ -316,17 +329,22 @@ test("continuous brushing presents density while worker jobs are slower than inp
       message: unknown,
       options?: Transferable[] | StructuredSerializeOptions,
     ) {
-      workerJobs += 1;
       const send = postMessage.bind(this);
-      setTimeout(() => {
+      const post = (): void => {
         if (Array.isArray(options)) send(message, options);
         else send(message, options);
-      }, 80);
+      };
+      if (this !== renderWorker) {
+        post();
+        return;
+      }
+      workerJobs += 1;
+      setTimeout(post, 80);
     };
     const initialFrame = pp.continuousFrame;
     const drafts: boolean[] = [];
-    const draw = pp.continuous.draw.bind(pp.continuous);
-    pp.continuous.draw = (frame, colors, mask) => {
+    const draw = worker.drawContinuous.bind(worker);
+    worker.drawContinuous = (frame, colors, mask) => {
       drafts.push(frame.draft);
       draw(frame, colors, mask);
     };
@@ -356,7 +374,7 @@ test("continuous brushing presents density while worker jobs are slower than inp
       interacting: pp.interacting,
     };
     Worker.prototype.postMessage = postMessage;
-    pp.continuous.draw = draw;
+    worker.drawContinuous = draw;
     pp.endBrushGesture();
     return during;
   });

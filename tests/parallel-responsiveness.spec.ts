@@ -1,6 +1,5 @@
 import { loadParallelBenchmark } from "../bench/parallel";
-import type { ExactRenderer } from "../src/parallel/exact_worker";
-import type { FinishedFrame } from "../src/parallel/webgl";
+import type { RenderWorker, WorkerFrame } from "../src/parallel/render_worker";
 import { expect, test } from "./fixtures";
 
 test("exact line work leaves browser frames available for the brush", async ({ page }) => {
@@ -36,13 +35,13 @@ test("exact line work leaves browser frames available for the brush", async ({ p
         __parallelProbe: {
           instance: {
             parallelPlot: () => {
-              exact: { busy: boolean } | null;
+              worker: { busy: boolean } | null;
             };
           };
         };
       }
     ).__parallelProbe.instance.parallelPlot();
-    return plot.exact !== null && !plot.exact.busy;
+    return plot.worker !== null && !plot.worker.busy;
   });
   const result = await page.evaluate(async () => {
     const plot = (
@@ -52,8 +51,8 @@ test("exact line work leaves browser frames available for the brush", async ({ p
             parallelPlot: () => {
               h: number;
               state: { dimensions: string[] };
-              exact: Pick<ExactRenderer, "draw" | "busy"> & {
-                onImage: (bitmap: ImageBitmap, finished: FinishedFrame) => void;
+              worker: Pick<RenderWorker, "drawExact" | "busy"> & {
+                onFrame: (frame: WorkerFrame) => void;
               };
               startBrushGesture: (
                 event: { sourceEvent: { target: Element }; y: number },
@@ -75,16 +74,17 @@ test("exact line work leaves browser frames available for the brush", async ({ p
     const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     let submitted = 0;
     let completed = 0;
-    const request = plot.exact.draw.bind(plot.exact);
-    plot.exact.draw = (...args) => {
+    const worker = plot.worker;
+    const request = worker.drawExact.bind(worker);
+    worker.drawExact = (...args) => {
       if (args[0].drawnRows !== 50_000) throw new Error("Exact image must draw every row");
       submitted++;
       request(...args);
     };
-    const publish = plot.exact.onImage.bind(plot.exact);
-    plot.exact.onImage = (...args) => {
+    const publish = worker.onFrame.bind(worker);
+    worker.onFrame = (shown) => {
       completed++;
-      publish(...args);
+      publish(shown);
     };
     plot.startBrushGesture({ sourceEvent: { target }, y: plot.h * 0.1 }, dimension);
     const intervals: number[] = [];
@@ -103,7 +103,7 @@ test("exact line work leaves browser frames available for the brush", async ({ p
       error = Math.max(error, Math.abs(bottom / plot.h - fraction));
     }
     plot.endBrushGesture();
-    while (plot.exact.busy) await frame();
+    while (worker.busy) await frame();
     return { maximumInterval: Math.max(...intervals), error, submitted, completed };
   });
   await test.info().attach("brush-frame-timing", {

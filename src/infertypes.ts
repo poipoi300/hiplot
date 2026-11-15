@@ -66,28 +66,69 @@ function get_min_max_for_numeric_scale(pd: ParamDef): [number, number] {
   return [min, max];
 }
 
-function has_inf_or_nans(pd: ParamDef): boolean {
-  return pd.distinct_values.some((value) => !Number.isFinite(parse_numeric(value)));
+/** Whether a column holds inf, NaN or a missing value, which a numeric axis puts in its outlier band. */
+export function has_non_finite(values: Iterable<DatapointValue>): boolean {
+  for (const value of values) {
+    if (!Number.isFinite(parse_numeric(value))) {
+      return true;
+    }
+  }
+  return false;
 }
 
-export function create_d3_scale_without_outliers(pd: ParamDef): Scale {
-  const dv = pd.distinct_values;
-  if (pd.type === ParamType.CATEGORICAL) {
-    return d3_scale_categorical(dv);
+/**
+ * Whether every value of a column can sit on a numeric axis. A row's uid is a
+ * column like any other (a trial index is worth an axis); from_uid only names
+ * another row.
+ */
+export function is_numeric_column(key: string, values: Iterable<DatapointValue>): boolean {
+  if (key === "from_uid") {
+    return false;
   }
-  if (pd.type === ParamType.NUMERICPERCENTILE) {
-    return d3_scale_percentile(dv);
+  for (const value of values) {
+    if (!is_numeric_value(value)) {
+      return false;
+    }
   }
-  const [min, max] = get_min_max_for_numeric_scale(pd);
+  return true;
+}
+
+/**
+ * The scale of column `name` for `type`: categories and percentiles among the
+ * column's distinct values, other types over its numeric `extent`. Each is
+ * computed only for the types that need it.
+ */
+export function scale_of_type(
+  name: string,
+  type: ParamType,
+  distinct_values: () => ReadonlyArray<DatapointValue>,
+  extent: () => readonly [number, number],
+): Scale {
+  if (type === ParamType.CATEGORICAL) {
+    return d3_scale_categorical(distinct_values());
+  }
+  if (type === ParamType.NUMERICPERCENTILE) {
+    return d3_scale_percentile(distinct_values());
+  }
+  const [min, max] = extent();
   console.assert(min <= max);
-  if (pd.type === ParamType.TIMESTAMP) {
+  if (type === ParamType.TIMESTAMP) {
     return d3_scale_timestamp().domain([min, max]);
   }
-  if (pd.type === ParamType.NUMERICLOG) {
-    console.assert(min > 0, `Min value for "${pd.name}" is negative (${min}), can't use log-scale`);
+  if (type === ParamType.NUMERICLOG) {
+    console.assert(min > 0, `Min value for "${name}" is negative (${min}), can't use log-scale`);
     return continuousFromD3(d3.scaleLog().domain([min, max]));
   }
   return continuousFromD3(d3.scaleLinear().domain([min, max]));
+}
+
+export function create_d3_scale_without_outliers(pd: ParamDef): Scale {
+  return scale_of_type(
+    pd.name,
+    pd.type,
+    () => pd.distinct_values,
+    () => get_min_max_for_numeric_scale(pd),
+  );
 }
 
 const TYPES_WITH_OUTLIER_BAND: ReadonlyArray<ParamType> = [
@@ -96,13 +137,28 @@ const TYPES_WITH_OUTLIER_BAND: ReadonlyArray<ParamType> = [
   ParamType.NUMERICPERCENTILE,
 ];
 
-export function create_d3_scale(pd: ParamDef): ParamScale {
-  const scale = create_d3_scale_without_outliers(pd);
+/**
+ * `scale`, built for `type`, with a band for inf, NaN and missing values when
+ * the column has some (`hasNonFinite`) and its type shows them.
+ */
+export function with_outlier_band(
+  scale: Scale,
+  type: ParamType,
+  hasNonFinite: boolean,
+): ParamScale {
   const withOutliers =
-    scale.kind === "continuous" && has_inf_or_nans(pd) && TYPES_WITH_OUTLIER_BAND.includes(pd.type)
+    scale.kind === "continuous" && hasNonFinite && TYPES_WITH_OUTLIER_BAND.includes(type)
       ? scale_add_outliers(scale)
       : scale;
-  return Object.assign(withOutliers, { paramType: pd.type });
+  return Object.assign(withOutliers, { paramType: type });
+}
+
+export function create_d3_scale(pd: ParamDef): ParamScale {
+  return with_outlier_band(
+    create_d3_scale_without_outliers(pd),
+    pd.type,
+    has_non_finite(pd.distinct_values),
+  );
 }
 
 export type ScaleDomainRange =
@@ -179,10 +235,7 @@ export function infertypes(
   ): ParamDef {
     const url_state = url_states.children(key);
     let optional = false;
-    // A row's uid is a column like any other (a trial index is worth an
-    // axis); from_uid only names another row.
-    let numeric = key !== "from_uid";
-    let can_be_timestamp = numeric;
+    let can_be_timestamp = true;
     let valueCount = 0;
     const distinct = new Set<DatapointValue>();
     for (const row of table) {
@@ -200,11 +253,9 @@ export function infertypes(
         continue;
       }
       can_be_timestamp = false;
-      if (!is_numeric_value(v)) {
-        numeric = false;
-      }
     }
     const distinct_values = Array.from(distinct);
+    const numeric = is_numeric_column(key, distinct_values);
     const numericSorted = numeric ? get_numeric_values_sorted(distinct_values) : [];
     const hasFiniteValues = numericSorted.length > 0;
     const hasNumericDomain =

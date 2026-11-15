@@ -1,16 +1,18 @@
 import { loadParallelBenchmark } from "../bench/parallel";
-import type { ContinuousImage } from "../src/parallel/continuous_types";
-import type { BrushMasks } from "../src/parallel/selection";
+import type { BrushSelection } from "../src/parallel/brush_selection";
+import type { ContinuousMetrics } from "../src/parallel/render_types";
 import type { Datapoint, ParamType } from "../src/types";
 import { expect, test } from "./fixtures";
+import { exposeShownPixels, type ShownPixelsWindow } from "./plot";
 
-interface ProbeWindow {
+interface ProbeWindow extends ShownPixelsWindow {
   __parallelProbe: {
     instance: {
       parallelPlot: () => {
-        continuousMetrics: ContinuousImage | null;
-        continuous: { busy: boolean } | null;
-        brushMasks: () => BrushMasks;
+        continuousMetrics: ContinuousMetrics | null;
+        workerCanvas: HTMLCanvasElement;
+        linesBusy: boolean;
+        brushSelection: () => BrushSelection;
         state: { dimensions: string[] };
         props: { rows_filtered: Datapoint[] };
       };
@@ -23,6 +25,7 @@ test("offline density pixels match when CSP blocks WebAssembly compilation", asy
   context,
 }) => {
   const images: { pixels: string; width: number; height: number; populated: boolean }[] = [];
+  await exposeShownPixels(page);
   for (const blocked of [false, true]) {
     if (blocked) {
       await page.addInitScript(() => {
@@ -50,22 +53,25 @@ test("offline density pixels match when CSP blocks WebAssembly compilation", asy
     await page.getByRole("radio", { name: "Continuous density", exact: true }).click();
     await page.waitForFunction(() => {
       const plot = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot();
-      return plot.continuousMetrics !== null && plot.continuous !== null && !plot.continuous.busy;
+      return plot.continuousMetrics !== null && !plot.linesBusy;
     });
     images.push(
       await page.evaluate(() => {
-        const image = (window as unknown as ProbeWindow).__parallelProbe.instance.parallelPlot()
-          .continuousMetrics;
+        const win = window as unknown as ProbeWindow;
+        const plot = win.__parallelProbe.instance.parallelPlot();
+        const image = plot.continuousMetrics;
         if (image === null) throw new Error("Missing offline density image");
+        // The render worker shows the image on its canvas.
+        const pixels = win.shownPixels(plot.workerCanvas, image);
         // A lossless byte string avoids serializing millions of individual protocol values.
         const chunks: string[] = [];
-        for (let offset = 0; offset < image.pixels.length; offset += 16384)
-          chunks.push(String.fromCharCode(...image.pixels.subarray(offset, offset + 16384)));
+        for (let offset = 0; offset < pixels.length; offset += 16384)
+          chunks.push(String.fromCharCode(...pixels.subarray(offset, offset + 16384)));
         return {
           pixels: btoa(chunks.join("")),
           width: image.width,
           height: image.height,
-          populated: image.pixels.some((value, channel) => channel % 4 === 3 && value > 0),
+          populated: pixels.some((value, channel) => channel % 4 === 3 && value > 0),
         };
       }),
     );
@@ -75,9 +81,16 @@ test("offline density pixels match when CSP blocks WebAssembly compilation", asy
       const ranges = new Map([
         [dimension, [{ col: dimension, type: "numeric" as ParamType.NUMERIC, min: 0.2, max: 0.7 }]],
       ]);
-      const masks = plot.brushMasks();
+      const masks = plot.brushSelection();
+      const brushMask = async (
+        selections: Parameters<typeof masks.select>[0],
+      ): Promise<Uint8Array> => {
+        const result = await masks.select(selections, null, false);
+        if (result === null) throw new Error("A newer selection replaced this one");
+        return result.mask;
+      };
       await masks.prepare(ranges);
-      const actual = masks.select(ranges);
+      const actual = await brushMask(ranges);
       const numericDifferences = plot.props.rows_filtered.reduce((differences, row, index) => {
         const value = Number(row[dimension]);
         return differences + Number(actual[index] !== Number(value >= 0.2 && value <= 0.7));
@@ -100,7 +113,7 @@ test("offline density pixels match when CSP blocks WebAssembly compilation", asy
         ],
       ]);
       await masks.prepare(categoryRanges);
-      const categorical = masks.select(categoryRanges);
+      const categorical = await brushMask(categoryRanges);
       const categoricalDifferences = plot.props.rows_filtered.reduce((differences, row, index) => {
         const value = String(row.category);
         return (

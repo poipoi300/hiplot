@@ -129,6 +129,18 @@ describe("continuous scales", () => {
     expect(scale(Infinity)).toBe(-4);
   });
 
+  test("a percentile scale given its own domain back places every value as before", () => {
+    const values = [1, 10, 100, 1000, 10000, 100000];
+    const full = d3_scale_percentile(values).range([0, 100]);
+    const zoomed = d3_scale_percentile(values).range([0, 100]);
+    zoomed.domain([zoomed.invert(10), zoomed.invert(70)]);
+    for (const scale of [full, zoomed]) {
+      const replayed = d3_scale_percentile(values).range([0, 100]);
+      replayed.domain(scale.domain());
+      expect(values.map(replayed)).toEqual(values.map(scale));
+    }
+  });
+
   test("percentile scale ticks stay inside the domain and format compactly", () => {
     const scale = d3_scale_percentile([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]).range([0, 1]);
     const ticks = scale.ticks(3);

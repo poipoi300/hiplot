@@ -25,6 +25,7 @@ test("pair-local curved strips follow the exact half-gap zero-slope Bezier", () 
     pixelRatio: 1,
     curved: true,
     draft: false,
+    transient: false,
     resolution: 1,
     drawnRows: 1,
     selectedCount: 1,

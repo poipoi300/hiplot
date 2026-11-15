@@ -37,13 +37,15 @@ All of these interactions feed into HiPlot's shared filtered/selected state, whi
 ## Rendering model
 
 SVG draws the axes, labels and brushes; canvas layers draw density and exact
-highlighted rows. The rendering control selects:
+highlighted rows. One worker owns the lines canvas from the first frame and
+draws both rendering modes on it, showing each finished frame itself, so
+drawing never blocks the page and no image travels back to it; browsers
+without worker canvases draw on the page. The rendering control selects:
 
-- **Automatic**: use continuous density above 6,000 filtered rows on software or
-  unidentified renderers, above 250,000 on identified hardware, or after exact
-  frames measure slower than 20 frames per second. This decision happens before
-  a large dataset's first draw, while retaining fast hardware's exact path on
-  moderate datasets.
+- **Automatic**: exact lines on a GPU at any size. On software or unidentified
+  renderers, continuous density above 6,000 filtered rows or after exact frames
+  measure slower than 20 frames per second, decided before a large dataset's
+  first draw.
 - **Continuous density**: count every row into retained adjacent-axis histograms,
   with `max(256, min(1024, ceil(axis height)))` endpoint bins per axis in CSS
   coordinates and a separate missing-endpoint bin. Sparse layers evaluate every
@@ -54,7 +56,14 @@ highlighted rows. The rendering control selects:
   resolution and can reduce horizontal evaluation on software renderers, then
   refine on release. Every preview includes all rows and their color statistics.
 - **Exact lines**: render every original row with WebGL density accumulation,
-  or Canvas 2D where WebGL2 is unavailable. This can be very slow on large data.
+  or Canvas 2D where WebGL2 is unavailable. On a GPU, brushing one axis sums
+  retained blocks of rows and redraws only the rows it changes, so a million
+  rows brush in real time. While scrolling, a move by a whole number of canvas
+  pixels moves the previous frame's density and draws only the segments that
+  reach the exposed columns; the frame after the scroll settles draws every
+  row. Axis drags and the first frame still draw every row, as drafts during
+  gestures when full frames are slow. Software rasterizers draw every row each
+  frame, which is very slow on large data.
 
 Continuous density stays active after a gesture. Both rendering modes default
 to **Curved**; **Straight** is a manual choice. Older saved automatic line shapes
@@ -62,14 +71,23 @@ load as curved. The rendering and line-shape choices are saved in the URL.
 Older saved `"low"` quality settings select continuous density; `"full"` selects
 exact lines.
 
-Execution location is independent of rendering mode and row count. Both modes
-start locally when their predicted working buffers fit within 256 MiB; larger
-working sets go directly to a worker. Two completed local draws taking more than 50 ms promote
-subsequent draws to a worker for the plot's remaining lifetime, including mode
-changes. This confirmation avoids promotion for a single cold shader compile.
-Local continuous rendering yields between axis pairs. Busy frames coalesce while
-the SVG brush follows the pointer immediately. Workers remain embedded in
-standalone HTML, with no network requests required.
+Both rendering modes draw on the same worker from the first frame, at any row
+count, and brushing paces them alike: the SVG brush follows the pointer
+immediately, and at most once per display frame the brushes' ranges go to a
+brush worker, which selects the rows in them and sends the render worker the
+32-row words of the selection that changed. The page's frames then name the
+selection instead of carrying it, without waiting for the worker, which always
+draws the newest state it holds. Selecting runs off the page, so a brush's first
+move, which deselects about every row, does not hold up the brush either;
+without workers, the page selects. A frame drawn over several worker tasks reaches the
+canvas only in its last one, so a partial or blank frame never shows, also
+when the plot is resized. Where a browser lacks workers with canvases, the
+page draws instead, waiting for its renderer between frames; where the worker
+has no WebGL2, the page draws exact lines and shows the continuous images the
+worker computes; where no worker can draw on a canvas, continuous density
+runs on the page and yields between axis pairs. Gestures other than brushing draft exact lines once two full frames in
+a row take more than 50 ms, until a full frame takes under 25 ms. Workers
+remain embedded in standalone HTML, with no network requests required.
 
 See `PERFORMANCE.md` for completed-frame measurements and visual tolerances.
 

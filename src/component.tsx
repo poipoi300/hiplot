@@ -24,7 +24,14 @@ import LogoSVGW from "../hiplot/static/logo-w.svg";
 import { ContextMenu } from "./contextmenu";
 import { type HiPlotDataControlProps, SelectedCountProgressBar } from "./controls";
 import { StaticDataProvider } from "./dataproviders/static";
-import { apply_filter, apply_filters, type Filter, FilterType, isFilter } from "./filters";
+import {
+  apply_filter,
+  apply_filters,
+  type Filter,
+  FilterType,
+  isFilter,
+  rowsExcept,
+} from "./filters";
 import { HeaderBar } from "./header";
 import style from "./hiplot.module.css";
 import { infertypes, type ParamDef, type ParamDefMap } from "./infertypes";
@@ -609,6 +616,10 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
       params_def: params_def,
       params_def_unfiltered: params_def_unfiltered,
       rows_filtered_filters: initFilters,
+      // Every row is selected again. The filter of the selection before a
+      // reload must go too: displays restoring their selection publish the
+      // same filter, which would then be taken for the current one.
+      rows_selected_filter: null,
       migratedDistributionAxes,
       ...datasets,
     });
@@ -909,7 +920,7 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
     this.setState((state) => {
       const new_filtered = keep
         ? state.rows_selected
-        : _.difference(state.rows_filtered, state.rows_selected);
+        : rowsExcept(state.rows_filtered, state.rows_selected);
       const selection = state.rows_selected_filter;
       // A selection that no filter describes still filters the rows; it just cannot be
       // replayed from the saved state.
@@ -917,6 +928,8 @@ export class HiPlot extends React.Component<HiPlotProps, HiPlotState> {
         selection === null ? [] : [keep ? selection : { type: FilterType.Not, data: selection }];
       return {
         rows_filtered: new_filtered,
+        // Every row left is selected: displays are never handed selected rows that were filtered out.
+        rows_selected: new_filtered,
         params_def: this.createNewParamsDef(new_filtered),
         rows_selected_filter: null,
         rows_filtered_filters: state.rows_filtered_filters.concat(applied),

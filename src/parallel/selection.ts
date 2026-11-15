@@ -6,12 +6,13 @@
  */
 
 import type { FilterRange } from "../filters";
-import { convert_to_categorical_input, parse_numeric } from "../lib/d3_scales";
-import { type Datapoint, ParamType } from "../types";
+import { ParamType } from "../types";
+import { columnKey } from "./selection_columns";
 import {
   type IndexInterval,
   type SelectionColumn,
   type SelectionIndex,
+  type SelectionIndexRequest,
   type SelectionIndexResponse,
   selectionIntervals,
   visitIntervalDifference,
@@ -35,11 +36,16 @@ interface RangeGroup {
 interface AxisState {
   key: string;
   groups: Map<ColumnState, RangeGroup>;
-  membership: Uint32Array;
-  mask: Uint8Array;
+  /** How many of the axis's columns select each row: its groups never overlap within a column. */
+  membership: Uint8Array;
+  /** One bit per row, set where `membership` is not zero (see BrushMasks). */
+  bits: Uint32Array;
   snapshot: Uint8Array | null;
   active: boolean;
 }
+
+/** An axis's ranges read this many columns at most: `membership` counts them in a byte. */
+const MAX_AXIS_COLUMNS = 255;
 
 interface PendingIndex {
   column: ColumnState;
@@ -47,47 +53,89 @@ interface PendingIndex {
   reject: (error: Error) => void;
 }
 
-async function inlineWorker(): Promise<Worker | null> {
-  if (typeof Worker === "undefined") return null;
-  // The worker is embedded in standalone HTML, never fetched from a sibling file.
-  const { default: InlineWorker } = await import("./selection_entry?worker&inline");
-  return new InlineWorker();
+/** Where columns are sorted: the selection worker, through a port (see connectSelectionWorker). */
+export interface IndexChannel {
+  post(request: SelectionIndexRequest, transfer: Transferable[]): void;
+  /** Delivers every response, and the channel's failure, from now on. */
+  listen(
+    onResponse: (response: SelectionIndexResponse) => void,
+    onFailure: (error: Error) => void,
+  ): void;
+  close(): void;
+}
+
+/** A selection worker's port as an index channel. */
+export function portChannel(port: MessagePort): IndexChannel {
+  return {
+    post: (request, transfer) => port.postMessage(request, transfer),
+    listen: (onResponse, onFailure) => {
+      port.onmessage = ({ data }: MessageEvent<SelectionIndexResponse>) => onResponse(data);
+      port.onmessageerror = () => onFailure(new Error("Selection worker returned unreadable data"));
+    },
+    close: () => port.close(),
+  };
 }
 
 /**
- * Exact brushes over fixed, immutable rows. Columns are sorted once in an inline
- * worker; until ready, the original column scan remains authoritative. Warm
- * moves touch only the symmetric difference of indexed range unions.
+ * Exact brushes over fixed, immutable rows, which it reads as columns from
+ * `columnOf`. Columns are sorted once through `channel`; until a column's
+ * index is ready, scanning the column remains authoritative, and without a
+ * channel it always is. Warm moves touch only the symmetric difference of
+ * indexed range unions.
+ *
+ * Each axis keeps one bit per row, and the selection is the intersection of
+ * the active axes' bits. Adding or removing an axis intersects them again a
+ * 32-row word at a time and writes only the flags that change, in row order;
+ * a move rechecks only the rows whose bit it flipped. A first brush, which
+ * deselects about every row, thus costs a pass over words instead of a
+ * scattered write per row.
  *
  * `axisMask` returns a cached snapshot. `select` returns a live intersection
  * buffer, updated in place by subsequent calls, so warm moves need no O(rows)
  * copy. Copy it explicitly if a historical selection is needed.
  */
 export class BrushMasks {
-  readonly rows: ReadonlyArray<Datapoint>;
   private readonly columns = new Map<string, ColumnState>();
   private readonly axes = new Map<string, AxisState>();
-  private readonly failures: Uint32Array;
+  private readonly words: number;
+  /** The valid rows' bits in the last word. */
+  private readonly lastWord: number;
+  /** The intersection of the active axes' bits; every row's when none is active. */
+  private readonly selectedBits: Uint32Array;
   private readonly selected: Uint8Array;
+  private selectedTotal: number;
+  /** The axes whose bits the selection intersects, as of the last time it settled. */
+  private activeAxes: AxisState[] = [];
+  /**
+   * Whether an axis was added or removed since the selection last settled,
+   * also by a call that threw partway: the next one intersects every word.
+   */
+  private activeChanged = false;
+  /** Rows an active axis flipped since the selection last settled; null once recombining is cheaper. */
+  private flipped: number[] | null = [];
   private readonly pending = new Map<number, PendingIndex>();
-  private worker: Promise<Worker | null> | null = null;
-  private connected: Worker | null = null;
+  private listening = false;
   private nextId = 0;
   private disposed = false;
   private failure: Error | null = null;
   private workerWasmBytes = 0;
+  private passing: { dimension: string; key: string; rows: Uint8Array } | null = null;
 
   get wasmMemoryBytes(): number {
     return this.workerWasmBytes;
   }
 
   constructor(
-    rows: ReadonlyArray<Datapoint>,
-    private readonly createWorker: () => Promise<Worker | null> = inlineWorker,
+    readonly rowCount: number,
+    private readonly columnOf: (range: FilterRange) => SelectionColumn,
+    private readonly channel: IndexChannel | null,
   ) {
-    this.rows = rows;
-    this.failures = new Uint32Array(rows.length);
-    this.selected = new Uint8Array(rows.length).fill(1);
+    this.words = Math.ceil(rowCount / 32);
+    this.lastWord = rowCount % 32 === 0 ? 0xffffffff : (2 ** (rowCount % 32) - 1) >>> 0;
+    this.selectedBits = new Uint32Array(this.words).fill(0xffffffff);
+    if (this.words > 0) this.selectedBits[this.words - 1] = this.lastWord;
+    this.selected = new Uint8Array(rowCount).fill(1);
+    this.selectedTotal = rowCount;
   }
 
   private assertUsable(): void {
@@ -96,53 +144,24 @@ export class BrushMasks {
   }
 
   private column(range: FilterRange): ColumnState {
-    const categorical = range.type === ParamType.CATEGORICAL;
-    const key = JSON.stringify([range.col, categorical]);
+    const key = columnKey(range);
     const cached = this.columns.get(key);
     if (cached !== undefined) return cached;
-    let column: SelectionColumn;
-    if (categorical) {
-      const codes = new Int32Array(this.rows.length).fill(-1);
-      const categories: string[] = [];
-      const codeOf = new Map<string, number>();
-      this.rows.forEach((row, index) => {
-        const raw = row[range.col];
-        if (raw === undefined) return;
-        const category = convert_to_categorical_input(raw);
-        let code = codeOf.get(category);
-        if (code === undefined) {
-          code = categories.length;
-          codeOf.set(category, code);
-          categories.push(category);
-        }
-        codes[index] = code;
-      });
-      column = { kind: "categorical", codes, categories };
-    } else {
-      const values = new Float64Array(this.rows.length);
-      const missing = new Uint8Array(this.rows.length);
-      this.rows.forEach((row, index) => {
-        const raw = row[range.col];
-        if (raw === undefined) missing[index] = 1;
-        else values[index] = parse_numeric(raw);
-      });
-      column = { kind: "numeric", values, missing };
+    const column = this.columnOf(range);
+    const length = column.kind === "numeric" ? column.values.length : column.codes.length;
+    if (length !== this.rowCount) {
+      throw new Error(`Column ${key} has ${length} rows; brushes select among ${this.rowCount}`);
     }
     const state: ColumnState = { column, index: null, ready: null };
     this.columns.set(key, state);
     return state;
   }
 
-  private connect(): Promise<Worker | null> {
-    if (this.worker !== null) return this.worker;
-    this.worker = this.createWorker().then((worker) => {
-      if (this.disposed) {
-        worker?.terminate();
-        return null;
-      }
-      if (worker === null) return null;
-      this.connected = worker;
-      worker.onmessage = ({ data }: MessageEvent<SelectionIndexResponse>) => {
+  private listen(channel: IndexChannel): void {
+    if (this.listening) return;
+    this.listening = true;
+    channel.listen(
+      (data) => {
         if (this.disposed) return;
         const pending = this.pending.get(data.id);
         if (pending === undefined) {
@@ -153,44 +172,44 @@ export class BrushMasks {
         pending.column.index = data.index;
         this.workerWasmBytes = data.wasmMemoryBytes ?? 0;
         pending.resolve();
-      };
-      worker.onerror = (event) => this.fail(new Error(`Selection worker failed: ${event.message}`));
-      worker.onmessageerror = () =>
-        this.fail(new Error("Selection worker returned unreadable data"));
-      return worker;
-    });
-    return this.worker;
+      },
+      (error) => this.fail(error),
+    );
   }
 
   private fail(error: Error): void {
+    if (this.disposed) return;
     this.failure = error;
-    this.connected?.terminate();
+    this.channel?.close();
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
   }
 
   private prepareColumn(state: ColumnState): Promise<void> {
     if (state.ready !== null) return state.ready;
-    state.ready = this.connect().then((worker) => {
-      if (worker === null || this.disposed) return;
+    const channel = this.channel;
+    if (channel === null) {
+      state.ready = Promise.resolve();
+      return state.ready;
+    }
+    this.listen(channel);
+    state.ready = new Promise<void>((resolve, reject) => {
       if (this.failure !== null) throw this.failure;
-      return new Promise<void>((resolve, reject) => {
-        const id = ++this.nextId;
-        this.pending.set(id, { column: state, resolve, reject });
-        const column = state.column;
-        // Keep the source arrays for the exact pending-index scan.
-        if (column.kind === "numeric") {
-          const values = column.values.slice();
-          const missing = column.missing.slice();
-          worker.postMessage({ id, column: { ...column, values, missing } }, [
-            values.buffer,
-            missing.buffer,
-          ]);
-        } else {
-          const codes = column.codes.slice();
-          worker.postMessage({ id, column: { ...column, codes } }, [codes.buffer]);
-        }
-      });
+      const id = ++this.nextId;
+      this.pending.set(id, { column: state, resolve, reject });
+      const column = state.column;
+      // Keep the source arrays for the exact pending-index scan.
+      if (column.kind === "numeric") {
+        const values = column.values.slice();
+        const missing = column.missing.slice();
+        channel.post({ id, column: { ...column, values, missing } }, [
+          values.buffer,
+          missing.buffer,
+        ]);
+      } else {
+        const codes = column.codes.slice();
+        channel.post({ id, column: { ...column, codes } }, [codes.buffer]);
+      }
     });
     // Automatic warming cannot surface an unhandled rejection. Explicit prepare
     // rejects, and later selection calls surface the same failure.
@@ -198,6 +217,16 @@ export class BrushMasks {
       this.fail(error instanceof Error ? error : new Error(String(error)));
     });
     return state.ready;
+  }
+
+  /**
+   * Builds the columns these ranges brush and starts sorting them, without
+   * changing any selection or waiting: an axis's first brush then skips
+   * reading every row. Failures surface from the next selection.
+   */
+  warm(selection: AxisSelection): void {
+    this.assertUsable();
+    for (const range of selection) void this.prepareColumn(this.column(range));
   }
 
   /** Warm the columns named by these ranges, without changing any selection. */
@@ -265,9 +294,85 @@ export class BrushMasks {
     };
   }
 
-  private changeFailure(row: number, delta: number): void {
-    this.failures[row] += delta;
-    this.selected[row] = Number(this.failures[row] === 0);
+  /** The rows every axis of `axes` selects, in the 32 rows of `word`. */
+  private intersection(word: number, axes: ReadonlyArray<AxisState>): number {
+    let bits = word === this.words - 1 ? this.lastWord : 0xffffffff;
+    for (const axis of axes) bits &= axis.bits[word];
+    return bits >>> 0;
+  }
+
+  /** Writes the flags of `word`'s rows that changed to `bits`. */
+  private setSelectedWord(word: number, bits: number): void {
+    let changed = (bits ^ this.selectedBits[word]) >>> 0;
+    if (changed === 0) return;
+    this.selectedBits[word] = bits;
+    const base = word * 32;
+    while (changed !== 0) {
+      const bit = 31 - Math.clz32(changed & -changed);
+      const selected = (bits >>> bit) & 1;
+      this.selectedTotal += selected - this.selected[base + bit];
+      this.selected[base + bit] = selected;
+      changed = (changed & (changed - 1)) >>> 0;
+    }
+  }
+
+  /** Intersects the active axes again, after one was added or removed. */
+  private recombine(): void {
+    for (let word = 0; word < this.words; ++word) {
+      this.setSelectedWord(word, this.intersection(word, this.activeAxes));
+    }
+  }
+
+  /**
+   * Brings the selection up to the axes' bits: intersects every word again
+   * after an axis was added or removed, else rechecks the rows active axes
+   * flipped.
+   */
+  private settle(): void {
+    const flipped = this.flipped;
+    this.flipped = [];
+    if (this.activeChanged || flipped === null) {
+      this.activeAxes = Array.from(this.axes.values()).filter((axis) => axis.active);
+      this.activeChanged = false;
+      this.recombine();
+      return;
+    }
+    for (const row of flipped) this.recheck(row);
+  }
+
+  /** Sets `row`'s flag from the active axes' bits. */
+  private recheck(row: number): void {
+    const word = row >>> 5;
+    const bit = 1 << (row & 31);
+    let selected = 1;
+    for (const axis of this.activeAxes) {
+      if ((axis.bits[word] & bit) === 0) {
+        selected = 0;
+        break;
+      }
+    }
+    if (selected === this.selected[row]) return;
+    this.selected[row] = selected;
+    this.selectedTotal += selected === 1 ? 1 : -1;
+    this.selectedBits[word] ^= bit;
+  }
+
+  private flip(row: number): void {
+    const flipped = this.flipped;
+    if (flipped === null) return;
+    // Past one flipped row per word, intersecting every word costs less than rechecking rows.
+    if (flipped.length >= this.words) this.flipped = null;
+    else flipped.push(row);
+  }
+
+  /** Rows the live mask `select` returns holds, counted as its flags change. */
+  /** The live mask's bits, 32 rows a word, updated in place like it: read, never written. */
+  get selectionBits(): Uint32Array {
+    return this.selectedBits;
+  }
+
+  get selectedCount(): number {
+    return this.selectedTotal;
   }
 
   private updateAxis(dimension: string, selection: AxisSelection): AxisState {
@@ -281,8 +386,8 @@ export class BrushMasks {
       axis = {
         key: "",
         groups: new Map(),
-        membership: new Uint32Array(this.rows.length),
-        mask: new Uint8Array(this.rows.length),
+        membership: new Uint8Array(this.rowCount),
+        bits: new Uint32Array(this.words),
         snapshot: null,
         active: false,
       };
@@ -290,13 +395,15 @@ export class BrushMasks {
     }
     const current = axis;
     const groups = this.groups(selection);
+    if (groups.size > MAX_AXIS_COLUMNS) {
+      throw new Error(`Brushes of one axis read at most ${MAX_AXIS_COLUMNS} columns`);
+    }
     const change = (row: number, included: boolean) => {
       const wasSelected = current.membership[row] !== 0;
       current.membership[row] += included ? 1 : -1;
-      const selected = current.membership[row] !== 0;
-      if (wasSelected === selected) return;
-      current.mask[row] = Number(selected);
-      if (current.active) this.changeFailure(row, selected ? -1 : 1);
+      if (wasSelected === (current.membership[row] !== 0)) return;
+      current.bits[row >>> 5] ^= 1 << (row & 31);
+      if (current.active) this.flip(row);
     };
     for (const column of new Set([...axis.groups.keys(), ...groups.keys()])) {
       const before = axis.groups.get(column);
@@ -311,7 +418,7 @@ export class BrushMasks {
       } else {
         const wasSelected = this.scanGroup(before);
         const isSelected = this.scanGroup(after);
-        for (let row = 0; row < this.rows.length; ++row) {
+        for (let row = 0; row < this.rowCount; ++row) {
           const oldValue = wasSelected(row);
           const newValue = isSelected(row);
           if (oldValue !== newValue) change(row, newValue);
@@ -328,41 +435,22 @@ export class BrushMasks {
   axisMask(dimension: string, selection: AxisSelection): Uint8Array {
     this.assertUsable();
     const axis = this.updateAxis(dimension, selection);
-    axis.snapshot ??= axis.mask.slice();
+    this.settle();
+    axis.snapshot ??= this.expand((word) => axis.bits[word]);
     return axis.snapshot;
   }
 
-  private visitRejected(axis: AxisState, delta: number): void {
-    // Every rejected row is outside each group's union. Use the broadest ready
-    // union to enumerate a superset of rejected rows, including undefined cells.
-    let candidate: { index: SelectionIndex; intervals: IndexInterval[] } | null = null;
-    let covered = -1;
-    for (const group of axis.groups.values()) {
-      const index = group.column.index;
-      if (index === null) continue;
-      const intervals = group.intervals ?? selectionIntervals(index, group.ranges);
-      const count = intervals.reduce((total, [start, end]) => total + end - start, 0);
-      if (count > covered) {
-        candidate = { index, intervals };
-        covered = count;
-      }
+  /** One flag per row from the bits `wordAt` returns for each word. */
+  private expand(wordAt: (word: number) => number): Uint8Array {
+    const rows = new Uint8Array(this.rowCount);
+    for (let word = 0; word < this.words; ++word) {
+      const bits = wordAt(word);
+      if (bits === 0) continue;
+      const base = word * 32;
+      const end = Math.min(32, this.rowCount - base);
+      for (let bit = 0; bit < end; ++bit) rows[base + bit] = (bits >>> bit) & 1;
     }
-    const visit = (row: number) => {
-      if (axis.mask[row] === 0) this.changeFailure(row, delta);
-    };
-    if (candidate === null) {
-      for (let row = 0; row < axis.mask.length; ++row) visit(row);
-      return;
-    }
-    const { index, intervals } = candidate;
-    let start = 0;
-    for (const [low, high] of intervals) {
-      for (let position = start; position < low; ++position) visit(index.order[position]);
-      start = high;
-    }
-    for (let position = start; position < index.order.length; ++position)
-      visit(index.order[position]);
-    for (const row of index.missing) visit(row);
+    return rows;
   }
 
   /** Live mask of rows inside every active axis, in original row order. */
@@ -371,28 +459,46 @@ export class BrushMasks {
     for (const [dimension, axis] of this.axes) {
       if (!axis.active || selections.has(dimension)) continue;
       axis.active = false;
-      this.visitRejected(axis, -1);
+      this.activeChanged = true;
     }
     for (const [dimension, selection] of selections) {
       const axis = this.updateAxis(dimension, selection);
       if (axis.active) continue;
       axis.active = true;
-      this.visitRejected(axis, 1);
+      this.activeChanged = true;
     }
+    this.settle();
     return this.selected;
   }
 
-  /** The selected rows, in their original order. Materializing rows is O(rows). */
-  selectedRows(selected: Uint8Array): Datapoint[] {
-    return this.rows.filter((_, index) => selected[index] === 1);
+  /**
+   * Flags of the rows inside the brushes of every active axis but `dimension`,
+   * as of the last `select`. Asked again for the same axis, it returns the
+   * same array until the other axes' brushes change: brushing `dimension`
+   * alone keeps it. Asking for another axis replaces it.
+   */
+  passingExcept(dimension: string): Uint8Array {
+    this.assertUsable();
+    const others = JSON.stringify(
+      Array.from(this.axes)
+        .filter(([name, axis]) => name !== dimension && axis.active)
+        .map(([name, axis]) => [name, axis.key]),
+    );
+    if (this.passing?.dimension === dimension && this.passing.key === others) {
+      return this.passing.rows;
+    }
+    this.settle();
+    const axes = this.activeAxes.filter((axis) => axis !== this.axes.get(dimension));
+    const rows = this.expand((word) => this.intersection(word, axes));
+    this.passing = { dimension, key: others, rows };
+    return rows;
   }
 
-  /** Release the worker and column/axis caches on unmount or row replacement. */
+  /** Releases the index channel and column/axis caches on unmount or row replacement. */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.connected?.terminate();
-    this.connected = null;
+    this.channel?.close();
     for (const pending of this.pending.values()) pending.resolve();
     this.pending.clear();
     this.axes.clear();

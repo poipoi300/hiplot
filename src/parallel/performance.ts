@@ -1,9 +1,10 @@
-/* Bounded density rendering replaces gesture-only resolution/row sampling.
- * Auto engages before expensive initial frames, or after measured slow frames.
- * The persisted "low" value remains compatible with older saved pages.
+/* Which picture the parallel plot draws, and when gestures draft it. On a GPU,
+ * exact lines draw any number of rows; continuous density is the software
+ * rasterizer's picture, engaged before expensive initial frames or after
+ * measured slow frames, and the persisted "low" choice.
  */
 
-/** How frames during a gesture are drawn: decided from measured frames, or forced. */
+/** How lines are drawn: automatically, as continuous density ("low"), or as exact lines ("full"). */
 export type RenderQuality = "auto" | "low" | "full";
 
 export const RENDER_QUALITIES: ReadonlyArray<RenderQuality> = ["auto", "low", "full"];
@@ -14,26 +15,30 @@ export function isRenderQuality(value: unknown): value is RenderQuality {
 
 /** The median GPU time of recent full-quality frames above which frames are slow (under 20 fps). */
 export const SLOW_FRAME_MS = 50;
-/** Bound page-owned calibration buffers before allocating a large working set. */
-export const MAX_LOCAL_RENDER_BYTES = 256 * 1024 * 1024;
+/**
+ * Whether gesture frames draft. Two full frames of every row in a row taking
+ * longer than SLOW_FRAME_MS turn drafts on, as a gesture's frames would take as
+ * long: one slow frame may only be a one-time cost such as compiling shaders.
+ * A full frame under FAST_FRAME_MS turns them off; frames in between keep the
+ * current choice, so frames near the limit do not alternate within a gesture.
+ */
+export class DraftPolicy {
+  private slowInARow = 0;
+  private on = false;
 
-/** Execution location belongs to the plot session, independently of picture style. */
-export class RenderExecution {
-  private promoted = false;
-  private slowDraws = 0;
-
-  get useWorker(): boolean {
-    return this.promoted;
+  get drafting(): boolean {
+    return this.on;
   }
 
-  recordWorkingSet(bytes: number): void {
-    if (bytes > MAX_LOCAL_RENDER_BYTES) this.promoted = true;
-  }
-
-  /** Observe completed local draws, including preparation and GPU completion. */
+  /** Observe a full frame of every row, timed in its renderer from submission to GPU completion. */
   record(milliseconds: number): void {
-    // The first expensive draw can include a one-time shader compilation.
-    if (milliseconds > SLOW_FRAME_MS && ++this.slowDraws >= 2) this.promoted = true;
+    if (milliseconds > SLOW_FRAME_MS) {
+      this.slowInARow += 1;
+      if (this.slowInARow >= 2) this.on = true;
+      return;
+    }
+    this.slowInARow = 0;
+    if (milliseconds < FAST_FRAME_MS) this.on = false;
   }
 }
 /** The median below which slow frames count as fast again; the gap keeps the mode from flickering. */
@@ -42,8 +47,6 @@ export const FAST_FRAME_MS = 25;
 export const MEASURED_FRAMES = 5;
 /** Engage before the first software frame can stall the page. */
 export const CONTINUOUS_ABOVE_ROWS = 6_000;
-/** Keep already-fast hardware plots on their original GPU path. */
-export const HARDWARE_CONTINUOUS_ABOVE_ROWS = 250_000;
 
 /** The middle value of an odd number of values. */
 function median(values: ReadonlyArray<number>): number {
@@ -80,13 +83,18 @@ export class FramePerformance {
   }
 }
 
-/** Exact rendering remains an explicit override, regardless of size or timing. */
+/**
+ * Whether lines draw as continuous density: when chosen, or automatically on a
+ * software rasterizer with many rows or slow frames. A GPU draws exact lines at
+ * any size: brushing sums retained blocks (see LineFocus in webgl.ts).
+ */
 export function continuousRendering(
   quality: RenderQuality,
   slow: boolean,
   rows: number,
-  software = true,
+  software: boolean,
 ): boolean {
-  const threshold = software ? CONTINUOUS_ABOVE_ROWS : HARDWARE_CONTINUOUS_ABOVE_ROWS;
-  return quality === "low" || (quality === "auto" && (slow || rows > threshold));
+  return (
+    quality === "low" || (quality === "auto" && software && (slow || rows > CONTINUOUS_ABOVE_ROWS))
+  );
 }

@@ -6,9 +6,34 @@ import {
 } from "../src/parallel/continuous_density";
 import { ContinuousKernel } from "../src/parallel/continuous_grid";
 import { reconstructContinuousPair } from "../src/parallel/continuous_reconstruction";
-import type { ContinuousImage, ContinuousRequest } from "../src/parallel/continuous_types";
-import type { LineColors, LineFrame } from "../src/parallel/webgl";
+import type { ContinuousRequest } from "../src/parallel/continuous_types";
+import type { ContinuousMetrics } from "../src/parallel/render_types";
+import type { LineColors, LineFrame, WebGLLineRenderer } from "../src/parallel/webgl";
 import { expect, test } from "./fixtures";
+import { useDirectRenderer } from "./plot";
+
+/**
+ * The plot on its page's renderer (see useDirectRenderer), which receives each
+ * continuous image whole. The render worker shows its images only on its
+ * canvas, at the canvas's rounded device size, while images round fractional
+ * device sizes up: a 96.25-pixel-high plot's 97 rows show on 96.
+ */
+interface ShaderWindow {
+  __presented?: Parameters<WebGLLineRenderer["present"]>[0];
+  __parallelProbe: {
+    instance: {
+      parallelPlot: () => {
+        continuousFrame: number;
+        continuousMetrics: ContinuousMetrics;
+        continuous: {
+          busy: boolean;
+          draw: (frame: LineFrame, colors: LineColors, mask: Uint8Array) => void;
+        };
+        webgl: Pick<WebGLLineRenderer, "present">;
+      };
+    };
+  };
+}
 
 for (const {
   dense,
@@ -121,6 +146,7 @@ for (const {
       pixelRatio: 1,
       curved,
       draft,
+      transient: false,
       resolution: 1,
       drawnRows: rows,
       selectedCount: selection.reduce((sum, value) => sum + value, 0),
@@ -166,6 +192,7 @@ for (const {
     const expected = draft
       ? reconstructContinuousPair(evaluated, pair.histogram, request, gap)
       : evaluated;
+    await useDirectRenderer(page);
     await loadParallelBenchmark(
       page,
       { rows: 3, columns: 2, discrete: true, seed: 20261109 },
@@ -173,13 +200,13 @@ for (const {
     );
     const before = await page.evaluate(
       ({ left, right, selection, colors, frame }) => {
-        interface Plot {
-          continuousFrame: number;
-          continuous: { draw: (frame: LineFrame, colors: LineColors, mask: Uint8Array) => void };
-        }
-        const p = (
-          window as unknown as { __parallelProbe: { instance: { parallelPlot: () => Plot } } }
-        ).__parallelProbe.instance.parallelPlot();
+        const win = window as unknown as ShaderWindow;
+        const p = win.__parallelProbe.instance.parallelPlot();
+        const present = p.webgl.present.bind(p.webgl);
+        p.webgl.present = (image, frame) => {
+          win.__presented = image;
+          present(image, frame);
+        };
         p.continuous.draw(
           {
             ...frame,
@@ -203,15 +230,7 @@ for (const {
     );
     await Promise.race([
       page.waitForFunction((before) => {
-        const p = (
-          window as unknown as {
-            __parallelProbe: {
-              instance: {
-                parallelPlot: () => { continuousFrame: number; continuous: { busy: boolean } };
-              };
-            };
-          }
-        ).__parallelProbe.instance.parallelPlot();
+        const p = (window as unknown as ShaderWindow).__parallelProbe.instance.parallelPlot();
         return p.continuousFrame > before && !p.continuous.busy;
       }, before),
       page.waitForEvent("pageerror").then((error) => {
@@ -219,18 +238,15 @@ for (const {
       }),
     ]);
     const actual = await page.evaluate(() => {
-      const image = (
-        window as unknown as {
-          __parallelProbe: {
-            instance: { parallelPlot: () => { continuousMetrics: ContinuousImage } };
-          };
-        }
-      ).__parallelProbe.instance.parallelPlot().continuousMetrics;
+      const win = window as unknown as ShaderWindow;
+      const image = win.__presented;
+      if (image === undefined) throw new Error("The page showed no density image");
+      const { rows } = win.__parallelProbe.instance.parallelPlot().continuousMetrics;
       return {
         pixels: Array.from(image.pixels),
         width: image.width,
         height: image.height,
-        rows: image.rows,
+        rows,
       };
     });
     expect(actual.width).toBe(expected.width);

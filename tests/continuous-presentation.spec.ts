@@ -7,7 +7,10 @@ interface PresentationProbe {
       parallelPlot: () => {
         webgl: {
           gl: WebGL2RenderingContext;
-          present: (pixels: Uint8ClampedArray, width: number, height: number) => void;
+          present: (
+            image: { pixels: Uint8ClampedArray; width: number; height: number },
+            frame: { width: number; height: number; pixelRatio: number },
+          ) => void;
         };
         foreground_ref: { current: HTMLCanvasElement };
       };
@@ -16,7 +19,7 @@ interface PresentationProbe {
 }
 
 for (const scale of [1, 2]) {
-  test(`worker image presentation at ${scale}x preserves premultiplied edge coverage`, async ({
+  test(`density image presentation at ${scale}x preserves premultiplied edge coverage`, async ({
     page,
   }) => {
     await loadParallelBenchmark(
@@ -30,7 +33,10 @@ for (const scale of [1, 2]) {
       canvas.width = 2 * scale;
       canvas.height = scale;
       // Hidden blue must not tint the red/transparent edge during enlargement.
-      plot.webgl.present(new Uint8ClampedArray([255, 0, 0, 255, 0, 0, 255, 0]), 2, 1);
+      plot.webgl.present(
+        { pixels: new Uint8ClampedArray([255, 0, 0, 255, 0, 0, 255, 0]), width: 2, height: 1 },
+        { width: 2, height: 1, pixelRatio: scale },
+      );
       const pixels = new Uint8Array(canvas.width * canvas.height * 4);
       plot.webgl.gl.readPixels(
         0,
@@ -50,7 +56,7 @@ for (const scale of [1, 2]) {
     expect(pixels).toEqual(Array.from({ length: scale }, () => row).flat());
   });
 
-  test(`worker image presentation at ${scale}x preserves both dimensions and top-down order`, async ({
+  test(`density image presentation at ${scale}x preserves both dimensions and top-down order`, async ({
     page,
   }) => {
     await loadParallelBenchmark(
@@ -64,9 +70,14 @@ for (const scale of [1, 2]) {
       canvas.width = 2 * scale;
       canvas.height = 2 * scale;
       plot.webgl.present(
-        new Uint8ClampedArray([255, 0, 0, 255, 0, 0, 255, 0, 0, 0, 255, 0, 0, 255, 0, 128]),
-        2,
-        2,
+        {
+          pixels: new Uint8ClampedArray([
+            255, 0, 0, 255, 0, 0, 255, 0, 0, 0, 255, 0, 0, 255, 0, 128,
+          ]),
+          width: 2,
+          height: 2,
+        },
+        { width: 2, height: 2, pixelRatio: scale },
       );
       const pixels = new Uint8Array(canvas.width * canvas.height * 4);
       plot.webgl.gl.readPixels(

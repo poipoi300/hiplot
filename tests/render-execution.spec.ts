@@ -4,12 +4,11 @@ import { expect, test } from "./fixtures";
 
 interface ExecutionWindow {
   __parallelProbe: { instance: HiPlot };
-  __workers?: number;
+  __workers?: string[];
   __localDraws?: number;
-  __firstWorkerLocalDraws?: number;
 }
 
-test("switching to density after moving a brush keeps the latest exact image until density is ready", async ({
+test("switching to density after moving a brush keeps the latest exact image until density is drawn", async ({
   page,
 }) => {
   await loadParallelBenchmark(
@@ -21,16 +20,14 @@ test("switching to density after moving a brush keeps the latest exact image unt
     const plot = (window as unknown as ExecutionWindow).__parallelProbe.instance.parallelPlot();
     if (!plot) throw new Error("Missing plot");
     const idle = async () => {
-      while (plot.linesBusy || plot.continuous?.busy) await new Promise(requestAnimationFrame);
+      while (plot.linesBusy) await new Promise(requestAnimationFrame);
     };
     const switchMode = (renderQuality: "full" | "low") =>
       new Promise<void>((resolve) => plot.setState({ renderQuality }, resolve));
     const visibility = () => ({
-      exact: plot.exact_image_ref.current?.style.visibility,
+      worker: plot.workerCanvas?.style.visibility,
       direct: plot.foreground_ref.current?.style.visibility,
     });
-    plot.renderExecution.record(51);
-    plot.renderExecution.record(51);
     const dimension = plot.state.dimensions[1];
     plot.setBrushes(dimension, [[plot.h * 0.1, plot.h * 0.3]]);
     await idle();
@@ -49,39 +46,45 @@ test("switching to density after moving a brush keeps the latest exact image unt
       const pending = visibility();
       const pendingFrames = plot.continuousFrame - frames;
       await idle();
-      switches.push({ before, pending, pendingFrames, after: visibility() });
+      switches.push({
+        before,
+        pending,
+        pendingFrames,
+        afterFrames: plot.continuousFrame - frames,
+        after: visibility(),
+      });
     }
     return switches;
   });
   for (const transition of result) {
-    expect(transition.before).toEqual({ exact: "visible", direct: "hidden" });
+    expect(transition.before).toEqual({ worker: "visible", direct: "hidden" });
     expect(transition.pendingFrames).toBe(0);
     expect(transition.pending).toEqual(transition.before);
-    expect(transition.after).toEqual({ exact: "hidden", direct: "visible" });
+    // The render worker draws density on the same canvas that showed the exact lines.
+    expect(transition.afterFrames).toBeGreaterThan(0);
+    expect(transition.after).toEqual(transition.before);
   }
 });
 
 for (const quality of ["full", "low"] as const) {
-  test(`${quality} starts locally and shares worker promotion across rendering modes`, async ({
-    page,
-  }) => {
+  test(`${quality} lines render on a worker from the first frame`, async ({ page }) => {
     await page.addInitScript(() => {
       const OriginalWorker = Worker;
       const win = window as unknown as ExecutionWindow;
-      win.__workers = 0;
+      win.__workers = [];
       win.__localDraws = 0;
-      for (const method of ["drawArrays", "drawArraysInstanced"] as const) {
-        const draw = WebGL2RenderingContext.prototype[method];
-        WebGL2RenderingContext.prototype[method] = function (...args: number[]) {
-          win.__localDraws = (win.__localDraws ?? 0) + 1;
-          Reflect.apply(draw, this, args);
-        };
-      }
+      // Lines are instanced draws; presenting a worker's image is a plain one.
+      const draw = WebGL2RenderingContext.prototype.drawArraysInstanced;
+      WebGL2RenderingContext.prototype.drawArraysInstanced = function (
+        ...args: Parameters<typeof draw>
+      ) {
+        win.__localDraws = (win.__localDraws ?? 0) + 1;
+        Reflect.apply(draw, this, args);
+      };
       window.Worker = class extends OriginalWorker {
         constructor(url: string | URL, options?: WorkerOptions) {
           super(url, options);
-          win.__workers = (win.__workers ?? 0) + 1;
-          win.__firstWorkerLocalDraws ??= win.__localDraws;
+          win.__workers?.push(options?.name ?? "");
         }
       };
     });
@@ -90,50 +93,77 @@ for (const quality of ["full", "low"] as const) {
       { rows: 3, columns: 2, discrete: false, seed: 20261109 },
       quality,
     );
-    const initial = await page.evaluate(() => {
-      const win = window as unknown as ExecutionWindow;
-      return {
-        localDraws: win.__localDraws ?? 0,
-        beforeWorker: win.__firstWorkerLocalDraws ?? win.__localDraws ?? 0,
-      };
-    });
-    expect(initial.localDraws).toBeGreaterThan(0);
-    expect(initial.beforeWorker).toBeGreaterThan(0);
-    // Supply a completed slow-frame measurement without depending on the test machine's GPU speed.
-    await page.evaluate(() => {
-      const plot = (window as unknown as ExecutionWindow).__parallelProbe.instance.parallelPlot();
-      if (!plot) throw new Error("Missing plot");
-      plot.renderExecution.record(51);
-      plot.renderExecution.record(51);
-      plot.redrawLines();
-    });
     await page.waitForFunction((quality) => {
       const plot = (window as unknown as ExecutionWindow).__parallelProbe.instance.parallelPlot();
       return (
         plot &&
+        plot.worker?.presents === true &&
         !plot.linesBusy &&
-        !plot.continuous?.busy &&
-        (quality === "full" ? plot.exact !== null : plot.continuous?.execution === "worker")
+        (quality === "full" || plot.continuousFrame > 0)
       );
     }, quality);
-    await page.evaluate((quality) => {
-      const plot = (window as unknown as ExecutionWindow).__parallelProbe.instance.parallelPlot();
-      if (!plot) throw new Error("Missing plot");
-      plot.renderExecution.record(1);
-      plot.setState({ renderQuality: quality === "full" ? "low" : "full" });
-    }, quality);
-    await page.waitForFunction((quality) => {
-      const plot = (window as unknown as ExecutionWindow).__parallelProbe.instance.parallelPlot();
-      return (
-        plot?.renderExecution.useWorker &&
-        !plot.linesBusy &&
-        !plot.continuous?.busy &&
-        (quality === "full" ? plot.continuous?.execution === "worker" : plot.exact !== null)
-      );
-    }, quality);
-    expect(await page.evaluate(() => (window as unknown as ExecutionWindow).__workers)).toBe(2);
+    const result = await page.evaluate(() => {
+      const win = window as unknown as ExecutionWindow;
+      return { localDraws: win.__localDraws, workers: win.__workers };
+    });
+    expect(result.localDraws).toBe(0);
+    // One render worker; the others select brushed rows.
+    expect(result.workers?.filter((name) => name === "hiplot-render")).toHaveLength(1);
   });
 }
+
+test("gestures draft exact lines while full frames are slow, judged by frames of every row", async ({
+  page,
+}) => {
+  await loadParallelBenchmark(
+    page,
+    { rows: 100, columns: 2, discrete: false, seed: 20261109 },
+    "full",
+  );
+  const drafts = await page.evaluate(() => {
+    interface DraftPlot {
+      interacting: boolean;
+      draftFrame: () => boolean;
+      recordFrame: (finished: {
+        milliseconds: number;
+        fullQuality: boolean;
+        fromBlocks: boolean;
+        drewEveryRow: boolean;
+      }) => void;
+    }
+    const plot = (
+      window as unknown as ExecutionWindow
+    ).__parallelProbe.instance.parallelPlot() as unknown as DraftPlot;
+    // An axis drag: interacting without a brush gesture.
+    plot.interacting = true;
+    const full = (milliseconds: number) =>
+      plot.recordFrame({ milliseconds, fullQuality: true, fromBlocks: false, drewEveryRow: true });
+    const states = [plot.draftFrame()];
+    full(200);
+    full(200);
+    states.push(plot.draftFrame());
+    // Frames from blocks or moved density, and drafts, say nothing of full frames' cost.
+    plot.recordFrame({ milliseconds: 1, fullQuality: true, fromBlocks: true, drewEveryRow: false });
+    plot.recordFrame({
+      milliseconds: 1,
+      fullQuality: true,
+      fromBlocks: false,
+      drewEveryRow: false,
+    });
+    plot.recordFrame({
+      milliseconds: 1,
+      fullQuality: false,
+      fromBlocks: false,
+      drewEveryRow: true,
+    });
+    states.push(plot.draftFrame());
+    full(1);
+    states.push(plot.draftFrame());
+    plot.interacting = false;
+    return states;
+  });
+  expect(drafts).toEqual([false, true, true, false]);
+});
 
 test("legacy automatic line shape migrates to curved at phone width", async ({ browser }) => {
   const context = await browser.newContext({
@@ -161,7 +191,7 @@ test("legacy automatic line shape migrates to curved at phone width", async ({ b
         plot !== null &&
         plot.continuousMetrics !== null &&
         plot.continuousFrame > 0 &&
-        !plot.continuous?.busy
+        !plot.linesBusy
       );
     });
     const result = await page.evaluate(() => {
